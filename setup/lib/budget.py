@@ -116,14 +116,22 @@ __all__ = ["Machine", "Plan", "Verdict", "Comparison", "compare",
 #
 # because GTT is pinned and belongs to the model without appearing in any
 # process's RSS, and the server's anonymous half belongs to it too. Sampled
-# every 5 s for 300 s with qwen38 serving:
+# every 5 s with qwen38 serving, twice on 27.08.:
 #
-#     min 11.1   median 11.1   MAX 11.2 GiB
+#     min 11.1   median 11.1   MAX 11.2 GiB    300 s, with an unused Supabase
+#                                              stack of ten containers running
+#     min 10.9   median 10.9   MAX 11.0 GiB    180 s, after it was stopped
 #
-# So 12.0 sits 0.8 GiB above what the host actually occupies — 7 %, which is a
-# floor with a margin rather than the generous figure the old comment implied.
-# And the 10.0 that bench/run.py charged until 27.08. was 1.2 GiB BELOW it: a
-# guard that would have waved through a model leaving the desktop short.
+# So 12.0 sits 1.0 GiB above what the host occupies — 8 %, a floor with a
+# margin rather than the generous figure the old comment implied. And the 10.0
+# that bench/run.py charged until 27.08. was a full GiB BELOW it: a guard that
+# would have waved through a model leaving the desktop short.
+#
+# THE SECOND READING IS ALSO A CORRECTION. `docker stats` reported 616 MiB for
+# those containers and the obvious inference was that stopping them would give
+# most of the margin back. Measured, it gave 0.25 GiB: most of what docker
+# reports is page cache and shared pages, which MemAvailable already counts as
+# available. A number from one tool, read as if it were a different quantity.
 #
 # WHAT THIS DOES NOT SAY. Five minutes on a quiet desktop is a FLOOR, not a
 # peak, and a peak is what a reserve has to cover. A browser, a build, or the

@@ -1,0 +1,154 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+  "build_from_binary": "b200-54ee5ee",
+  "build_id": "b200-54ee5ee",
+  "restore_timeout": 300
+ },
+ "save-spec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-spec": {
+  "phase": "restore",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 0.0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-spec": {
+  "phase": "done",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 46.8,
+  "generations_still_running": 0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "26",
+    "27",
+    "28",
+    "29",
+    "34"
+   ],
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ]
+  ],
+  "gen_seconds": [
+   3.0,
+   52.8
+  ],
+  "gen_errors": [
+   null,
+   null
+  ],
+  "blocking_seconds": 52.8
+ },
+ "prefill-spec": {
+  "phase": "done",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 5.4,
+  "prefill_still_running": 0,
+  "clean": false,
+  "probes": [
+   "This is a long independent_files:!user\n!\n!\n!",
+   "242",
+   "198"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null,
+  "prefill_seconds": 72.3,
+  "blocking_seconds": 72.3
+ },
+ "save-nospec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-nospec": {
+  "phase": "restore",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 0.0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-nospec": {
+  "phase": "done",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 278.8,
+  "generations_still_running": 0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "5",
+    "6",
+    "7",
+    "8",
+    "``` the"
+   ],
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ]
+  ],
+  "gen_seconds": [
+   2.8,
+   284.8
+  ],
+  "gen_errors": [
+   null,
+   null
+  ],
+  "blocking_seconds": 284.8
+ },
+ "prefill-nospec": {
+  "phase": "done",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 15.4,
+  "prefill_still_running": 0,
+  "clean": false,
+  "probes": [
+   "To find\": {\"diff",
+   "39",
+   "339"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null,
+  "prefill_seconds": 75.7,
+  "blocking_seconds": 75.7
+ }
+}

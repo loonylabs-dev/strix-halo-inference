@@ -147,6 +147,51 @@ Step 1 needs no build at all. Without it, nothing below it means anything:
 if the stale stock binary no longer reproduces the corruption either, then
 what changed is not the patch and not the PR.
 
+## The positive control, run 22:33 — and it fires
+
+`--backend rocm`, the stock build already on disk (`build 200, commit
+54ee5ee`, no `hip-integrated-off.patch`). Report:
+`bench/reports/2026-08-27_2233_restore-safety-rocm_b200-54ee5ee`.
+
+| cell | stock `b200-54ee5ee` | patched `b10631` | patched + #27311 |
+|---|---|---|---|
+| `idle-spec` | CLEAN | CLEAN | CLEAN |
+| `busy-spec` | CLEAN | CLEAN | CLEAN |
+| **`prefill-spec`** | **DIRTY** | CLEAN | CLEAN |
+| `idle-nospec` | CLEAN | CLEAN | CLEAN |
+| `busy-nospec` | CLEAN — restore at 278.8 s | bound hit, 335.5 s of work | bound hit, 341.6 s of work |
+| **`prefill-nospec`** | **DIRTY** | CLEAN | CLEAN |
+
+**The suite can still see the corruption.** The dirty probes return fragments
+of other contexts, which is the 25.08. signature verbatim:
+
+    prefill-spec     'This is a long independent_files:!user\n!\n!\n!' · '242' · '198'
+    prefill-nospec   'To find": {"diff' · '39' · '339'
+
+So the clean sheet on the patched build is a real result and not an
+instrument that has gone blind. That was the one thing capable of
+invalidating everything above, and it is now excluded.
+
+**And `busy-nospec` is CLEAN here, at a restore of 278.8 s** — under the same
+300 s bound that the patched build ran past. Same cell, same code, same bound;
+the generation simply finished sooner. That is the bound theory confirmed a
+second time, by a run that was not designed to test it.
+
+### What is still not one variable
+
+Stock is `54ee5ee` and the patched build is `5d5cb4c` — 52 upstream builds
+apart. So "DIRTY on stock, CLEAN on patched" is still the patch AND 52 builds,
+and this file does not claim otherwise. What it now does claim, because it was
+measured today rather than inferred from a report of 25.08.:
+
+**the restore-during-prefill corruption reproduces on a gfx1151/ROCm build
+without our patch, on this machine, with this harness.**
+
+Which is what makes the two remaining steps worth the GPU time:
+
+    2  current master, NO patch            is it still there upstream?
+    3  current master + #27311, NO patch   does the PR fix it?
+
 ## Where each number in this file comes from
 
 | number | source | in the repository? |

@@ -182,6 +182,31 @@ def expand(text, home=None, models=None):
     return text.replace("@HOME@", home).replace("@MODELS@", models or "")
 
 
+def unexpand(text, home=None, models=None):
+    """The inverse: a path as it should be RECORDED rather than run.
+
+    "Expanded to run, unexpanded to record" was the rule bench/sweep.py
+    learned on 27.08., and it had no shared implementation — sweep simply
+    still had the raw value to hand. A tool that COMPUTES a path at runtime
+    has no raw value to fall back on, and the first one that needed this
+    (bench/suites/restore-safety.py, recording which binary produced a
+    report) wrote a home directory into three reports before
+    tests/test_localenv.py caught it. So the fold lives beside expand(),
+    where the mapping is already defined once.
+
+    @MODELS@ is substituted BEFORE @HOME@ on purpose: a model directory can
+    sit under the home directory, and folding the home first would leave
+    "@HOME@/models" with nothing left for @MODELS@ to match. The more
+    specific replacement has to go first or it never happens.
+    """
+    home = home if home is not None else os.path.expanduser("~")
+    if models is None:
+        models = models_dir(required=False)
+    if models:
+        text = text.replace(models.rstrip("/"), "@MODELS@")
+    return text.replace(home.rstrip("/"), "@HOME@") if home else text
+
+
 def llama_args(path, home=None, models=None):
     """LLAMA_ARGS as an argv list, exactly as systemd would hand it over.
 

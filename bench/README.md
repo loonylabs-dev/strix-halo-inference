@@ -245,7 +245,7 @@ many cells the variant file holds).
 | `suites/stock-vs-patched.py` | Whether the patched build is measurably better than an official binary at the setting production runs |
 | `suites/slot-corruption.py` | Which ingredient makes this build emit `////` — one variable per case, fresh server each |
 | `suites/np2-candidates.py` | Backend and flag combinations on a SIDE server (port 8081), so production keeps running while the question "can we have two slots yet?" gets measured |
-| `suites/restore-safety.py` | Whether a slot restore is safe in a given state |
+| `suites/restore-safety.py` | Whether a slot restore is safe in a given state — and with `--binary`, whether an upstream change fixes it. Every cell is recorded, including the one that is KNOWN to hang, so the cells after it are still measured |
 | `compare.py` | The decision table across the variants of one sweep |
 | `run.py` | The cache suites (cold/warm, tool turns, multi-project) |
 
@@ -253,6 +253,31 @@ many cells the variant file holds).
 correctness suites need a request body shaped like Claude Code's and a question
 whose answer a machine can check. They are no longer a model battery and are no
 longer the thing any decision rests on — see the note at the top.
+
+## Comparing two builds
+
+    python3 bench/suites/restore-safety.py --binary b10631
+    python3 bench/suites/restore-safety.py --binary b10631-18-gc1dcd9825
+
+`--binary` takes a path, a build directory, or a build id from
+`bash setup/scripts/build-llama.sh --list`. It measures that binary **without
+moving the `build-rocm-patched` symlink**, so production keeps starting from
+the build it has been serving all along: a measurement must not need a
+production change first, and a rollback must not be the thing standing
+between a report and a serving machine.
+
+The build lands in the report's directory name and in `result.json` under
+`_meta` — checked against what the binary itself prints, because a
+`.build-stamp` is a file beside a binary and not a property of it. Until
+27.08.2026 the report recorded the backend LABEL and nothing else, and a
+label is a role: `rocm-patched` is whatever the symlink pointed at that day.
+
+And a cell that fails is recorded rather than fatal. The restore in
+`busy-nospec` hangs on this hardware — defect `slot-restore-hangs-busy` — and
+its timeout used to end the whole run, so `prefill-nospec` was never measured
+on the patched build: 26.08. twice, 27.08. once. Three reports that looked
+complete, because the verdict printed the same `?` for a cell it never
+reached as for a cell nobody asked for.
 
 ## Never start a model beside production by hand
 

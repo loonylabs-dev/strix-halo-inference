@@ -190,6 +190,52 @@ class TestWhereTheModelsAre(Base):
             systemdfile.expand("@MODELS@/x")
 
 
+class TestRecordingIsTheInverseOfRunning(unittest.TestCase):
+    """"Expanded to run, unexpanded to record" needed an implementation.
+
+    The rule was learned on 27.08. and lived only in bench/sweep.py, which
+    never had to fold anything: it still had the raw value from the variants
+    file. A tool that COMPUTES a path at runtime has no raw value, and the
+    first one that needed it — bench/suites/restore-safety.py, recording
+    which binary produced a report — wrote a home directory into three
+    reports before test_no_report_records_a_home_directory caught it.
+
+    So the fold is the inverse of expand() and sits beside it, rather than
+    being re-derived by every future recorder. That re-derivation is where
+    this repository's bugs live; the convention list for model directories
+    existed in three places for three hours and cost a whole afternoon.
+    """
+
+    def test_it_is_the_inverse_of_expand(self):
+        home = os.path.expanduser("~")
+        for raw in ("@HOME@/llama.cpp/build-rocm-patched/bin/llama-server",
+                    "@HOME@/.cache/llama-slots", "no placeholder at all"):
+            self.assertEqual(systemdfile.expand(systemdfile.unexpand(
+                systemdfile.expand(raw, home=home, models="/m"),
+                home=home, models="/m"), home=home, models="/m"),
+                systemdfile.expand(raw, home=home, models="/m"), raw)
+
+    def test_a_models_directory_under_the_home_still_folds(self):
+        """The ordering property, and it is not cosmetic: fold the home
+        first and "@HOME@/models" is left with nothing for @MODELS@ to
+        match, so the more specific placeholder never appears."""
+        got = systemdfile.unexpand("/h/models/qwen.gguf",
+                                   home="/h", models="/h/models")
+        self.assertEqual(got, "@MODELS@/qwen.gguf")
+
+    def test_a_trailing_slash_does_not_defeat_it(self):
+        self.assertEqual(
+            systemdfile.unexpand("/h/x", home="/h/", models=None), "@HOME@/x")
+
+    def test_the_report_writer_actually_uses_it(self):
+        """The rule is only worth having where it is applied. Pinned in the
+        source, because the alternative is running a measurement to find
+        out."""
+        src = (REPO / "bench/suites/restore-safety.py").read_text(
+            encoding="utf-8")
+        self.assertIn("systemdfile.unexpand(binary)", src)
+
+
 class TestNothingInTheRepoNamesOneMachine(unittest.TestCase):
     """The rule, applied to EFFECTIVE code rather than to prose.
 

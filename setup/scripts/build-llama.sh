@@ -4,6 +4,9 @@
 #   bash setup/scripts/build-llama.sh                    build from origin/master
 #   bash setup/scripts/build-llama.sh --ref b10631       build a tag
 #   bash setup/scripts/build-llama.sh --ref pr/27700     build a pull request
+#   bash setup/scripts/build-llama.sh --ref master --no-patch
+#                                                        WITHOUT the patch, to
+#                                                        measure upstream itself
 #   bash setup/scripts/build-llama.sh --activate         build, then point the
 #                                                        profiles at the result
 #   bash setup/scripts/build-llama.sh --list             which builds exist
@@ -55,7 +58,7 @@ PATCH_MARKER="gfx1151/ROCm: trusting prop.integrated"
 BACKEND=rocm
 REF=""
 JOBS="${JOBS:-$(( $(nproc) > 8 ? $(nproc) - 8 : 2 ))}"
-DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; KEEP="${KEEP:-1}"
+DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; NOPATCH=0; KEEP="${KEEP:-1}"
 # How many commits the patch branch may carry over the ref being built.
 # The patch is ONE commit; three leaves room for it to become a short
 # series without an override every time. See step 2 for why this exists.
@@ -64,6 +67,7 @@ MAX_REPLAY="${MAX_REPLAY:-3}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref)      REF="${2:?--ref needs a value}"; shift 2 ;;
+    --no-patch) NOPATCH=1; shift ;;
     --backend)  BACKEND="${2:?--backend needs rocm or vulkan}"; shift 2 ;;
     --jobs|-j)  JOBS="${2:?-j needs a number}"; shift 2 ;;
     --activate) ACTIVATE=1; shift ;;
@@ -79,6 +83,23 @@ while [ $# -gt 0 ]; do
 done
 
 case "$BACKEND" in rocm|vulkan) ;; *) echo "backend must be rocm or vulkan" >&2; exit 2 ;; esac
+# Two FAMILIES of build directory, and the difference is not cosmetic.
+#
+#   build-<backend>-patched-<id>     carries setup/patches/hip-integrated-off.patch
+#   build-<backend>-unpatched-<id>   deliberately does not
+#
+# An unpatched build is a legitimate SUBJECT — "is the corruption still in
+# upstream master, and does PR #27311 fix it" cannot be answered on a binary
+# that already suppresses the symptom, which is exactly how 27.08. came to
+# measure a PR on top of its own competitor. What must never exist is an
+# unpatched build that CLAIMS to be patched: on gfx1151 that shows up as wrong
+# answers rather than as an error, and this whole script exists so that a
+# build cannot lie about what is in it.
+#
+# So the families have different names and different stamps, only the patched
+# one can be activated, and activate() refuses anything else by name.
+FAMILY="$BACKEND-patched"
+[ "$NOPATCH" = 1 ] && FAMILY="$BACKEND-unpatched"
 STABLE="$SRC/build-$BACKEND-patched"
 
 say()  { printf '%s\n' "$*"; }
@@ -89,6 +110,35 @@ die()  { printf '\n\033[31mABORT\033[0m %s\n' "$*" >&2; exit 2; }
 run()  { if [ "$DRY" = 1 ]; then printf '  would: %s\n' "$*"; else "$@"; fi; }
 
 git_() { git -C "$SRC" "$@"; }
+
+# The registry, so --prune can ask which builds a PROFILE names. Not a fourth
+# parser: setup/lib/models.sh is the one reader for setup/env/*.env, and the
+# alternative here was a sed for LLAMA_BIN — which is exactly how this repo
+# ended up with three disagreeing parsers for LLAMA_ARGS.
+# shellcheck source=../lib/models.sh
+. "$REPO/setup/lib/models.sh"
+
+# Build directories that a profile PINS by name.
+#
+# in_use_by() only sees RUNNING processes, so a build that nothing is running
+# out of looked deletable — and setup/env/flashnext.env pins
+# build-rocm-patched-b10636-20-g035e22731 deliberately, because that PR moved
+# 20 commits on its first day and a profile following the symlink would have
+# changed backend under a rebuild. `--prune --yes` offered to delete it.
+#
+# Found 27.08. while making --prune family-aware. It is the same shape as
+# everything else this repo keeps finding: the check ran, it was correct about
+# what it checked, and the thing it needed to know was somewhere else.
+pinned_builds() {
+  local m bin
+  for m in $(models_all); do
+    bin="$(model_bin "$m")"
+    case "$bin" in
+      */build-*/bin/llama-server)
+        basename "$(dirname "$(dirname "$bin")")" ;;
+    esac
+  done
+}
 
 # The build a directory holds, from its stamp — or from the binary itself for
 # a directory built before stamps existed.
@@ -126,11 +176,14 @@ head_or_none() {
   if [ "$KEEP" -le 0 ]; then cat >/dev/null; else head -n "$KEEP"; fi
 }
 
+# $1 = family, default the one this invocation is about. A build directory
+# that nothing lists is a build directory nobody prunes, and these are ~950 MB
+# each — which is the reason --prune exists at all.
 builds_of_backend() {
-  local d
-  for d in "$SRC/build-$BACKEND-patched-"*; do
+  local fam="${1:-$FAMILY}" d
+  for d in "$SRC/build-$fam-"*; do
     [ -d "$d" ] || continue
-    printf '%s\n' "${d##*/build-$BACKEND-patched-}"
+    printf '%s\n' "${d##*/build-$fam-}"
   done
 }
 
@@ -148,6 +201,11 @@ builds_of_backend() {
 prune_builds() {
   local active="" id d keep_ids="" pids removed=0
   if [ -L "$STABLE" ]; then active="$(basename "$(readlink "$STABLE")")"; fi
+  # Spaces both sides, so the `case` below cannot match a prefix of an id.
+  # Declared and assigned separately: `local X=$(…)` makes local the command
+  # whose status is reported, so a failing substitution reads as success.
+  local PINNED
+  PINNED=" $(pinned_builds | tr '\n' ' ')"
 
   # Newest first by built_at, ACTIVE EXCLUDED — it is kept unconditionally and
   # must not eat a rollback slot. KEEP is therefore "how many fallbacks", which
@@ -164,9 +222,9 @@ prune_builds() {
   # up empty and prune prints nothing at all. Third bug in this function, and
   # the first one a test found rather than a person reading output.
   keep_ids="$(for id in $(builds_of_backend); do
-                if [ "build-$BACKEND-patched-$id" = "$active" ]; then continue; fi
+                if [ "build-$FAMILY-$id" = "$active" ]; then continue; fi
                 local at
-                at="$(sed -n 's/^built_at=//p' "$SRC/build-$BACKEND-patched-$id/.build-stamp" 2>/dev/null | head -1)"
+                at="$(sed -n 's/^built_at=//p' "$SRC/build-$FAMILY-$id/.build-stamp" 2>/dev/null | head -1)"
                 # An explicit sentinel, not an empty field. With an empty one
                 # the line begins with a tab, and `sort -r` under a normal
                 # locale ignores leading punctuation — the stampless build came
@@ -177,11 +235,11 @@ prune_builds() {
               done | LC_ALL=C sort -r | cut -f2 | head_or_none | tr '\n' ' ')"
 
 
-  say "builds in $SRC (backend $BACKEND) — keeping the active one and $KEEP fallback(s)"
+  say "builds in $SRC (family $FAMILY) — keeping the active one and $KEEP fallback(s)"
   say
   for id in $(builds_of_backend); do
-    d="$SRC/build-$BACKEND-patched-$id"
-    if [ "build-$BACKEND-patched-$id" = "$active" ]; then
+    d="$SRC/build-$FAMILY-$id"
+    if [ "build-$FAMILY-$id" = "$active" ]; then
       ok "keep  $id  (active)"; continue
     fi
     case " $keep_ids " in *" $id "*) ok "keep  $id  (recent)"; continue ;; esac
@@ -190,6 +248,11 @@ prune_builds() {
       warn "keep  $id  — IN USE by pid(s) $pids; unmapping a live .so is a SIGBUS"
       continue
     fi
+    case "$PINNED" in
+      *" build-$FAMILY-$id "*)
+        warn "keep  $id  — PINNED by a profile's LLAMA_BIN, not running now"
+        continue ;;
+    esac
     if [ "$YES" = 1 ]; then
       step "remove $id  ($(du -sh "$d" 2>/dev/null | cut -f1))"
       rm -rf "$d" && removed=$((removed + 1))
@@ -198,6 +261,23 @@ prune_builds() {
       removed=$((removed + 1))
     fi
   done
+  say
+  # The OTHER family is not silently skipped. A directory nothing mentions is
+  # a directory nobody prunes, and these are ~950 MB each.
+  local other; other="$BACKEND-patched"
+  [ "$FAMILY" = "$other" ] && other="$BACKEND-unpatched"
+  local n; n="$(builds_of_backend "$other" | grep -c . || true)"
+  # An `if`, not `[ … ] && A && B`. Under set -e a false test as the last
+  # command of a chain ends the function — the same shape this file already
+  # carries two comments about.
+  if [ "$n" != "0" ]; then
+    say "  $n build(s) also exist in family $other. Prune those with:"
+    if [ "$other" = "$BACKEND-unpatched" ]; then
+      say "      bash setup/scripts/build-llama.sh --prune --no-patch"
+    else
+      say "      bash setup/scripts/build-llama.sh --prune"
+    fi
+  fi
   say
   if [ "$YES" = 1 ]; then
     say "Removed $removed build(s)."
@@ -217,13 +297,20 @@ show_list() {
   say "builds in $SRC (backend $BACKEND)"
   say
   printf '  %-3s %-16s %-26s %s\n' "" ID BUILT UPSTREAM
-  for id in $(builds_of_backend); do
-    d="$SRC/build-$BACKEND-patched-$id"
+  # Both families, always. --list is read-only, and a build that is not listed
+  # is a build nobody knows they have — 950 MB at a time.
+  local fam
+  for fam in "$BACKEND-patched" "$BACKEND-unpatched"; do
+   [ -n "$(builds_of_backend "$fam")" ] || continue
+   say "  [$fam]"
+   for id in $(builds_of_backend "$fam"); do
+    d="$SRC/build-$fam-$id"
     printf '  %-3s %-16s %-20s %s\n' \
-      "$([ "build-$BACKEND-patched-$id" = "$active" ] && echo '->' || echo '')" \
+      "$([ "build-$fam-$id" = "$active" ] && echo '->' || echo '')" \
       "$id" \
       "$(sed -n 's/^built_at=//p' "$d/.build-stamp" 2>/dev/null | head -1 || true)" \
       "$(sed -n 's/^upstream_commit=//p' "$d/.build-stamp" 2>/dev/null | head -1 || true)"
+   done
   done
   say
   if [ -L "$STABLE" ]; then
@@ -249,6 +336,16 @@ activate() {      # $1 = build id
   [ -d "$target" ] || die "no such build: $target
     bash setup/scripts/build-llama.sh --list"
   [ -x "$target/bin/llama-server" ] || die "$target has no bin/llama-server — the build did not finish"
+  # Belt and braces beside the name. activate() only ever looks in the patched
+  # family, so an unpatched id cannot be found here — but a directory can be
+  # renamed, and the stamp is the thing that says what is actually in it.
+  if [ "$(sed -n 's/^patched=//p' "$target/.build-stamp" 2>/dev/null | head -1)" = "no" ]; then
+    die "$target says patched=no in its .build-stamp.
+
+    That binary has no setup/patches/hip-integrated-off.patch. Serving it does
+    not fail — it returns degenerate output once a second slot is used. It was
+    built to be MEASURED, not to be served."
+  fi
   if [ -L "$STABLE" ]; then
     :
   elif [ -d "$STABLE" ]; then
@@ -326,6 +423,22 @@ if [ -n "$USE" ]; then activate "$USE"; exit 0; fi
 # Preflight
 # --------------------------------------------------------------------------
 step "0/6 preflight"
+if [ "$NOPATCH" = 1 ]; then
+  # --no-patch and --activate are mutually exclusive, and this is the hard
+  # stop of the whole feature. The stable symlink is what the production unit
+  # execs; pointing it at a binary without the gfx1151 fix does not fail, it
+  # returns wrong answers once a second slot is used. An unpatched build is a
+  # subject to measure, never a thing to serve.
+  [ "$ACTIVATE" = 0 ] || die "--no-patch and --activate cannot be combined.
+
+    The symlink $STABLE is what the model unit execs. A binary without
+    setup/patches/hip-integrated-off.patch does not fail there — it returns
+    degenerate output once a second slot is used, silently. Build it, measure
+    it with
+      python3 bench/suites/restore-safety.py --binary <build id>
+    and leave the serving binary alone."
+  ok "building WITHOUT the patch, into the $FAMILY family — not activatable"
+else
 git_ rev-parse --verify -q "$PATCH_BRANCH" >/dev/null \
   || die "branch '$PATCH_BRANCH' does not exist in $SRC.
 
@@ -347,6 +460,7 @@ if [ "$(git_ show "$PATCH_BRANCH:ggml/src/ggml-cuda/ggml-cuda.cu" | grep -c "$PA
     See setup/patches/README.md."
 fi
 ok "patch branch $PATCH_BRANCH carries the marker"
+fi
 
 [ -z "$(git_ status --porcelain)" ] \
   || die "$SRC has uncommitted changes. A rebase would take them along or
@@ -394,7 +508,7 @@ if [ "$DRY" = 0 ]; then
 else
   TARGET="$REF"; BUILD_ID="dry-run"
 fi
-BUILD_DIR="$SRC/build-$BACKEND-patched-$BUILD_ID"
+BUILD_DIR="$SRC/build-$FAMILY-$BUILD_ID"
 
 # The one thing that must never happen: building into the directory the
 # running server has mapped.
@@ -404,6 +518,27 @@ PIDS="$(in_use_by "$BUILD_DIR")"
     Stop the service first, or build a different ref."
 
 # --------------------------------------------------------------------------
+if [ "$NOPATCH" = 1 ]; then
+  step "2/6 check out $BUILD_ID WITHOUT the patch"
+  if [ "$DRY" = 0 ]; then
+    git_ checkout -q --detach "$TARGET"
+    # The MIRROR of the patched check, and it has to be here rather than
+    # assumed. "I passed --no-patch" is an intention; "the marker is not in
+    # the source I am about to compile" is the fact. If upstream ever adopts
+    # the same change, this fires and says so — which is good news and must
+    # not be reported as an unpatched build.
+    if [ "$(grep -c "$PATCH_MARKER" "$SRC/ggml/src/ggml-cuda/ggml-cuda.cu")" != "0" ]; then
+      die "the marker is PRESENT in $BUILD_ID and --no-patch was asked for:
+      $PATCH_MARKER
+    Either the checkout did not take, or upstream now does this itself. The
+    second would be good news — setup/patches/README.md, 'When can this be
+    dropped?' — but it is not an unpatched build either way."
+    fi
+    ok "marker absent — this is upstream $BUILD_ID as it stands"
+  else
+    say "  would: git checkout --detach $TARGET, then verify the marker is ABSENT"
+  fi
+else
 step "2/6 replay the patch onto $BUILD_ID"
 # WHAT IS ABOUT TO BE REPLAYED, looked at before the rebase rather than after
 # the report. `git rebase <target>` replays EVERY commit in target..HEAD, not
@@ -470,6 +605,7 @@ if [ "$DRY" = 0 ]; then
 else
   say "  would: git checkout $PATCH_BRANCH && git rebase $TARGET"
 fi
+fi
 
 # --------------------------------------------------------------------------
 step "3/6 configure $BUILD_DIR"
@@ -521,26 +657,48 @@ if [ "$DRY" = 0 ]; then
   [ -x "$BIN" ] || die "the build produced no $BIN"
   VER="$("$BIN" --version 2>&1 | head -1)"
   ok "$VER"
-  # llama.cpp stamps the commit it was built from. That has to be the tip of
-  # the patch branch — if it is the upstream commit instead, the build picked
-  # up a source tree without the patch, which is exactly the failure this
-  # whole pipeline exists to make impossible.
-  PATCH_SHORT="$(git_ rev-parse --short=9 "$PATCH_BRANCH")"
+  # llama.cpp stamps the commit it was built from, and that is checked against
+  # the commit that SHOULD be in it. For a patched build that is the tip of the
+  # patch branch — if it is the upstream commit instead, the build picked up a
+  # source tree without the patch, the failure this pipeline exists to make
+  # impossible. For an unpatched build the expected commit is the target
+  # itself, and the same check catches a stale tree just as well.
+  if [ "$NOPATCH" = 1 ]; then
+    WANT="$(git_ rev-parse --short=9 "$TARGET")"; WHAT="unpatched upstream commit"
+  else
+    WANT="$(git_ rev-parse --short=9 "$PATCH_BRANCH")"; WHAT="patched commit"
+  fi
   case "$VER" in
-    *"$PATCH_SHORT"*) ok "the binary was built from the patched commit $PATCH_SHORT" ;;
-    *) die "the binary reports $VER but the patch branch is at $PATCH_SHORT.
-    The build did not come from the patched source. Do not use it." ;;
+    *"$WANT"*) ok "the binary was built from the $WHAT $WANT" ;;
+    *) die "the binary reports $VER but the expected $WHAT is $WANT.
+    The build did not come from the source it claims. Do not use it." ;;
   esac
-  printf 'build_id=%s\nbackend=%s\nupstream_ref=%s\nupstream_commit=%s\npatch_commit=%s\npatch_branch=%s\nbuilt_at=%s\nversion=%s\ncmake=%s\n' \
-    "$BUILD_ID" "$BACKEND" "$REF" "$(git_ rev-parse "$TARGET")" \
-    "$(git_ rev-parse "$PATCH_BRANCH")" "$PATCH_BRANCH" \
+  # The stamp says which family this is, in a field of its own. A reader — and
+  # bench/suites/restore-safety.py, which records provenance from here — must
+  # not have to infer "patched" from a directory name that somebody could
+  # rename.
+  if [ "$NOPATCH" = 1 ]; then
+    PATCH_COMMIT=none; PATCH_BRANCH_FIELD=none; PATCHED=no
+  else
+    PATCH_COMMIT="$(git_ rev-parse "$PATCH_BRANCH")"; PATCH_BRANCH_FIELD="$PATCH_BRANCH"; PATCHED=yes
+  fi
+  printf 'build_id=%s\nbackend=%s\nfamily=%s\npatched=%s\nupstream_ref=%s\nupstream_commit=%s\npatch_commit=%s\npatch_branch=%s\nbuilt_at=%s\nversion=%s\ncmake=%s\n' \
+    "$BUILD_ID" "$BACKEND" "$FAMILY" "$PATCHED" "$REF" "$(git_ rev-parse "$TARGET")" \
+    "$PATCH_COMMIT" "$PATCH_BRANCH_FIELD" \
     "$(date -Is)" "$VER" "${CMAKE_ARGS[*]}" > "$BUILD_DIR/.build-stamp"
   ok "stamp written: $BUILD_DIR/.build-stamp"
 fi
 
 # --------------------------------------------------------------------------
 step "6/6 activate"
-if [ "$ACTIVATE" = 1 ]; then
+if [ "$NOPATCH" = 1 ]; then
+  say "  NOT activatable, by design. This build has no gfx1151 patch; it is a"
+  say "  subject to measure, not a binary to serve:"
+  say
+  say "      python3 bench/suites/restore-safety.py --binary $BUILD_ID"
+  say
+  say "  The serving binary is untouched: $STABLE"
+elif [ "$ACTIVATE" = 1 ]; then
   activate "$BUILD_ID"
 else
   say "  not activated (pass --activate, or later:)"

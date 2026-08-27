@@ -279,6 +279,29 @@ on the patched build: 26.08. twice, 27.08. once. Three reports that looked
 complete, because the verdict printed the same `?` for a cell it never
 reached as for a cell nobody asked for.
 
+### Measuring a build WITHOUT the patch
+
+    bash setup/scripts/build-llama.sh --ref master --no-patch
+    python3 bench/suites/restore-safety.py --binary <the build id it prints>
+
+An unpatched build is a **subject**, and sometimes the only honest one:
+"is this corruption still in upstream, and does PR X fix it" cannot be
+answered on a binary that already suppresses the symptom. On 27.08.2026 a
+PR was measured on top of its own competitor for exactly that reason —
+building without the patch was a case the script did not have.
+
+It goes into a family of its own, `build-<backend>-unpatched-<id>`, its
+`.build-stamp` says `patched=no`, the absence of the patch marker is
+**proven** rather than assumed, and it cannot be activated: `--no-patch`
+with `--activate` is refused in preflight, and `--use` refuses any directory
+whose stamp says `patched=no`. On gfx1151 an unpatched serving binary does
+not fail — it returns degenerate output once a second slot is used.
+
+`--list` shows both families. `--prune` works on one at a time and names the
+other; it keeps the active build, the recent ones, anything a process is
+running out of, and anything a profile PINS by `LLAMA_BIN` — `flashnext.env`
+pins a build deliberately, and nothing is running out of it.
+
 ## Never start a model beside production by hand
 
     python3 bench/sideserver.py --env setup/env/<model>.env --port 8081 \

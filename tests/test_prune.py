@@ -38,8 +38,10 @@ class TestPrune(unittest.TestCase):
             os.symlink("build-rocm-patched-" + ident, link)
         return d
 
-    def prune(self, tmp, *args, locale=None):
+    def prune(self, tmp, *args, locale=None, models_repo=None):
         env = dict(os.environ, LLAMA_SRC=tmp)
+        if models_repo:
+            env["MODELS_REPO"] = models_repo
         if locale:
             env["LC_ALL"] = env["LANG"] = locale
         return subprocess.run(
@@ -146,6 +148,63 @@ class TestPrune(unittest.TestCase):
             r = self.prune(t, "--keep", "0", "--yes")
             self.assertFalse(os.path.isdir(doomed), r.stdout)
             self.assertTrue(os.path.isdir(keep), "it removed the ACTIVE build")
+
+
+class TestAPinnedBuildIsNotDeletable(unittest.TestCase):
+    """in_use_by() only sees RUNNING processes, and that is not the same
+    question as "is anything relying on this".
+
+    setup/env/flashnext.env pins build-rocm-patched-b10636-20-g035e22731 by
+    name and explains why: that PR moved 20 commits on its first day, and a
+    profile following the symlink would have changed backend under a rebuild.
+    Nothing is running out of it, so `--prune --yes` offered to delete it —
+    953 MB, in the one command in this repository that deletes, leaving a
+    profile pointing at nothing.
+
+    Found 27.08. while making --prune family-aware, and it is the same shape
+    as everything else here: the check ran, it was right about what it
+    checked, and what it needed to know was somewhere else.
+    """
+
+    def fixture(self, tmp, bin_line):
+        """A minimal registry: setup/lib/models.sh reads MODELS_REPO."""
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, "setup", "env"))
+        with open(os.path.join(repo, "setup", "env", "pinner.env"), "w") as f:
+            f.write("MODEL_TITLE=a profile that pins a build\n"
+                    "LLAMA_ARGS=-m /nowhere.gguf\n"
+                    "LLAMA_BIN=%s\n" % bin_line)
+        return repo
+
+    def build(self, tmp, ident, built_at=None, active=False):
+        return TestPrune.build(self, tmp, ident, built_at, active)
+
+    def test_a_build_a_profile_names_is_kept(self):
+        with tempfile.TemporaryDirectory() as t:
+            repo = self.fixture(
+                t, "llama.cpp/build-rocm-patched-pinned/bin/llama-server")
+            self.build(t, "new", "2026-08-26T09:00:00+02:00", active=True)
+            self.build(t, "pinned", "2026-08-20T09:00:00+02:00")
+            self.build(t, "junk", "2026-08-19T09:00:00+02:00")
+            r = TestPrune.prune(self, t, "--keep", "0", models_repo=repo)
+            self.assertIn("keep  pinned", r.stdout, r.stdout)
+            self.assertIn("PINNED", r.stdout)
+            self.assertIn("would remove junk", r.stdout,
+                          "the positive control: an unpinned build in the "
+                          "same position must still be offered")
+
+    def test_a_profile_that_names_the_symlink_pins_nothing_extra(self):
+        """qwen38.env names build-rocm-patched, the SYMLINK. That is the
+        active build, which is kept for its own reason — it must not silently
+        pin whatever the symlink happens to point at under a different name,
+        or --prune would keep everything forever and say nothing."""
+        with tempfile.TemporaryDirectory() as t:
+            repo = self.fixture(
+                t, "llama.cpp/build-rocm-patched/bin/llama-server")
+            self.build(t, "new", "2026-08-26T09:00:00+02:00", active=True)
+            self.build(t, "old", "2026-08-20T09:00:00+02:00")
+            r = TestPrune.prune(self, t, "--keep", "0", models_repo=repo)
+            self.assertIn("would remove old", r.stdout, r.stdout)
 
 
 if __name__ == "__main__":

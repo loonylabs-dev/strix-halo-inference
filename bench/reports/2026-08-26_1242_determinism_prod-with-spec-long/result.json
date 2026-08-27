@@ -1,0 +1,47 @@
+{
+ "label": "prod-with-spec-long",
+ "url": "http://127.0.0.1:8080",
+ "stamp": "2026-08-26_1242",
+ "question": "long",
+ "reps": 4,
+ "tokens": 2500,
+ "conditions": [
+  {
+   "name": "warm",
+   "reps": 4,
+   "identical": true,
+   "distinct": 1,
+   "first_divergence": null,
+   "runs": [
+    {
+     "sha": "8ff7c77d94ec",
+     "chars": 2080,
+     "tokens": 1449,
+     "prompt_n": 61,
+     "wall": 38.0
+    },
+    {
+     "sha": "8ff7c77d94ec",
+     "chars": 2080,
+     "tokens": 1449,
+     "prompt_n": 4,
+     "wall": 11.7
+    },
+    {
+     "sha": "8ff7c77d94ec",
+     "chars": 2080,
+     "tokens": 1449,
+     "prompt_n": 4,
+     "wall": 11.8
+    },
+    {
+     "sha": "8ff7c77d94ec",
+     "chars": 2080,
+     "tokens": 1449,
+     "prompt_n": 4,
+     "wall": 11.8
+    }
+   ]
+  }
+ ]
+}

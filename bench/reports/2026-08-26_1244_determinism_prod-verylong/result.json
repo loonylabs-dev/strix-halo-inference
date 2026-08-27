@@ -1,0 +1,40 @@
+{
+ "label": "prod-verylong",
+ "url": "http://127.0.0.1:8080",
+ "stamp": "2026-08-26_1244",
+ "question": "verylong",
+ "reps": 3,
+ "tokens": 8192,
+ "conditions": [
+  {
+   "name": "warm",
+   "reps": 3,
+   "identical": true,
+   "distinct": 1,
+   "first_divergence": null,
+   "runs": [
+    {
+     "sha": "120bfb73e784",
+     "chars": 8788,
+     "tokens": 4759,
+     "prompt_n": 8165,
+     "wall": 149.3
+    },
+    {
+     "sha": "120bfb73e784",
+     "chars": 8788,
+     "tokens": 4759,
+     "prompt_n": 4,
+     "wall": 40.4
+    },
+    {
+     "sha": "120bfb73e784",
+     "chars": 8788,
+     "tokens": 4759,
+     "prompt_n": 4,
+     "wall": 40.6
+    }
+   ]
+  }
+ ]
+}

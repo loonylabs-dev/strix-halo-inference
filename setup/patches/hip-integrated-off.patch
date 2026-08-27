@@ -1,0 +1,21 @@
+Subject: [gfx1151] do not trust prop.integrated on HIP
+
+Upstream disabled the `integrated` fast path for CUDA "due to issues with
+corrupted output (e.g. #15034)" but kept it enabled for HIP (PR #24233).
+On this machine (Strix Halo, gfx1151, ROCm) that path corrupts the KV
+state as soon as a SECOND slot is used: with -np 2 every answer after the
+second prefix degenerates to '////' until the server restarts, sequential
+or concurrent alike. Measured with bench/suites/slot-corruption.py; the
+same test is clean on Vulkan and clean on ROCm with -np 1.
+
+Matches llama.cpp #27579 (trigger: --parallel >= 2) and #27506, which
+bisected a gfx1151 regression to the very commit that re-enabled this.
+
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@
+-#if defined(GGML_USE_HIP)
+-        info.devices[id].integrated = prop.integrated;
+-#else
+         info.devices[id].integrated = false; // Temporarily disabled due to issues with corrupted output (e.g. #15034)
+-#endif

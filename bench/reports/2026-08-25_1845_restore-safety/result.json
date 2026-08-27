@@ -1,0 +1,98 @@
+{
+ "idle-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "27",
+    "28",
+    "29",
+    "3",
+    "3"
+   ],
+   [
+    "6",
+    "7",
+    "8",
+    "9",
+    "1"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "prefill-spec": {
+  "clean": false,
+  "probes": [
+   "```yaml\\n!",
+   "```",
+   "48"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null
+ },
+ "idle-nospec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-nospec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "5",
+    "6",
+    "7",
+    "8",
+    "9"
+   ],
+   [
+    "16",
+    "17",
+    "18",
+    "19",
+    "20"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "prefill-nospec": {
+  "clean": false,
+  "probes": [
+   "Based on\": {\"type: tools.Read",
+   "9",
+   "9\n9\n18\n18\n18\n18"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null
+ }
+}

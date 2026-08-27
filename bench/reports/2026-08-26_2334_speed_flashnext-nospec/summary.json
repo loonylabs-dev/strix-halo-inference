@@ -1,0 +1,46 @@
+{
+ "label": "flashnext-nospec",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-08-26 23:34:24",
+ "gtt_gib": 79.94,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "prompt_n": 626,
+   "cache_n": 0,
+   "pp_tps": 183.2,
+   "predicted_n": 128,
+   "tg_tps": 13.7,
+   "draft_n": null,
+   "draft_accepted": null,
+   "draft_accept_pct": null,
+   "wall_s": 12.71,
+   "asked": 512
+  },
+  {
+   "prompt_n": 9124,
+   "cache_n": 42,
+   "pp_tps": 261.4,
+   "predicted_n": 128,
+   "tg_tps": 11.8,
+   "draft_n": null,
+   "draft_accepted": null,
+   "draft_accept_pct": null,
+   "wall_s": 45.78,
+   "asked": 8192
+  },
+  {
+   "prompt_n": 29348,
+   "cache_n": 7118,
+   "pp_tps": 181.9,
+   "predicted_n": 128,
+   "tg_tps": 9.7,
+   "draft_n": null,
+   "draft_accepted": null,
+   "draft_accept_pct": null,
+   "wall_s": 174.49,
+   "asked": 32768
+  }
+ ]
+}

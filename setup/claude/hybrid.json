@@ -1,0 +1,10 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8090",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION": "local/gemma26",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Lokal (Gemma 4 26B)",
+    "API_TIMEOUT_MS": "1800000",
+    "API_FORCE_IDLE_TIMEOUT": "0",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
+  }
+}

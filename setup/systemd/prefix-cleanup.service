@@ -1,0 +1,9 @@
+[Unit]
+Description=Clean up saved prefixes (by least recently used)
+
+[Service]
+Type=oneshot
+# Size limit as the main rule, TTL against leftovers after configuration
+# changes. What goes first is always the longest UNUSED — the file date is no
+# good, because a prefix never changes through use.
+ExecStart=/usr/bin/python3 %h/.claude/bin/prewarm.py cleanup --max-gb 20 --ttl-days 28

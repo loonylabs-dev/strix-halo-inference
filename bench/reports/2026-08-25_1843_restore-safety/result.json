@@ -1,0 +1,78 @@
+{
+ "idle-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "26",
+    "27",
+    "28",
+    "29",
+    "3"
+   ],
+   [
+    "89",
+    "90",
+    "91",
+    "92",
+    "9"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "idle-nospec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-nospec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "5",
+    "6",
+    "7",
+    "8",
+    "9 the"
+   ],
+   [
+    "16",
+    "17",
+    "18",
+    "19",
+    "2"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ }
+}

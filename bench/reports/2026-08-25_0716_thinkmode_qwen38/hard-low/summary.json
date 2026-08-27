@@ -1,0 +1,189 @@
+{
+ "label": "hard-low",
+ "url": "http://127.0.0.1:8080",
+ "seed": 7,
+ "started": "2026-08-25 07:21:14",
+ "extra_body": {
+  "chat_template_kwargs": {
+   "reasoning_effort": "low"
+  }
+ },
+ "gtt_gib": 24.73,
+ "records": [
+  {
+   "task": "hard-weighted-intervals",
+   "tags": [
+    "hard",
+    "code-novel"
+   ],
+   "passed": true,
+   "reason": "ok",
+   "answer": "```python\nimport bisect\n\n\ndef max_weight_schedule(jobs):\n    if not jobs:\n        return 0\n\n    sorted_jobs = sorted(jobs, key=lambda x: x[1])\n    n = len(sorted_jobs)\n    end_times = [job[1] for job in sorted_jobs]\n\n    dp = [0] * (n + 1)\n\n    for i in range(1, n + 1):\n        start_i = sorted_jobs[i - 1][0]\n        weight_i = sorted_jobs[i - 1][2]\n\n        p = bisect.bisect_right(end_times, start_i, 0, i - 1)\n\n        dp[i] = max(dp[i - 1], weight_i + dp[p])\n\n    return dp[n]\n```",
+   "wall_s": 61.59,
+   "capped": false,
+   "output_tokens": 1337,
+   "reasoning_chars": 3339,
+   "content_chars": 486,
+   "tg_tps": 22.1,
+   "pp_tps": 144.9,
+   "prompt_n": 156,
+   "turns": [
+    {
+     "wall_s": 61.59,
+     "finish": "stop",
+     "prompt_tokens": 156,
+     "output_tokens": 1337,
+     "pp_tps": 144.9,
+     "tg_tps": 22.1,
+     "prompt_n": 156,
+     "predicted_n": 1337,
+     "reasoning_chars": 3339,
+     "content_chars": 486
+    }
+   ],
+   "rep": 1
+  },
+  {
+   "task": "hard-rotated-search",
+   "tags": [
+    "hard",
+    "code-novel"
+   ],
+   "passed": true,
+   "reason": "ok",
+   "answer": "```python\ndef find_rotated(arr, target):\n    lo, hi = 0, len(arr) - 1\n    while lo <= hi:\n        mid = (lo + hi) // 2\n        if arr[mid] == target:\n            return mid\n        if arr[lo] <= arr[mid]:\n            # Left half [lo..mid] is sorted\n            if arr[lo] <= target < arr[mid]:\n                hi = mid - 1\n            else:\n                lo = mid + 1\n        else:\n            # Right half [mid+1..hi] is sorted\n            if arr[mid + 1] <= target <= arr[hi]:\n                lo = mid + 1\n            else:\n                hi = mid - 1\n    return -1\n```",
+   "wall_s": 40.8,
+   "capped": false,
+   "output_tokens": 979,
+   "reasoning_chars": 2387,
+   "content_chars": 574,
+   "tg_tps": 24.5,
+   "pp_tps": 146.0,
+   "prompt_n": 106,
+   "turns": [
+    {
+     "wall_s": 40.8,
+     "finish": "stop",
+     "prompt_tokens": 145,
+     "output_tokens": 979,
+     "pp_tps": 146.0,
+     "tg_tps": 24.5,
+     "prompt_n": 106,
+     "predicted_n": 979,
+     "reasoning_chars": 2387,
+     "content_chars": 574
+    }
+   ],
+   "rep": 1
+  },
+  {
+   "task": "hard-next-permutation",
+   "tags": [
+    "hard",
+    "code-novel"
+   ],
+   "passed": true,
+   "reason": "ok",
+   "answer": "```python\ndef next_permutation(seq):\n    a = list(seq)\n    n = len(a)\n\n    # Step 1: Find the largest index i such that a[i] < a[i + 1]\n    i = n - 2\n    while i >= 0 and a[i] >= a[i + 1]:\n        i -= 1\n\n    if i < 0:\n        # Last permutation; return the first (sorted ascending)\n        a.sort()\n        return a\n\n    # Step 2: Find the largest index j > i such that a[i] < a[j]\n    j = n - 1\n    while a[j] <= a[i]:\n        j -= 1\n\n    # Step 3: Swap a[i] and a[j]\n    a[i], a[j] = a[j], a[i]\n\n    # Step 4: Reverse the suffix starting at i + 1\n    a[i + 1:] = a[i + 1:][::-1]\n\n    return a\n```",
+   "wall_s": 53.59,
+   "capped": false,
+   "output_tokens": 1320,
+   "reasoning_chars": 2920,
+   "content_chars": 599,
+   "tg_tps": 25.0,
+   "pp_tps": 141.5,
+   "prompt_n": 95,
+   "turns": [
+    {
+     "wall_s": 53.59,
+     "finish": "stop",
+     "prompt_tokens": 134,
+     "output_tokens": 1320,
+     "pp_tps": 141.5,
+     "tg_tps": 25.0,
+     "prompt_n": 95,
+     "predicted_n": 1320,
+     "reasoning_chars": 2920,
+     "content_chars": 599
+    }
+   ],
+   "rep": 1
+  },
+  {
+   "task": "hard-sql-window",
+   "tags": [
+    "hard",
+    "struct"
+   ],
+   "passed": true,
+   "reason": "ok",
+   "answer": "```sql\nSELECT name, amount, rn\nFROM (\n    SELECT c.name,\n           o.amount,\n           ROW_NUMBER() OVER (\n               PARTITION BY c.id\n               ORDER BY o.amount DESC, o.created ASC\n           ) AS rn\n    FROM customers c\n    JOIN orders o ON o.customer_id = c.id\n)\nWHERE rn <= 2\nORDER BY name ASC, rn ASC;\n```",
+   "wall_s": 34.75,
+   "capped": false,
+   "output_tokens": 948,
+   "reasoning_chars": 1886,
+   "content_chars": 323,
+   "tg_tps": 29.5,
+   "pp_tps": 196.0,
+   "prompt_n": 497,
+   "turns": [
+    {
+     "wall_s": 34.75,
+     "finish": "stop",
+     "prompt_tokens": 497,
+     "output_tokens": 948,
+     "pp_tps": 196.0,
+     "tg_tps": 29.5,
+     "prompt_n": 497,
+     "predicted_n": 948,
+     "reasoning_chars": 1886,
+     "content_chars": 323
+    }
+   ],
+   "rep": 1
+  },
+  {
+   "task": "hard-count-numbers",
+   "tags": [
+    "hard",
+    "struct"
+   ],
+   "passed": true,
+   "reason": "ok",
+   "answer": "Looking at this problem, I need to find 4-digit numbers with strictly increasing digits (so I'm choosing 4 distinct digits from {1,...,9} and arranging them in order) whose digit sum is divisible by 5.\n\n**Systematic enumeration of all C(9,4) = 126 combinations:**\n\n**Starting with 1:** (12 valid)\n- {1,2,3,4} → 10 ✓ | {1,2,3,9} → 15 ✓ | {1,2,4,8} → 15 ✓\n- {1,2,5,7} → 15 ✓ | {1,2,8,9} → 20 ✓ | {1,3,4,7} → 15 ✓\n- {1,3,5,6} → 15 ✓ | {1,3,7,9} → 20 ✓ | {1,4,6,9} → 20 ✓\n- {1,4,7,8} → 20 ✓ | {1,5,6,8} → 20 ✓ | {1,7,8,9} → 25 ✓\n\n**Starting with 2:** (7 valid)\n- {2,3,4,6} → 15 ✓ | {2,3,6,9} → 20 ✓ | {2,3,7,8} → 20 ✓\n- {2,4,5,9} → 20 ✓ | {2,4,6,8} → 20 ✓ | {2,5,6,7} → 20 ✓ | {2,6,8,9} → 25 ✓\n\n**Starting with 3:** (4 valid)\n- {3,4,5,8} → 20 ✓ | {3,4,6,7} → 20 ✓ | {3,5,8,9} → 25 ✓ | {3,6,7,9} → 25 ✓\n\n**Starting with 4:** (2 valid)\n- {4,5,7,9} → 25 ✓ | {4,6,7,8} → 25 ✓\n\n**Starting with 5:** (0 valid) — sums range from 26 to 29\n\n**Starting with 6:** (1 valid)\n- {6,7,8,9} → 30 ✓\n\n**Total: 12 + 7 + 4 + 2 + 0 + 1 = 26**\n\nANSWER: 26",
+   "wall_s": 144.23,
+   "capped": false,
+   "output_tokens": 4964,
+   "reasoning_chars": 5860,
+   "content_chars": 1029,
+   "tg_tps": 34.6,
+   "pp_tps": 123.1,
+   "prompt_n": 107,
+   "turns": [
+    {
+     "wall_s": 144.23,
+     "finish": "stop",
+     "prompt_tokens": 107,
+     "output_tokens": 4964,
+     "pp_tps": 123.1,
+     "tg_tps": 34.6,
+     "prompt_n": 107,
+     "predicted_n": 4964,
+     "reasoning_chars": 5860,
+     "content_chars": 1029
+    }
+   ],
+   "rep": 1
+  }
+ ],
+ "probes": null,
+ "summary": {
+  "tasks": 5,
+  "passed": 5,
+  "failed": [],
+  "seconds_to_correct_median": 53.6,
+  "seconds_total": 335.0,
+  "output_tokens_total": 9548,
+  "reasoning_chars_total": 16392
+ }
+}

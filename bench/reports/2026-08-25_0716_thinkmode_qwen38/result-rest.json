@@ -1,0 +1,60 @@
+{
+ "stamp": "2026-08-25 17:06",
+ "argv": [
+  "--alias",
+  "qwen38-bench",
+  "-m",
+  "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "2048",
+  "--spec-type",
+  "draft-mtp,ngram-mod",
+  "--spec-draft-n-max",
+  "12",
+  "--spec-ngram-mod-n-min",
+  "24",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080",
+  "--chat-template-kwargs",
+  "{\"enable_thinking\":false}"
+ ],
+ "switch": {
+  "cold_default": {
+   "new": 14961,
+   "cached": 0,
+   "rate": 0.0,
+   "seconds": 71.24
+  },
+  "warm_default": {
+   "new": 4,
+   "cached": 14957,
+   "rate": 100.0,
+   "seconds": 0.31
+  },
+  "warm_pair_medium": {
+   "new": 2,
+   "cached": 14957,
+   "rate": 100.0,
+   "seconds": 0.24
+  },
+  "warm_default2": {
+   "new": 4,
+   "cached": 14957,
+   "rate": 100.0,
+   "seconds": 0.28
+  }
+ }
+}

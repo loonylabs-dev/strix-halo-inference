@@ -1,0 +1,11 @@
+[Unit]
+Description=LLM telemetry (flush-safe)
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/llm-profile watch 5
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

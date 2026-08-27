@@ -1,0 +1,53 @@
+{
+ "stamp": "2026-08-26_1251",
+ "task": "hard-count-numbers",
+ "reps": 3,
+ "cases": [
+  {
+   "label": "spec-on",
+   "identical": false,
+   "distinct": 3,
+   "first_divergence": 1107,
+   "runs": [
+    {
+     "sha": "c4b8127d98b8",
+     "tokens": 4369,
+     "wall": 149.8
+    },
+    {
+     "sha": "017eee6df30a",
+     "tokens": 5344,
+     "wall": 205.6
+    },
+    {
+     "sha": "c9ea25c19309",
+     "tokens": 6102,
+     "wall": 176.7
+    }
+   ]
+  },
+  {
+   "label": "spec-off",
+   "identical": true,
+   "distinct": 1,
+   "first_divergence": null,
+   "runs": [
+    {
+     "sha": "73bbda8f26b9",
+     "tokens": 7164,
+     "wall": 825.7
+    },
+    {
+     "sha": "73bbda8f26b9",
+     "tokens": 7164,
+     "wall": 826.8
+    },
+    {
+     "sha": "73bbda8f26b9",
+     "tokens": 7164,
+     "wall": 826.9
+    }
+   ]
+  }
+ ]
+}

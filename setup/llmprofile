@@ -1,0 +1,400 @@
+#!/usr/bin/env bash
+# llm-profile — power profiles + llama.cpp backend for the ASUS ProArt PX13
+#               (Ryzen AI Max+ 395 / Strix Halo / gfx1151) on Linux
+#
+# Rev. 2 · 2026-08-22 — corrected against the real machine:
+#   The GPU is card1 on this device, not card0; card0 does not exist.
+#   cmd_status and cmd_watch read card0 hard-wired and therefore always
+#   reported utilisation as "?" or 0 — in the watchdog of all places. Now
+#   found via card*, the way hwmon and power_dpm do it elsewhere.
+#   Watts and temperature were never affected.
+#
+#   Switching profiles no longer strictly needs this script: tuned-ppd offers
+#   net.hadess.PowerProfiles (the same interface as GNOME's power mode),
+#   usable without root. Details in llmprofileunits.txt section 5.
+#   llmprofileunits.txt Abschnitt 5.
+# Install:     sudo install -m755 llmprofile /usr/local/bin/llm-profile
+# First call:  llm-profile probe      <- ALWAYS first, see below
+# Erster Aufruf: llm-profile probe      <- IMMER zuerst, siehe unten
+# Why "probe" first? Because on the PX13 (DMI model HN7306) it is not settled
+# which knobs the BIOS releases at all. asusctl supports fan curves only on
+# ROG devices per its own FAQ, and the PPT table of the asus-armoury driver
+# does not contain HN7306. This script finds out for itself what is there and
+# skips cleanly what is missing — instead of throwing errors around.
+
+
+set -uo pipefail
+# printf and the locale. bash's printf parses its ARGUMENTS according to
+# LC_NUMERIC, so `printf '%.1f' 8.9` fails with "invalid number" in de_DE,
+# fr_FR and every other comma-decimal locale — while awk, which produced the
+# 8.9, always writes a dot. The repo has hit this before (setup/scripts/gtt.sh
+# carries the same line) and tests/test_gtt.py pins it.
+export LC_ALL=C
+
+# Numbers always with a dot, independent of the locale. Without this awk gives
+# "14.097" while bash printf under de_DE expects a comma — 'status' reported
+# "printf: 14.097: invalid number" on every call, and depending on the
+# environment the telemetry CSV of 'watch' would have carried decimal commas
+# that no analysis tool can read any more.
+
+export LC_NUMERIC=C
+
+PROFILE_DIR=/etc/llm-profile
+LOG_DIR=/var/log/llm-profile
+STATE=/run/llm-profile.state
+
+# ─────────────────────────────────────────────────────────────────────
+# Profile definitions
+#   pp        = platform_profile (ACPI)
+#   cpumax    = scaling_max_freq in kHz, "-" = no limit
+#   epp       = energy_performance_preference
+#   ppt       = sustained power limit in mW (only if the knob exists)
+#   fan       = asusctl fan curve (only if supported)
+# ─────────────────────────────────────────────────────────────────────
+declare -A P_PP=(     [quiet]=quiet        [work]=balanced          [max]=performance )
+declare -A P_CPUMAX=( [quiet]=2000000      [work]=2800000           [max]=-           )
+declare -A P_EPP=(    [quiet]=power        [work]=balance_power     [max]=balance_performance )
+declare -A P_PPT=(    [quiet]=45000        [work]=60000             [max]=85000       )
+declare -A P_FAN=(
+  [quiet]="45c:0%,55c:15%,65c:30%,72c:45%,78c:60%,84c:75%,88c:90%,95c:100%"
+  [work]="40c:10%,50c:25%,60c:45%,68c:60%,74c:75%,80c:90%,86c:100%,95c:100%"
+  [max]="35c:30%,45c:45%,55c:65%,62c:80%,68c:90%,74c:100%,80c:100%,95c:100%"
+)
+
+# The "max" curve is deliberately aggressive. Background: on the identically
+# equipped ROG Flow Z13 a hard power cut under sustained inference was
+# documented — at only 55 W and 85 °C, far below any temperature limit. With
+# fixed fans the same device ran at 84 W for over 20 minutes. There is no such
+# report for the PX13, and its reviews hold 95 W indefinitely. The curve is
+# precaution, not diagnosis.
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+c_ok(){ printf '\033[32m%s\033[0m\n' "$*"; }
+c_no(){ printf '\033[31m%s\033[0m\n' "$*"; }
+c_hm(){ printf '\033[33m%s\033[0m\n' "$*"; }
+die(){ c_no "ERROR: $*"; exit 1; }
+need_root(){ [[ $EUID -eq 0 ]] || die "needs root (sudo $0 $*)"; }
+
+hwmon_by_name() {           # $1 = hwmon name to look for
+  local h
+  for h in /sys/class/hwmon/hwmon*; do
+    [[ -r "$h/name" ]] || continue
+    [[ "$(<"$h/name")" == "$1" ]] && { echo "$h"; return 0; }
+  done
+  return 1
+}
+
+gpu_hwmon() {               # hwmon of the amdgpu card
+  local h
+  for h in /sys/class/drm/card*/device/hwmon/hwmon*; do
+    [[ -r "$h/power1_average" ]] && { echo "$h"; return 0; }
+  done
+  return 1
+}
+
+ppt_path() {                # find the PPT knob, new before old
+  local a=/sys/class/firmware-attributes/asus-armoury/attributes/ppt_pl1_spl/current_value
+  local b=/sys/devices/platform/asus-nb-wmi/ppt_pl1_spl
+  [[ -w $a ]] && { echo "$a"; return 0; }
+  [[ -w $b ]] && { echo "$b"; return 0; }
+  return 1
+}
+
+# ── probe ────────────────────────────────────────────────────────────
+
+cmd_probe() {
+  echo "=== what this machine can do ==="
+  echo
+
+  echo "-- platform_profile"
+  if [[ -r /sys/firmware/acpi/platform_profile_choices ]]; then
+    c_ok "   present: $(</sys/firmware/acpi/platform_profile_choices)"
+    echo "   current:   $(</sys/firmware/acpi/platform_profile)"
+  else
+    c_no "   MISSING — is asus-nb-wmi loaded? (lsmod | grep asus)"
+  fi
+
+  echo
+  echo "-- power daemon (conflict candidate)"
+  local d found=0
+  for d in tuned-ppd power-profiles-daemon tlp asusd; do
+    if systemctl is-active --quiet "$d" 2>/dev/null; then
+      c_hm "   $d is running — it may overwrite your platform_profile again"
+      found=1
+    fi
+  done
+  (( found )) || c_ok "   none active"
+  echo "   Note: asusd watches platform_profile via inotify and enforces its"
+  echo "   own state. Either mask it or use asusctl consistently."
+
+  echo
+  echo "-- PPT / TDP knob"
+  if p=$(ppt_path); then
+    c_ok "   present: $p"
+    [[ -r ${p%/current_value}/max_value ]] && \
+      echo "   Bereich: $(<"${p%/current_value}/min_value") .. $(<"${p%/current_value}/max_value")"
+  elif command -v asusctl >/dev/null; then
+    c_hm "   no sysfs knob, but asusctl is here → try 'asusctl power-limits -s <mW>'"
+  elif command -v ryzenadj >/dev/null; then
+    c_hm "   ryzenadj only. Careful: reading is broken on Strix Halo,"
+    echo "   whether setting takes effect must be verified via power1_average."
+  else
+    c_no "   MISSING — expected on the PX13. Profiles then act only via"
+    echo "   platform_profile and the CPU frequency cap."
+  fi
+
+  echo
+  echo "-- fan control"
+  if h=$(hwmon_by_name asus_custom_fan_curve); then
+    c_ok "   asus_custom_fan_curve under $h"
+  elif command -v asusctl >/dev/null; then
+    c_hm "   no hwmon node. asusctl is present, but per the official FAQ"
+    echo "   custom curves are supported only on ROG devices. Test:"
+    echo "     asusctl fan-curve -m Performance -e true"
+  else
+    c_no "   MISSING — fans stay under BIOS control."
+    echo "   Then: pick a conservative profile and let the watchdog run."
+  fi
+
+  echo
+  echo "-- CPU"
+  [[ -r /sys/devices/system/cpu/amd_pstate/status ]] \
+    && c_ok "   amd_pstate: $(</sys/devices/system/cpu/amd_pstate/status)" \
+    || c_no "   amd_pstate not active"
+  [[ -r /sys/devices/system/cpu/cpufreq/policy0/energy_performance_available_preferences ]] \
+    && echo "   EPP values: $(</sys/devices/system/cpu/cpufreq/policy0/energy_performance_available_preferences)"
+
+  echo
+  echo "-- GPU telemetry"
+  if h=$(gpu_hwmon); then
+    c_ok "   hwmon under $h"
+    printf '   power %s W · temp %s °C\n' \
+      "$(awk '{printf "%.1f", $1/1000000}' "$h/power1_average" 2>/dev/null)" \
+      "$(awk '{printf "%.0f", $1/1000}'   "$h/temp1_input"     2>/dev/null)"
+  else
+    c_no "   no amdgpu hwmon found"
+  fi
+  echo "   (amd-smi reports everything as N/A on gfx1151 — use sysfs, not amd-smi)"
+
+  echo
+  echo "-- GTT / memory"
+  [[ -r /sys/module/ttm/parameters/pages_limit ]] && \
+    printf '   ttm.pages_limit = %s (%.1f GiB)\n' \
+      "$(</sys/module/ttm/parameters/pages_limit)" \
+      "$(awk "BEGIN{print $(</sys/module/ttm/parameters/pages_limit)/262144}")"
+  grep -q 'amdgpu.gttsize' /proc/cmdline && \
+    c_no "   amdgpu.gttsize in the cmdline — DEPRECATED, can sabotage ttm.pages_limit!"
+
+  echo
+  echo "-- NVMe firmware (data fabric sync flood risk)"
+  if command -v nvme >/dev/null; then
+    nvme list 2>/dev/null | sed 's/^/   /'
+    echo "   Known case: WD SN770/SN770M with FW 731100WD caused platform-wide"
+    echo "   hard power-offs. The fix is FW 731120WD (March 2026)."
+  else
+    c_hm "   nvme-cli not installed (dnf install nvme-cli)"
+  fi
+}
+
+# ── apply a profile ──────────────────────────────────────────────────
+# ── apply a profile ──────────────────────────────────────────────────
+cmd_apply() {
+  local prof=${1:?profile missing: quiet|work|max}
+  [[ -v P_PP[$prof] ]] || die "unknown profile '$prof' (quiet|work|max)"
+  need_root apply "$prof"
+
+  echo "setting profile '$prof':"
+
+  # 1. platform_profile — through the daemon, if one is running
+  local want=${P_PP[$prof]}
+  if systemctl is-active --quiet tuned-ppd 2>/dev/null \
+  || systemctl is-active --quiet power-profiles-daemon 2>/dev/null; then
+    if command -v powerprofilesctl >/dev/null; then
+      powerprofilesctl set "$want" 2>/dev/null \
+        && echo "  platform_profile → $want (via the daemon)" \
+        || c_hm "  platform_profile: the daemon rejected '$want'"
+    fi
+  elif [[ -w /sys/firmware/acpi/platform_profile ]]; then
+    if grep -qw "$want" /sys/firmware/acpi/platform_profile_choices; then
+      echo "$want" > /sys/firmware/acpi/platform_profile
+      echo "  platform_profile → $want"
+    else
+      c_hm "  '$want' not available, present: $(</sys/firmware/acpi/platform_profile_choices)"
+    fi
+  fi
+
+  # 2. rein the CPU in — so it does not take power budget from the GPU
+  local mx=${P_CPUMAX[$prof]} epp=${P_EPP[$prof]} p ziel
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    [[ -w $p/energy_performance_preference ]] && echo "$epp" > "$p/energy_performance_preference" 2>/dev/null
+    if [[ -w $p/scaling_max_freq ]]; then
+      # Determine the target per policy. $mx itself used to be overwritten:
+      # with "-" the first policy got its own maximum and every later one got
+      # THAT value. On a mixed core layout (Zen5 + Zen5c) that caps the fast
+      # cores at the maximum of the slow ones — it does not show here,
+      # because every policy carries the same value.
+      ziel=$mx
+      [[ $ziel == "-" ]] && ziel=$(<"$p/cpuinfo_max_freq")
+      echo "$ziel" > "$p/scaling_max_freq" 2>/dev/null
+    fi
+  done
+  echo "  CPU: EPP=$epp, max=$( [[ $mx == - ]] && echo "unbegrenzt" || echo "$((mx/1000)) MHz" )"
+
+  # 3. PPT — only if a knob is there
+  if pp=$(ppt_path); then
+    echo "$(( ${P_PPT[$prof]} / 1000 ))" > "$pp" 2>/dev/null \
+      && echo "  PPT → ${P_PPT[$prof]} mW" \
+      || c_hm "  PPT: Schreiben fehlgeschlagen"
+  elif command -v asusctl >/dev/null; then
+    asusctl power-limits -s "${P_PPT[$prof]}" >/dev/null 2>&1 \
+      && echo "  PPT → ${P_PPT[$prof]} mW (asusctl)" \
+      || c_hm "  PPT: not supported by asusctl — skipped"
+  else
+    c_hm "  PPT: no knob present — skipped"
+  fi
+
+  # 4. fan curve
+  if command -v asusctl >/dev/null; then
+    local rogprof=Balanced
+    [[ $prof == quiet ]] && rogprof=Quiet
+    [[ $prof == max   ]] && rogprof=Performance
+    if asusctl fan-curve -m "$rogprof" -D "${P_FAN[$prof]}" >/dev/null 2>&1 \
+    && asusctl fan-curve -m "$rogprof" -e true >/dev/null 2>&1; then
+      echo "  fan curve → $rogprof"
+    else
+      c_hm "  fan curve: not supported — the BIOS regulates"
+    fi
+  fi
+
+  # 5. GPU to 'auto' — 'high' takes the chassis' cool-down time between bursts
+  local f
+  for f in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+    [[ -w $f ]] && echo auto > "$f" 2>/dev/null
+  done
+
+  c_ok "done."
+}
+
+# ── status ───────────────────────────────────────────────────────────
+
+cmd_status() {
+  printf 'profile:     %s\n' "$( [[ -r $STATE ]] && cat "$STATE" || echo '(unknown)' )"
+  [[ -r /sys/firmware/acpi/platform_profile ]] && \
+    printf 'platform:    %s\n' "$(</sys/firmware/acpi/platform_profile)"
+  local pol0=/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  [[ -r $pol0 ]] && printf 'CPU max:     %s MHz\n' "$(( $(<"$pol0") / 1000 ))"
+  if h=$(gpu_hwmon); then
+    printf 'GPU:         %.1f W · %.0f °C · %s%% busy\n' \
+      "$(awk '{print $1/1000000}' "$h/power1_average")" \
+      "$(awk '{print $1/1000}'    "$h/temp1_input")" \
+      "$(cat "$(ls -d /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null | head -1)" 2>/dev/null || echo '?')"
+  fi
+  # Look at both variants. This said only 'llama@*'; on this machine it is
+  # llama-user@<model> that runs (SELinux, see setup/README.md), so the line
+  # was NEVER printed — the same kind of bug as the hard-wired card0 above:
+  # a display that stays silent instead of reporting.
+  local b=""
+  systemctl is-active --quiet 'llama@*' 2>/dev/null && b="system service"
+  if [[ -z $b ]] && systemctl --user is-active --quiet 'llama-user@*' 2>/dev/null; then
+    b="user service"
+  fi
+  printf 'Backend:     %s\n' "${b:-not running}"
+}
+
+# ── watch — telemetry with an immediate flush ────────────────────────
+#
+# The point: an EC power cut leaves NO kernel log. If the device simply goes
+# off, the only trace is a file that was already on disk before the shutdown.
+# Hence line-by-line flushing instead of buffering.
+
+cmd_watch() {
+  local iv=${1:-2}
+  mkdir -p "$LOG_DIR"
+  local out; out="$LOG_DIR/telemetry-$(date +%Y%m%d-%H%M%S).csv"
+  local h; h=$(gpu_hwmon) || die "no amdgpu hwmon"
+
+  echo "ts,gpu_w,gpu_c,gpu_busy,cpu_mhz,profile" > "$out"
+  c_ok "writing to $out (Ctrl-C stops)"
+  printf '%8s %8s %8s %8s\n' TIME WATT DEGC LOAD
+
+  local warned=0
+  while :; do
+    local w c b f
+    w=$(awk '{printf "%.1f", $1/1000000}' "$h/power1_average" 2>/dev/null)
+    c=$(awk '{printf "%.0f", $1/1000}'    "$h/temp1_input"    2>/dev/null)
+    b=$(cat "$(ls -d /sys/class/drm/card*/device/gpu_busy_percent 2>/dev/null | head -1)" 2>/dev/null || echo 0)
+    f=$(( $(</sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq) / 1000 ))
+
+    printf '%s,%s,%s,%s,%s,%s\n' "$(date +%s)" "$w" "$c" "$b" "$f" \
+      "$( [[ -r $STATE ]] && cat "$STATE" || echo '-' )" >> "$out"
+    sync -d "$out"                       # <- decisive: on disk, now
+
+    printf '\r%8s %7s W %7s C %7s%%' "$(date +%H:%M:%S)" "$w" "$c" "$b"
+
+    # Early warning on exactly the documented pattern
+    if (( $(printf '%.0f' "$c") >= 84 )) && (( warned == 0 )); then
+      printf '\n'; c_hm "  84 °C reached — in the Z13 report the power cut was here."
+      c_hm "  If it ends right now, the last line is in $out"
+      warned=1
+    fi
+    sleep "$iv"
+  done
+}
+
+# ── start the backend ────────────────────────────────────────────────
+
+cmd_run() {
+  local prof=${1:?profile missing} model=${2:?model key missing}
+  local env="$PROFILE_DIR/$model.env"
+  [[ -r $env ]] || die "no configuration: $env"
+  need_root run "$prof" "$model"
+  cmd_apply "$prof"
+  echo
+  # On Fedora with SELinux the SYSTEM service fails: it may not execute a
+  # binary out of the home directory (203/EXEC, see setup/README.md). What is
+  # operated is llama-user@<model>. Blindly starting 'llama@<model>' meant a
+  # certain failure, printed afterwards as a state.
+  local heim="/home/${SUDO_USER:-}"
+  if [[ -n ${SUDO_USER:-} && -e "$heim/.config/systemd/user/llama-user@.service" ]]; then
+    c_hm "  The USER service runs here — not startable as root."
+    echo  "  Run without sudo:"
+    echo
+    echo  "      systemctl --user start llama-user@${model}"
+    echo
+    echo  "  Profile '$prof' is set."
+    return 0
+  fi
+  echo "starting backend '$model' …"
+  systemctl start "llama@${model}.service"
+  sleep 2
+  systemctl --no-pager --lines=5 status "llama@${model}.service"
+}
+
+# ── main ─────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  probe)   cmd_probe ;;
+  status)  cmd_status ;;
+  watch)   cmd_watch "${2:-2}" ;;
+  run)     cmd_run "${2:-}" "${3:-}" ;;
+  quiet|work|max) cmd_apply "$1" ;;
+  *)
+    cat <<'EOF'
+llm-profile — power profiles + llama.cpp backend (ASUS ProArt PX13 / Strix Halo)
+
+  llm-profile probe              What can this machine do? ALWAYS FIRST.
+  llm-profile quiet|work|max     set a profile (root)
+  llm-profile status             current state
+  llm-profile watch [sec]        write telemetry, flush-safe
+  llm-profile run <prof> <model> set a profile and start the backend
+
+Profiles:
+  quiet   ~45 W · CPU 2.0 GHz · quiet. For working with a small model alongside.
+  work    ~60 W · CPU 2.8 GHz · the everyday one. Recommended for continuous use.
+  max     ~85 W · CPU free    · batch runs. Only with watch next to it.
+
+Models in /etc/llm-profile/<key>.env, see llama@.service
+EOF
+    ;;
+esac

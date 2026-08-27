@@ -1,0 +1,46 @@
+{
+ "label": "qwen38-depth",
+ "url": "http://127.0.0.1:8080",
+ "started": "2026-08-26 22:24:21",
+ "gtt_gib": 35.77,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "prompt_n": 586,
+   "cache_n": 0,
+   "pp_tps": 218.9,
+   "predicted_n": 128,
+   "tg_tps": 44.8,
+   "draft_n": 144,
+   "draft_accepted": 115,
+   "draft_accept_pct": 79.9,
+   "wall_s": 5.52,
+   "asked": 512
+  },
+  {
+   "prompt_n": 9126,
+   "cache_n": 0,
+   "pp_tps": 214.6,
+   "predicted_n": 128,
+   "tg_tps": 109.3,
+   "draft_n": 124,
+   "draft_accepted": 124,
+   "draft_accept_pct": 100.0,
+   "wall_s": 43.76,
+   "asked": 8192
+  },
+  {
+   "prompt_n": 29348,
+   "cache_n": 7078,
+   "pp_tps": 154.8,
+   "predicted_n": 128,
+   "tg_tps": 92.3,
+   "draft_n": 124,
+   "draft_accepted": 124,
+   "draft_accept_pct": 100.0,
+   "wall_s": 191.08,
+   "asked": 32768
+  }
+ ]
+}

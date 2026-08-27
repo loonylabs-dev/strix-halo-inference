@@ -1,0 +1,179 @@
+# llama-server as a USER service.
+#
+# Why this variant exists: the system service llama@.service fails on Fedora
+# with SELinux in enforcing mode when the binary lives in the home directory —
+#
+#   AVC avc: denied { execute } ... name="llama-server"
+#   context: unconfined_u:object_r:user_home_t:s0
+#   status=203/EXEC "Unable to locate executable"
+#
+# A system service is not allowed to execute user_home_t. As a user service the
+# process runs in the user context and may.
+#
+#   systemctl --user enable --now llama-user@laguna
+#
+# It catches the same thing as the system variant: Restart=on-failure against
+# the GPU device loss (vk::DeviceLostError) that has hit this machine several
+# times.
+#
+# Limitation: user services only start on login. For a start at boot, run
+# sudo loginctl enable-linger <user> once.
+#
+# The alternative without that limitation is in setup/README.md: move the build
+# to /opt or set the SELinux context, then llama@.service carries.
+
+[Unit]
+Description=llama.cpp server (%i, user service)
+After=network-online.target
+Wants=network-online.target
+# Only ONE model at a time — they all want port 8080 and the whole of GTT.
+#
+# systemd has NO wildcard here: a template unit cannot conflict with "every
+# other instance of itself", so every model has to be named. That makes this
+# line the one place in the stack that cannot be derived from setup/env/*.env,
+# and a model missing from it fails in the worst way available — BOTH servers
+# start, the second one loses the race for the port, the unit still reports
+# "active", and the gateway answers from whichever won.
+#
+# So it is pinned instead: tests/test_models.py::TestConflicts compares this
+# line against setup/env/*.env and goes red on the first model that is not
+# here. setup/switch-model.sh checks the same thing before it switches.
+# Keep in sync with llama@.service.
+Conflicts=llama-user@qwen38.service llama-user@gemma26.service \
+          llama-user@gemma31.service llama-user@laguna.service \
+          llama-user@gptoss.service llama-user@batch.service \
+          llama-user@flashnext.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# The profile comes from the USER's own directory, symlinked to the repo by
+# install.sh. It used to be read from /etc/llm-profile — a root-owned copy of
+# a file this service does not need root for. Two things were wrong with that:
+#
+#   * every profile change needed sudo, and on 25.08. that made the stack
+#     unchangeable for a remote operator who had no way to authenticate on
+#     the machine's own screen;
+#   * a copy drifts. check.sh exists in part to compare the two, and the
+#     documented --slot-save-path incident came from exactly that class of
+#     bug — a second, untracked source that silently won.
+#
+# A symlink cannot drift. The SYSTEM unit llama@.service keeps /etc, because
+# a system service may not read from a user's home.
+#
+# No leading '-': if the file is missing the service must fail loudly rather
+# than start with an empty $LLAMA_ARGS and serve a wrong model.
+# This machine's answers first — where the models live, above all. Written
+# once by setup/install.sh and NOT in the repo: it names directories that
+# exist on one computer. The leading '-' makes it optional, which is the
+# lesson of the EnvironmentFile= that had no '-' and stopped the service when
+# its file went away.
+EnvironmentFile=-%h/.config/llm-stack.env
+EnvironmentFile=%h/.claude/env/%i.env
+# Wait until the model is readable first. Models usually live on a volume of
+# their own, listed in fstab with nofail: if it is not mounted yet at start, the
+# service used to fail three times in fifteen seconds and then stay down for
+# good — unnoticed at boot, because nofail passes over the missing mount
+# silently too.
+#
+# The user service takes the symlinked copy from the repo — like prewarm.py.
+# That way 'install.sh --nur-user' is enough, no sudo is needed, and a change
+# in the repo takes effect immediately.
+ExecStartPre=%h/.claude/bin/waitformodel
+# Then ask whether it FITS. Separate from the wait above and deliberately so:
+# waitformodel waits, because a missing mount comes back; this one refuses,
+# because a model that is too big does not get smaller. setup/checkroom
+# carries the reasoning, setup/lib/budget.py the arithmetic.
+#
+# No leading '-': the whole point is that a start which would freeze the
+# machine does not happen. GTT is pinned and not swappable, so "too big" is
+# not a crash — it is a desktop that stops answering, three times on
+# 26.08.2026. A unit that refuses to start is visible and reversible; that is
+# the better half of the trade.
+ExecStartPre=%h/.claude/bin/checkroom
+# %h instead of the hard-wired home directory: this used to say
+# one operator's absolute home directory, which tied the repo to one machine.
+#
+# The binary comes from the profile since 25.08.: the backend choice is
+# MODEL-dependent (measured — Vulkan wins for Laguna without speculation,
+# ROCm wins 2x for Qwen with MTP/ngram speculation). LLAMA_BIN is relative
+# to the home directory because systemd expands no specifiers inside
+# EnvironmentFile values; the shell resolves $HOME at start. Word splitting
+# of $LLAMA_ARGS is the same as systemd's: whitespace, quotes are data.
+# The fallback keeps a profile without LLAMA_BIN starting the way it always
+# did — without it, a crash restart between daemon-reload and the /etc sync
+# would leave the service down for good.
+# A SCRIPT, not `bash -c '…'`. The one-liner was tried on 26.08. and started
+# llama-server with no arguments at all — systemd substitutes $VAR/${VAR}
+# inside ExecStart before any shell sees it, and bash's ${VAR//a/b} is not
+# systemd syntax, so what reached bash was empty. The server came up in
+# router mode, listening and modelless, and /slots answered: it looked alive.
+# setup/llamaexec carries the reasoning and the two placeholders.
+ExecStart=%h/.claude/bin/llamaexec
+# --- the memory ceiling, added 26.08. after the second machine hang ---------
+#
+# This box died twice in one day to a measurement, and both times the same
+# way: enough memory pinned in GTT that the OOM killer had nothing it could
+# reach, the desktop stopped responding, and the machine had to be
+# power-cycled. A freeze is the worst possible failure — it takes every other
+# process with it and leaves no log.
+#
+# These two lines turn that into a killed model server, which is the right
+# victim: it is restartable (see Restart= below), and its death is LOUD.
+#
+# They work here, which was not obvious and was checked rather than assumed:
+#   * the memory controller is delegated to the user slice
+#     (/sys/fs/cgroup/user.slice/.../cgroup.controllers lists `memory`);
+#   * the model's memory really is charged to the unit — qwen38 shows
+#     memory.current 20.8 GiB for a 16.7 GiB model while the PROCESS RSS is
+#     only 3.0. Without that, a limit here would guard nothing.
+#
+# MemoryHigh first, MemoryMax second, and the order is the point. High is
+# reclaim pressure, not death: over it the kernel drops this cgroup's page
+# cache — which for a model is the mmap'd weights, exactly the pages that are
+# cheap to lose — instead of the desktop's. Max is the hard stop, and it sits
+# where a SECOND model cannot fit under it.
+#
+# The numbers come from measurement, not from a rule of thumb: Flash-Next, the
+# largest thing here, holds 87.4 GiB in GTT plus ~25.6 GiB of reclaimable PLE
+# page cache. High at 96 leaves its pinned part unthrottled; Max at 108 leaves
+# ~17 GiB for the host and matches the GTT cap.
+#
+# UNTESTED against a real overrun at the time of writing. It should be tested
+# deliberately — which is safe to do precisely BECAUSE the limit is here.
+MemoryHigh=96G
+MemoryMax=108G
+
+Restart=on-failure
+RestartSec=5
+
+# After the start, pull the saved prefixes into the slots. Without it the first
+# request of every project costs 100-180 s again; with it, 1.4 s.
+# The tool waits by itself until /slots is served — the call therefore starts
+# during model loading and blocks nothing needlessly.
+#
+# The leading '-': a failure here must NOT take the model server down with it.
+# Without it the service counted as failed and was stopped as soon as restoring
+# went wrong — a convenience would have shot down the essential part.
+# The eager boot restore is GONE, and deliberately so. It used to say
+#
+#     ExecStartPost=-/usr/bin/python3 %h/.claude/bin/prewarm.py restore
+#
+# and on 25.08. it poisoned a freshly started server within seconds: it pulls
+# the saved states in over the HTTP API while the first requests are already
+# arriving, and a restore that lands during another slot's PROMPT PROCESSING
+# corrupts the KV state — reproduced in six cells, see
+# bench/suites/restore-safety.py, which reproduces it. Every answer after it
+# is garbage until the next restart. The gateway's guard did not cover this:
+# it guards ITS restores, and this one was systemd's.
+#
+# Nothing is lost by removing it. cc-gateway reloads a saved prefix lazily on
+# the first cold request that needs it, and only when no slot is computing
+# (restore_from_disk). Same benefit, at a moment that is safe by
+# construction, and a cold prefill when it is not.
+# Model loading plus restoring; generous, so systemd does not abort.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target

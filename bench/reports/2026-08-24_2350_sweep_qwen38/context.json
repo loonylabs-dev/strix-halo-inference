@@ -1,0 +1,139 @@
+{
+ "stamp": "2026-08-24_2350",
+ "model": "qwen38",
+ "note": "Nachlauf: Thinking ganz aus (enable_thinking:false)",
+ "platform_profile": "balanced",
+ "variants_file": "bench/variants/qwen38.json",
+ "spec": {
+  "model": "qwen38",
+  "_warum": [
+   "Die Achsen, die die Modellentscheidung braucht (docs/MODELLWAHL.md):",
+   "Backend (Vulkan/ROCm) x Speculation (aus/MTP+ngram) x reasoning_effort",
+   "(xhigh=Default/medium/low/none). Kein voller Kreuzprodukt-Sweep - nur die",
+   "7 Zellen, aus denen sich jede Frage beantworten laesst.",
+   "KV-Cache bewusst f16 statt q8_0: q8+FlashAttention laedt auf ROCm nicht",
+   "(KyaniteLabs, negative result), und die Varianten muessen denselben",
+   "KV-Typ tragen, sonst vergleicht der Sweep zwei Dinge auf einmal.",
+   "-c 65536 einheitlich, -np 1: saubere Einzelstrom-Zahlen.",
+   "Kein --mmproj: die Battery ist reiner Text, das Laden geht schneller.",
+   "Sampling: Server-Default, bei allen Varianten identisch."
+  ],
+  "base_args": [
+   "--alias",
+   "qwen38-bench",
+   "-m",
+   "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+   "-ngl",
+   "999",
+   "-fa",
+   "on",
+   "-c",
+   "65536",
+   "-np",
+   "1",
+   "-b",
+   "2048",
+   "-ub",
+   "2048",
+   "--jinja",
+   "--host",
+   "127.0.0.1",
+   "--port",
+   "8080"
+  ],
+  "variants": [
+   {
+    "name": "vulkan-xhigh-nospec",
+    "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+    "args": [],
+    "note": "Die Nulllinie: heutiges qwen38.env-Verhalten (Vulkan, kein Spec, Default-Thinking xhigh)."
+   },
+   {
+    "name": "rocm-xhigh-nospec",
+    "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+    "args": [],
+    "note": "Isoliert den reinen Backend-Effekt gegen vulkan-xhigh-nospec."
+   },
+   {
+    "name": "rocm-xhigh-spec",
+    "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "draft-mtp,ngram-mod",
+     "--spec-draft-n-max",
+     "12",
+     "--spec-ngram-mod-n-min",
+     "24"
+    ],
+    "note": "Isoliert den Speculation-Effekt (MTP+ngram, KyaniteLabs-Stack) gegen rocm-xhigh-nospec."
+   },
+   {
+    "name": "rocm-medium-spec",
+    "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "draft-mtp,ngram-mod",
+     "--spec-draft-n-max",
+     "12",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--chat-template-kwargs",
+     "{\"reasoning_effort\":\"medium\"}"
+    ],
+    "note": "Der Kandidat fuer den Produktiv-Default (Nutzerentscheidung: medium statt xhigh)."
+   },
+   {
+    "name": "rocm-low-spec",
+    "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "draft-mtp,ngram-mod",
+     "--spec-draft-n-max",
+     "12",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--chat-template-kwargs",
+     "{\"reasoning_effort\":\"low\"}"
+    ],
+    "note": "Community-Empfehlung fuer Coding-Agenten (VS Code/Cursor/Claude Code: low)."
+   },
+   {
+    "name": "rocm-nothink-spec",
+    "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "draft-mtp,ngram-mod",
+     "--spec-draft-n-max",
+     "12",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--chat-template-kwargs",
+     "{\"enable_thinking\":false}"
+    ],
+    "note": "Untere Grenze: ganz ohne Thinking. Gemessen 24.08.: das Template kennt NUR reasoning_effort xhigh/medium/low - 'none' wirft eine Jinja-Exception. Abschalten geht ueber enable_thinking:false (so auch KyaniteLabs)."
+   },
+   {
+    "name": "vulkan-medium-spec",
+    "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "draft-mtp,ngram-mod",
+     "--spec-draft-n-max",
+     "12",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--chat-template-kwargs",
+     "{\"reasoning_effort\":\"medium\"}"
+    ],
+    "note": "Prueft die KyaniteLabs-Behauptung, Vulkan halbiere den Spec-Decode-Durchsatz."
+   }
+  ]
+ },
+ "order": [
+  "rocm-nothink-spec"
+ ],
+ "reference": null,
+ "results": {
+  "rocm-nothink-spec": "ok"
+ }
+}

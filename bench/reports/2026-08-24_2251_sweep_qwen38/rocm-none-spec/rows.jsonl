@@ -1,0 +1,9 @@
+{"task": "impl-cache", "tags": ["code-novel"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "bugfix-intervals", "tags": ["code-novel"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "rewrite-modernize", "tags": ["code-repetitive"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "json-invoice", "tags": ["struct"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "sql-revenue", "tags": ["struct"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "regex-log", "tags": ["struct"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "longctx-retrieval", "tags": ["longctx"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "multiturn-edit", "tags": ["agentic"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}
+{"task": "prose-cache", "tags": ["prose"], "passed": false, "reason": "request failed: HTTP Error 500: Internal Server Error", "wall_s": 0.0, "turns": [], "rep": 1}

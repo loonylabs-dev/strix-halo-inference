@@ -1,0 +1,29 @@
+{
+ "variant": "vulkan-xhigh-nospec",
+ "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+ "argv": [
+  "--alias",
+  "qwen38-bench",
+  "-m",
+  "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "2048",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b200-54ee5ee",
+ "note": "Die Nulllinie: heutiges qwen38.env-Verhalten (Vulkan, kein Spec, Default-Thinking xhigh)."
+}

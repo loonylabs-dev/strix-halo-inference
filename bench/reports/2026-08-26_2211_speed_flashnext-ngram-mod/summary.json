@@ -1,0 +1,23 @@
+{
+ "label": "flashnext-ngram-mod",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-08-26 22:11:52",
+ "gtt_gib": 87.38,
+ "ctx": null,
+ "argv": [],
+ "probes": {
+  "prefill_cold": {
+   "new": 14997,
+   "cached": 0,
+   "rate": 0.0,
+   "seconds": 63.91,
+   "tps": 234.7
+  },
+  "decode_warm": {
+   "out": 252,
+   "seconds": 29.49,
+   "cached_pct": 93.1,
+   "tps": 8.5
+  }
+ }
+}

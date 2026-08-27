@@ -1,0 +1,127 @@
+{
+ "label": "shakedown",
+ "url": "http://127.0.0.1:8080",
+ "stamp": "2026-08-26_1153",
+ "every": 2000,
+ "repeat": 2,
+ "depths": [
+  {
+   "target": 4000,
+   "depth": 8663,
+   "anchors": 1,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 8000,
+   "depth": 8663,
+   "anchors": 1,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  }
+ ]
+}

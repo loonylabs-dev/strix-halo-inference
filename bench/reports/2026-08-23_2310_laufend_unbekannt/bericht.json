@@ -1,0 +1,50 @@
+{
+  "zeitpunkt": "2026-08-23_2310",
+  "modell": "laufend",
+  "build": "unbekannt",
+  "flags": [],
+  "notiz": "Probelauf beim Aufbau des Repos",
+  "slots": 4,
+  "gtt_gib_start": 82.6,
+  "suiten": {
+    "swa": {
+      "Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf": {
+        "arch": "laguna",
+        "sliding_window": 512
+      },
+      "Qwen3.8-27B-UD-Q4_K_XL.gguf": {
+        "arch": "qwen35",
+        "sliding_window": null
+      },
+      "eagle3-gpt-oss-120b-Q8_0.gguf": {
+        "arch": "eagle3",
+        "sliding_window": null
+      },
+      "gemma-4-26B-it-mmproj.gguf": {
+        "arch": "clip",
+        "sliding_window": null
+      },
+      "gemma-4-26B_q4_0-it.gguf": {
+        "arch": "gemma4",
+        "sliding_window": 1024
+      },
+      "gemma-4-31B-it-mmproj.gguf": {
+        "arch": "clip",
+        "sliding_window": null
+      },
+      "gemma-4-31B_q4_0-it.gguf": {
+        "arch": "gemma4",
+        "sliding_window": 1024
+      },
+      "gpt-oss-120b-MXFP4.gguf": {
+        "arch": "gpt-oss",
+        "sliding_window": 128
+      },
+      "mmproj-F16.gguf": {
+        "arch": "clip",
+        "sliding_window": null
+      }
+    }
+  },
+  "gtt_gib_ende": 82.61
+}

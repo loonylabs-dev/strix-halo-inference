@@ -1,0 +1,81 @@
+name: Hardware report
+description: What this stack did on YOUR Strix Halo — the one thing this repo cannot measure for itself
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Everything in this repository was measured on ONE machine: Strix Halo
+        (gfx1151) with 128 GB. That focus is deliberate — a number measured on
+        one machine is worth more than a number averaged over none.
+
+        Its limit is just as real: `setup/defects.json` knows what goes wrong
+        on that one machine, and it cannot learn about a second one by itself.
+        A ROCm regression, a BIOS that behaves differently, a board where the
+        GTT cap does not hold — this is where that becomes knowledge.
+
+        **Please paste the output of `bash setup/preflight.sh`.** It reads only,
+        needs no root, and answers most of what would otherwise be asked back
+        and forth. It prints no tokens and no hostnames.
+  - type: textarea
+    id: preflight
+    attributes:
+      label: bash setup/preflight.sh
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: board
+    attributes:
+      label: Machine
+      description: Framework Desktop, GMKtec EVO-X2, HP Z2 Mini G1a, a laptop — and how much memory is fitted.
+      placeholder: "Framework Desktop, 64 GB"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of report is this?
+      options:
+        - It works — here are my numbers
+        - Something is measurably slower or faster than this repo says
+        - Wrong output that nothing reported as an error
+        - It refuses to start / it will not build
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: What happened
+      description: |
+        For anything about SPEED or MEMORY, a measurement beats a description:
+        `python3 bench/speed.py --label <something>` writes a report with the
+        full context, and `python3 setup/lib/budget.py --profile <name>` prints
+        the memory arithmetic.
+
+        For WRONG OUTPUT, say whether it was silent. The dangerous failures on
+        this hardware do not raise — answers degenerate to `////`, or a session
+        answers from another session's context, with nothing in any log.
+      value: |
+        What I did:
+
+        What I expected:
+
+        What happened instead:
+    validations:
+      required: true
+  - type: textarea
+    id: build
+    attributes:
+      label: llama.cpp build
+      description: "`bash setup/scripts/build-llama.sh --list`, or the commit you built."
+      render: text
+  - type: markdown
+    attributes:
+      value: |
+        **What this repo will not do with your report:** invent numbers for
+        your machine. Nothing here is scaled to a configuration nobody
+        measured. What a report CAN do is grow the defect registry, correct a
+        claim, or add a second verified PCI id — `setup/lib/hardware.py` holds
+        exactly one, because one is what has been seen.

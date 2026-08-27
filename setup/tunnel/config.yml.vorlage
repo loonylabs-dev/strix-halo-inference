@@ -1,0 +1,30 @@
+# Vorlage fuer einen lokal verwalteten Cloudflare Tunnel.
+#
+#   cp setup/tunnel/config.yml.vorlage ~/.cloudflared/config.yml
+#   # dann <HOSTNAME> eintragen
+#
+# Die Zugangsdatei und diese config.yml liegen zusammen in ~/.cloudflared und
+# werden als /etc/cloudflared in den Container gehaengt. Beides gehoert NICHT
+# ins Repo — .gitignore deckt es ab.
+#
+# Kein cert.pem noetig. Das braucht nur `cloudflared tunnel create` und
+# `cloudflared tunnel route dns`; zum BETREIBEN eines Tunnels reichen
+# Zugangsdatei und diese Datei.
+
+tunnel: <TUNNEL-ID>
+# Container-Pfad, nicht der Host-Pfad:
+credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  - hostname: <HOSTNAME>
+    # Das Gateway laeuft auf dem HOST, nicht als Compose-Dienst — deshalb die
+    # Docker-Bridge-Adresse statt eines Dienstnamens. 8091 ist der Tunnel-Port:
+    # alles, was dort ankommt, gilt als "extern" und braucht ein Token.
+    service: http://172.17.0.1:8091
+    originRequest:
+      connectTimeout: 30s
+      tcpKeepAlive: 30s
+      # Nicht puffern — sonst kommen die SSE-Keep-Alives nicht durch, mit denen
+      # llama-server den Strom waehrend des 100-180-s-Kaltstarts offen haelt.
+      disableChunkedEncoding: false
+  - service: http_status:404

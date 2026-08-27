@@ -1,0 +1,319 @@
+{
+  "_about": [
+    "Known defects of THIS hardware and build, as data rather than as prose",
+    "scattered over six documents. setup/lib/defects.py evaluates them against",
+    "the running server and the build stamp; setup/check.sh prints the result.",
+    "",
+    "The field that matters most is `shows_as`. On gfx1151 the dangerous",
+    "defects do not raise — they degrade the output, and nothing in a normal",
+    "stack notices. A registry that only listed crashes would list the",
+    "harmless half.",
+    "",
+    "  silent        wrong output, no error anywhere. The expensive kind.",
+    "  loud          crash, assert or refusal. Annoying, honest.",
+    "  slow          correct but slower. A tuning matter, not a hazard.",
+    "  unrepeatable  correct but not reproducible — poisons MEASUREMENTS,",
+    "                which is how a wrong conclusion gets written down.",
+    "",
+    "`detect.kind` is deliberately small. Four kinds, no rule engine:",
+    "  cmdline      a flag on the running llama-server command line",
+    "  build-flag   a cmake flag in the build's .build-stamp",
+    "  build-stamp  a key in the .build-stamp",
+    "  manual       only a measurement can answer; `suite` names it",
+    "",
+    "`upstream_check` is the RETIREMENT condition: the probe that says a",
+    "defect is gone from upstream and its mitigation can be dropped. It reads",
+    "the SOURCE on master, not an issue's state — a closed issue is a story",
+    "about a fix, the source is the fix. `defects.py --upstream` runs them."
+  ],
+  "defects": [
+    {
+      "id": "gfx1151-hip-integrated",
+      "title": "The HIP backend trusts prop.integrated and corrupts the KV state",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "rocm"
+      },
+      "shows_as": "silent",
+      "symptom": "From some point on every answer degenerates to '////' until the server is restarted. No error, no log line.",
+      "measured": "Stock build, two slots, empty prefix store: CORRUPT 6/6. Patched, one slot: clean in every cell. Cost of the patch on identical bodies: prefill -6.0 %, decode unchanged. RE-MEASURED 26.08. on b10631 with the OFFICIAL unpatched binary (bench/suites/stock-vs-patched.py, official-rocm-np2-orig, the exact recipe the defect was found with): 18 of 18 clean over three fresh starts. It does not reproduce any more — and that is NOT a fix. `git log b10577..b10631` shows no commit touching the `integrated` path; the cause is unchanged upstream and the trigger merely moved. A defect whose cause stands and whose trigger we can no longer provoke is epistemically WORSE than a reproducible one.",
+      "mitigation": "setup/patches/hip-integrated-off.patch, carried as a one-commit branch gfx1151-patched. Upstream disabled the same flag for CUDA with the comment 'Temporarily disabled due to issues with corrupted output' and re-enabled it for HIP in PR #24233. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
+      "detect": {
+        "kind": "build-stamp",
+        "key": "patch_commit",
+        "must_be_set": true
+      },
+      "suite": "bench/suites/stock-vs-patched.py",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/issues/27579",
+        "https://github.com/ggml-org/llama.cpp/issues/27572",
+        "https://github.com/ggml-org/llama.cpp/issues/27506",
+        "https://github.com/ggml-org/llama.cpp/pull/24233"
+      ],
+      "status": "mitigated",
+      "first_seen": "2026-08-24",
+      "last_checked": "2026-08-26",
+      "upstream_check": {
+        "kind": "source-contains",
+        "path": "ggml/src/ggml-cuda/ggml-cuda.cu",
+        "pattern": "info\\.devices\\[id\\]\\.integrated\\s*=\\s*prop\\.integrated",
+        "while_present": "master still takes the integrated fast path on HIP — the patch is still doing something, keep shipping it",
+        "when_gone": "master no longer takes it. Re-measure once, then retire the patch and use official binaries: this is the condition under which nobody has to build llama.cpp any more"
+      }
+    },
+    {
+      "id": "gfx1151-two-slots",
+      "title": "Two slots are not safe even on the patched build",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "rocm"
+      },
+      "shows_as": "silent",
+      "symptom": "Same '////' degeneration, but intermittently: a configuration that is clean on one server start is corrupt on the next.",
+      "measured": "Patched, two slots, empty store: clean on one start and CORRUPT 3/6 on the NEXT start, same configuration. Re-measured on b10631 (26.08.): 24 of 24 clean over four fresh starts — so the trigger moved, it did not go away. 26.08., official unpatched b10631, -np 2 with --no-kv-unified and speculation: 18 of 18 clean over three fresh starts. On b10577 the same shape on the stock build was CORRUPT 6/6. Not evidence that -np 2 is safe — evidence that the trigger is gone from this workload.",
+      "mitigation": "-np 1 in every profile. The patch removes one of the two failure modes; it does not make two slots safe. -cram keeps an evicted prefix in RAM, which is what makes a single slot affordable. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
+      "detect": {
+        "kind": "cmdline",
+        "flag": "-np",
+        "alias": "--parallel",
+        "expect": "1",
+        "default": "1"
+      },
+      "suite": "bench/suites/np2-candidates.py",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/issues/27579"
+      ],
+      "status": "open",
+      "first_seen": "2026-08-24",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "slot-restore-poison",
+      "title": "Restoring a saved prefix into a busy server poisons the context",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "rocm"
+      },
+      "shows_as": "silent",
+      "symptom": "After the restore the server produces degenerate output until a fresh start. Production incident 25.08.: the restore landed 0.6 s after two requests had started, while the slots were mid-prefill.",
+      "measured": "Five cells isolate the ingredient. idle-* clean, which is what pointed at the prefill path rather than at the restore itself. RE-MEASURED 26.08. on the patched b10631 build, and the picture has MOVED: prefill-spec — the cell that matched the production incident of 25.08. exactly — is now CLEAN, along with idle-spec, busy-spec and idle-nospec. The trigger has shifted, the way it shifted for the corruption defect. What appeared in its place is a hang; see slot-restore-hangs-busy.",
+      "mitigation": "-np 1, and the gateway restores only into a free slot. Re-run the suite after every llama.cpp build. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": "bench/suites/restore-safety.py",
+      "upstream": [],
+      "status": "open",
+      "first_seen": "2026-08-25",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "rocwmma-fattn-prefill",
+      "title": "GGML_HIP_ROCWMMA_FATTN costs 41 % prefill on gfx1151",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "rocm"
+      },
+      "shows_as": "slow",
+      "symptom": "Nothing is wrong. Prefill is simply 41 % slower, which on a coding agent is the number that decides whether the machine is usable.",
+      "measured": "41 % prefill regression, measured elsewhere on gfx1151 and not re-measured here. Checked 26.08.: confirmed gone — build-llama.sh already said so, and the probe now backs the sentence with a source read rather than asking anyone to trust it. `git log -S` places its removal in fa72aeccb (#26046); it had lived in ggml/CMakeLists.txt, ggml/src/ggml-hip/CMakeLists.txt and ggml-cuda/vendors/hip.h. The first version of this probe pointed at ggml/src/ggml-cuda/CMakeLists.txt, where it had never been — it would have reported RETIRE? from the first run, which is right by accident and is exactly the crying-wolf failure this registry must not have.",
+      "mitigation": "Do not pass -DGGML_HIP_ROCWMMA_FATTN=ON. setup/scripts/build-llama.sh does not.",
+      "detect": {
+        "kind": "build-flag",
+        "forbidden": "GGML_HIP_ROCWMMA_FATTN"
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "gone upstream",
+      "first_seen": "2026-08-17",
+      "last_checked": "2026-08-26",
+      "upstream_check": {
+        "kind": "source-contains",
+        "path": "ggml/CMakeLists.txt",
+        "pattern": "GGML_HIP_ROCWMMA_FATTN",
+        "while_present": "the option still exists upstream — keep leaving it off",
+        "when_gone": "gone, as build-llama.sh already recorded: removed upstream in fa72aeccb 'HIP: remove rocWMMA FlashAttention' (#26046). The probe's job here is not to discover that but to keep saying it after the note is forgotten"
+      }
+    },
+    {
+      "id": "gpu-device-loss",
+      "title": "The GPU drops the device and takes the process with it",
+      "applies_to": {
+        "gpu": "gfx1151"
+      },
+      "shows_as": "loud",
+      "symptom": "vk::DeviceLostError, the process dies. The GPU itself recovers completely. Three times in one day, once after about 25 minutes of load.",
+      "measured": "docs/measurements/measurements.md",
+      "mitigation": "Every service runs under systemd with Restart=on-failure. This is why the stack is not started by hand.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "mitigated",
+      "first_seen": "2026-08-23",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "gtt-raise-removes-clean-failure",
+      "title": "Raising the GTT cap removed the ceiling that turned an over-large model into a clean failure",
+      "applies_to": {
+        "gpu": "gfx1151"
+      },
+      "shows_as": "loud",
+      "symptom": "Below the cap, a model that does not fit fails to allocate and the server exits. Above it, the allocation succeeds against system RAM and the MACHINE goes down instead. It did, on 26.08., during a benchmark.",
+      "measured": "GTT was raised from 96 to 116 GiB on 26.08. so that a 103.7 GiB quant fits. The same change is what made an over-large one fatal. Seen again 26.08. while measuring Flash-Next: the machine went to about 132 of 134 GB and swap grew to 3.4 GiB. It was not fatal, because only 87.4 GiB of that is pinned GTT and the remaining ~25.6 GiB is the mmap'd PLE table as reclaimable page cache. The gap it exposed is in the guard, not in the arithmetic: bench/run.py refuses a server that does not fit, but only for servers started THROUGH it — the ad-hoc scripts used for those cells started llama-server directly and bypassed it entirely. IT HAPPENED A SECOND TIME the same evening, 26.08. ~22:35, and the journal of the dead boot names it: user.slice peaked at 114.8 GiB with 7.9 of 8 GiB of swap consumed. The desktop stopped responding and the machine had to be power-cycled; every process died with it. Cause: a throwaway script started a second 87 GiB model with `kill; sleep 5` between cells instead of waiting for GTT to fall, so the new allocation landed on one still being torn down. Note the aggravating factor on this box: part of swap is zram, which lives in RAM — under this kind of pressure it cannot free anything, it compresses in place beside 87 GiB of pinned GTT. That is why it froze rather than killing one process. RESOLVED the same night by undoing the cause: the cap went back to 108 GiB. The raise to 116 had been made for a Flash-Next footprint the plan computed as 110 GiB; measured it is 87.4, so the extra 8 GiB bought room nobody needed and cost the ceiling. At 108 the largest model here keeps 20 GiB of headroom and a SECOND one cannot allocate at all — which is the state both of that day's incidents required. A THIRD TIME at 23:11, with the cap already back at 108 and the cgroup limits in place — and it exposed two things the first two had hidden. (a) The limits did not apply: a server started from a script inherits the CALLER's cgroup, and the kernel named it — task_memcg=/user.slice/.../app-com.anthropic.Claude-13190.scope. MemoryMax on llama-user@.service guarded the service and nothing else; what stopped it was a global OOM. (b) The estimate was overridden wrongly by me: BENCH_MODEL_GIB=88 is the GTT footprint, and it silently lowered the HOST check from the file's 103.7 GiB as well — but the 26 GiB that never enters GTT does not evaporate, it is page cache for the mmap and it is resident. The machine survived this one; the OOM killer took the orchestrator, whose `finally` therefore never ran, and production stayed down until a human noticed.",
+      "mitigation": "Since the third incident: the guard checks TWO numbers against TWO limits — a measured override may correct the GTT estimate and can no longer lower the host-RAM one below the file size; sideserver.py starts the model as a TRANSIENT SYSTEMD UNIT with its own cgroup and its own MemoryMax, because a child process inherits the caller's; and it arms a dead man's switch before stopping anything, so production comes back on a systemd timer even if the orchestrator is killed. Three ceilings, not one, because the first two can still be bypassed: (1) the GTT cap at 108 GiB, so an over-large start fails to allocate instead of hanging the box; (2) MemoryHigh=96G / MemoryMax=108G on llama-user@.service, so the MODEL SERVER is the victim rather than the desktop — verified applicable here, the memory controller is delegated and the model's memory is charged to the unit; (3) zram cut from 8 to 4 GiB, because swap that lives in RAM cannot win against pinned GTT and only delays the failure. bench/sideserver.py is now the ONE way to run a model beside production: it stops the unit, WAITS for GTT to fall, calls check_room_for() which refuses rather than swaps, and tears down in a finally that waits for GTT again before restarting the unit. The guard in bench/run.py was never missing — it was skippable, and twice in one day something skipped it. bench/ refuses to start a server whose weights do not fit, and estimates from the file sizes rather than trusting the caller.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "mitigated",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "spec-decoding-unrepeatable",
+      "title": "Speculative decoding makes a run unrepeatable",
+      "applies_to": {},
+      "shows_as": "unrepeatable",
+      "symptom": "The same question at temperature 0 gives different answers across repetitions. Not wrong answers — different ones, which is worse for a measurement than a wrong one, because it looks like a finding.",
+      "measured": "bench/suites/spec-determinism.py, 26.08. The divergence bites at near-ties, not at length.",
+      "mitigation": "Measure correctness with speculation OFF and speed with it ON. bench/ records which was used in every report.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": "bench/suites/spec-determinism.py",
+      "upstream": [],
+      "status": "open",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "qwen4exp-fit-crash",
+      "title": "-fit cannot model qwen4exp and dies while estimating",
+      "applies_to": {
+        "model_arch": "qwen4exp"
+      },
+      "when_cmdline_matches": "(?i)flash-?next",
+      "shows_as": "loud",
+      "symptom": "GGML_ASSERT(obj_new) in ggml.c, inside common_params_fit_impl, before the server ever starts. The memory breakdown prints 'unaccounted -47656 MiB' first, which is the estimator failing to model the architecture.",
+      "measured": "Reported on PR #27742 (26.08., RTX 3090, UD-IQ1_S). Generic fit machinery, not a CUDA path — other hardware is no protection. Not reproduced here yet: nothing can load the model. CONFIRMED by two more reports on 26.08. (RTX 5090, RTX 3090), same GGML_ASSERT(obj_new), and -fit off fixes it for both. Cause identified in-thread by ServeurpersoCom: LLM_ARCH_QWEN4EXP is missing from the graph_max_nodes list in llama-context.cpp, so the fit probe overflows when it tries the MoE-to-system-memory path. Note the shape of it: a 96 GB card never crashes because the model FITS and the probe is never run — which is why our quant is exactly the case that would trigger it: 87.4 GiB measured against a 108 GiB cap leaves the fit probe a reason to try the offload path. FIXED UPSTREAM 27.08. at c52ed2a0b — @ServeurpersoCom's graph_max_nodes diagnosis; reverting that one line brings the assert back at -np 2. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "mitigation": "-fit off. It defaults to ON (common/common.h, fit_params = true) and has nothing to do here anyway: every memory parameter in these profiles is set by hand.",
+      "detect": {
+        "kind": "cmdline",
+        "flag": "-fit",
+        "alias": "--fit",
+        "expect": "off",
+        "default": "on"
+      },
+      "suite": null,
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/27742",
+        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-c52ed2a0b"
+      ],
+      "status": "fixed upstream, not in our build",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-27"
+    },
+    {
+      "id": "qwen4exp-quantized-kv",
+      "title": "Quantised KV crashes on qwen4exp",
+      "applies_to": {
+        "model_arch": "qwen4exp"
+      },
+      "when_cmdline_matches": "(?i)flash-?next",
+      "shows_as": "loud",
+      "symptom": "GGML_ASSERT(inp->self_k_rot == nullptr && inp->self_v_rot == nullptr) at qwen4exp.cpp:544, for both q8_0 and q4_0.",
+      "measured": "Reported on PR #27742 (26.08.). Workaround offered there: LLAMA_ATTN_ROT_DISABLE=1, or f16. Root cause established in-thread 26.08.: a quantised KV cache is stored Hadamard-rotated to spread outliers before block quantisation, and qwen4exp's graph does not apply or undo that rotation. A fix exists as a separate commit (ServeurpersoCom, 7044fe16) and is NOT in the PR head. f16 remains the answer here either way. FIXED UPSTREAM 27.08. at 0ac4b1802 — q8_0 KV now matches f16: PPL 2.7673 against 2.7507 on UD-IQ1_S. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "mitigation": "f16 KV — which was already the choice here for a quality reason: the one q8_0-KV cell measured on 24.08. dropped a long-context task that f16 solved.",
+      "detect": {
+        "kind": "cmdline",
+        "flag": "-ctk",
+        "alias": "--cache-type-k",
+        "expect": "f16",
+        "default": "f16"
+      },
+      "suite": null,
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/27742",
+        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-0ac4b1802"
+      ],
+      "status": "fixed upstream, not in our build",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-27"
+    },
+    {
+      "id": "qwen4exp-slot-restore",
+      "title": "Slot save/restore probably does not carry the QSA indexer state",
+      "applies_to": {
+        "model_arch": "qwen4exp"
+      },
+      "when_cmdline_matches": "(?i)flash-?next",
+      "shows_as": "silent",
+      "symptom": "Unknown in detail, and that is the point. A restored KV cache with an indexer that disagrees with it degrades the output rather than failing.",
+      "measured": "Not measured — flagged by two reviewers on PR #27742 (26.08.). ggerganov: 'missing state save/load for the indexer'. ngxson: 'otherwise a context save/load will corrupt it'.",
+      "mitigation": "setup/env/flashnext.env carries no --slot-save-path, and AUTO_SAVE=0 belongs in the gateway config while it serves. setup/env/flashnext.env section 4b is the experiment, with idle-nospec as the floor.",
+      "detect": {
+        "kind": "cmdline",
+        "flag": "--slot-save-path",
+        "expect_absent": true
+      },
+      "suite": "bench/suites/restore-safety.py",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/27742"
+      ],
+      "status": "open",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "slot-restore-hangs-busy",
+      "title": "A slot restore into a busy two-slot server hangs",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "rocm"
+      },
+      "shows_as": "loud",
+      "symptom": "POST /slots/0?action=restore never returns while two generations are running. It does not raise and it does not corrupt — it stops. Classified loud rather than silent because a caller notices a request that never comes back, which is the one thing the corruption defect never gave anybody.",
+      "measured": "26.08., patched b10631, bench/suites/restore-safety.py cell busy-nospec: the restore ran into its 300 s timeout. REPRODUCED on a second run, two of two, so this is a defect and not a flake. The asymmetry is worth recording without explaining it away: busy-SPEC, the same cell with speculation ON, was clean both times.",
+      "mitigation": "-np 1, which is already the production setting for other reasons. With one slot and the gateway's MAX_INFLIGHT at 1 there is never a generation running when a restore lands, so this cannot be reached from production. It is the reason -np 2 stays closed: rule (b) of the decision in bench/suites/stock-vs-patched.py requires restore-safety clean in EVERY cell.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": "bench/suites/restore-safety.py",
+      "upstream": [],
+      "status": "open",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-26"
+    },
+    {
+      "id": "qwen4exp-multislot-desync",
+      "title": "The QSA indexer cache desyncs from the attention cache across slots",
+      "applies_to": {
+        "model_arch": "qwen4exp"
+      },
+      "when_cmdline_matches": "(?i)flash-?next",
+      "shows_as": "loud",
+      "symptom": "GGML_ASSERT(mctx_idx->get_n_kv() == inp->mctx->get_attn()->get_n_kv() && \"the indexer cache must track the attention cache cell for cell\") at qwen4exp.cpp:285, during prompt processing, the first time a request lands on a DIFFERENT slot than the previous one.",
+      "measured": "Reported 26.08. on PR #27742 (Windows, RTX 5090, UD-Q4_K_XL, this branch at 035e227). Not reproduced here. The detail that matters: it was hit WITHOUT passing --parallel, because llama-server defaults to n_slots = 4 — so anyone who simply does not set -np gets four slots and this defect. FIXED UPSTREAM 27.08. at cfbdc0a50 — and the cause was NOT the scheduler but the SERVER PROMPT CACHE: on the old build --cache-ram 0 completes where the default asserts on the third request. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "mitigation": "-np 1, explicitly. This is the third independent reason for it on this stack, after the gfx1151 HIP race and the restore hang — and the first that is a property of the ARCHITECTURE rather than of the GPU, so it would apply on any hardware.",
+      "detect": {
+        "kind": "cmdline",
+        "flag": "-np",
+        "alias": "--parallel",
+        "expect": "1",
+        "default": "4"
+      },
+      "suite": null,
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/27742",
+        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-cfbdc0a50"
+      ],
+      "status": "fixed upstream, not in our build",
+      "first_seen": "2026-08-26",
+      "last_checked": "2026-08-27"
+    }
+  ]
+}

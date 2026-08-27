@@ -1,0 +1,23 @@
+{
+ "label": "qwen38-live",
+ "url": "http://127.0.0.1:8080",
+ "started": "2026-08-26 22:03:34",
+ "gtt_gib": 35.8,
+ "ctx": null,
+ "argv": [],
+ "probes": {
+  "prefill_cold": {
+   "new": 14961,
+   "cached": 0,
+   "rate": 0.0,
+   "seconds": 72.73,
+   "tps": 205.7
+  },
+  "decode_warm": {
+   "out": 256,
+   "seconds": 12.78,
+   "cached_pct": 93.0,
+   "tps": 20.0
+  }
+ }
+}

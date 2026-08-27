@@ -1,0 +1,16 @@
+[Unit]
+Description=Ask the model one question whose answer is known
+# Only when a model is actually serving. Without this the probe would report
+# UNREACHABLE every few minutes on a machine that is deliberately idle, and a
+# watchdog that is usually wrong is a watchdog nobody reads.
+After=network.target
+
+[Service]
+Type=oneshot
+# --restart acts on DEGENERATE only. That is the '////' signature of the
+# gfx1151 HIP race and of a poisoned slot restore — a known fault with a known
+# remedy. UNREACHABLE is usually a server still loading, and restarting it
+# then turns a slow start into a loop; WRONG is not a known fault of this
+# machine. See setup/scripts/probe.py.
+Environment=LLAMA_UNIT=llama-user@qwen38
+ExecStart=/usr/bin/python3 %h/.claude/bin/probe.py --restart

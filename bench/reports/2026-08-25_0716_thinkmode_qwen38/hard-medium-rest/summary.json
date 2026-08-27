@@ -1,0 +1,63 @@
+{
+ "label": "hard-medium",
+ "url": "http://127.0.0.1:8080",
+ "seed": 7,
+ "started": "2026-08-25 17:06:44",
+ "extra_body": {
+  "chat_template_kwargs": {
+   "enable_thinking": true,
+   "reasoning_effort": "medium"
+  }
+ },
+ "gtt_gib": 24.39,
+ "records": [
+  {
+   "task": "hard-count-numbers",
+   "tags": [
+    "hard",
+    "struct"
+   ],
+   "passed": false,
+   "reason": "hit the max_tokens cap (8192); no 'ANSWER: <number>' line",
+   "answer": "",
+   "wall_s": 294.16,
+   "capped": true,
+   "output_tokens": 8192,
+   "reasoning_chars": 13172,
+   "content_chars": 0,
+   "tg_tps": 27.9,
+   "pp_tps": 104.3,
+   "prompt_n": 81,
+   "turns": [
+    {
+     "wall_s": 294.16,
+     "finish": "length",
+     "prompt_tokens": 81,
+     "output_tokens": 8192,
+     "pp_tps": 104.3,
+     "tg_tps": 27.9,
+     "prompt_n": 81,
+     "predicted_n": 8192,
+     "reasoning_chars": 13172,
+     "content_chars": 0
+    }
+   ],
+   "rep": 1
+  }
+ ],
+ "probes": null,
+ "summary": {
+  "tasks": 1,
+  "passed": 0,
+  "failed": [
+   {
+    "task": "hard-count-numbers",
+    "reason": "hit the max_tokens cap (8192); no 'ANSWER: <number>' line"
+   }
+  ],
+  "seconds_to_correct_median": null,
+  "seconds_total": 294.2,
+  "output_tokens_total": 8192,
+  "reasoning_chars_total": 13172
+ }
+}

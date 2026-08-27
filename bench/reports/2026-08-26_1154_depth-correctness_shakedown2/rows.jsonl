@@ -1,0 +1,16 @@
+{"target": 4000, "depth": 4076, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 20.18, "prompt_n": 4129}
+{"target": 4000, "depth": 4076, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 0.78, "prompt_n": 4}
+{"target": 4000, "depth": 4076, "question": "anchor:middle", "want": "17919", "got": "17919", "ok": true, "wall": 19.11, "prompt_n": 4129}
+{"target": 4000, "depth": 4076, "question": "anchor:middle", "want": "17919", "got": "17919", "ok": true, "wall": 0.52, "prompt_n": 4}
+{"target": 4000, "depth": 4076, "question": "anchor:last", "want": "17919", "got": "17919", "ok": true, "wall": 0.51, "prompt_n": 4}
+{"target": 4000, "depth": 4076, "question": "anchor:last", "want": "17919", "got": "17919", "ok": true, "wall": 0.51, "prompt_n": 4}
+{"target": 4000, "depth": 4076, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 19.54, "prompt_n": 4124}
+{"target": 4000, "depth": 4076, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 0.79, "prompt_n": 4}
+{"target": 12000, "depth": 12046, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 59.07, "prompt_n": 12151}
+{"target": 12000, "depth": 12046, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 0.56, "prompt_n": 4}
+{"target": 12000, "depth": 12046, "question": "anchor:middle", "want": "33757", "got": "33757", "ok": true, "wall": 11.31, "prompt_n": 2048}
+{"target": 12000, "depth": 12046, "question": "anchor:middle", "want": "33757", "got": "33757", "ok": true, "wall": 0.56, "prompt_n": 4}
+{"target": 12000, "depth": 12046, "question": "anchor:last", "want": "49595", "got": "49595", "ok": true, "wall": 11.27, "prompt_n": 2048}
+{"target": 12000, "depth": 12046, "question": "anchor:last", "want": "49595", "got": "49595", "ok": true, "wall": 0.56, "prompt_n": 4}
+{"target": 12000, "depth": 12046, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 11.46, "prompt_n": 2043}
+{"target": 12000, "depth": 12046, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 0.84, "prompt_n": 4}

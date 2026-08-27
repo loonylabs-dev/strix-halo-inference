@@ -1,0 +1,58 @@
+{
+ "idle-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ],
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "prefill-spec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null
+ },
+ "idle-nospec": {
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ }
+}

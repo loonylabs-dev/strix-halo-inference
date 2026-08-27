@@ -1,0 +1,28 @@
+# cloudflared als einziger Weg von aussen. Nach dem Muster des frueheren
+# ollama-proxy-Setups, mit einem Unterschied: das Gateway laeuft hier als
+# Host-Prozess (systemd --user), nicht als Compose-Dienst. Deshalb zeigt der
+# Ingress auf 172.17.0.1 statt auf einen Dienstnamen.
+#
+#   cd setup/tunnel && docker compose up -d
+#
+# Kein Port veroeffentlicht: cloudflared baut die Verbindung nach AUSSEN auf.
+# Das ist auch der Grund, warum Dockers iptables-Regeln hier nicht stoeren.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    # Als eigener Benutzer laufen. Noetig, weil ~/.cloudflared auf 700 steht und
+    # die Zugangsdatei auf 600 — der Standardbenutzer des Images (distroless,
+    # andere UID) kaeme sonst nicht einmal ins Verzeichnis und meldet
+    # "No configuration file was found". Rechte lockern waere die schlechtere
+    # Loesung, die Datei enthaelt ein Geheimnis.
+    user: "1000:1000"
+    # Zugangsdatei und config.yml liegen ausserhalb des Repos.
+    volumes:
+      - ${HOME}/.cloudflared:/etc/cloudflared:ro
+    command: tunnel --no-autoupdate run
+    # Erreicht das Gateway auf dem Host ueber die Bridge-Adresse.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

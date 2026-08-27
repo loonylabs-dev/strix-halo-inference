@@ -1,0 +1,93 @@
+# Captured request bodies: they contain an e-mail address, device_id,
+# account_uuid and Anthropic's system prompt. They do not belong in the repo —
+# tools/synthetic.py produces everything needed without a capture.
+bodies/
+*-raw.json
+*-sent.json
+*-profile.json
+*-answer.txt
+*-roh.json
+*-gesendet.json
+*-profil.json
+*-antwort.txt
+
+# Secrets
+*.token
+*.secret
+cc-gateway.env
+.env.local
+
+# This machine's own answers: where the models live, what the tunnel is called.
+# Written by setup/install.sh from setup/local.env.template, which IS tracked.
+# It normally lives in ~/.config and so never reaches the repo — this line is
+# for the case where somebody points $LLM_STACK_ENV at a copy inside it.
+llm-stack.env
+
+# Runtime
+*.log
+bench/reports/*/server.log
+__pycache__/
+*.pyc
+
+# Slot states (546 MB each)
+*.bin
+
+# Cloudflare credentials — they belong in ~/.cloudflared, never in the repo
+*.cloudflared.json
+cert.pem
+config.yml
+
+# Named access — belongs in ~/.config, never in the repo
+cc-gateway-tokens
+
+# Saved slot states (628 MB each)
+llama-slots/
+
+# --- internal: the maintainer's own working files -------------------------
+#
+# Kept on disk, deliberately NOT published. These are the tools and the log of
+# DEVELOPING this stack, not of running it — a user who clones the repo to set
+# up their own machine needs none of them, and a 2,000-line session log is
+# noise in a repository whose point is that its documents are short and
+# measured.
+#
+# Note what this does NOT do: a file already committed stays in the git
+# HISTORY. This keeps it out of a fresh clone and out of the file browser,
+# which is the point; it is not deletion. The history itself is squashed
+# separately before publishing.
+#
+# tests/test_watchflashnext.py goes with the script it tests — a public test
+# importing a module that is not in the clone is a red CI run on day one.
+docs/HANDOVER.md
+docs/FLASHNEXT-PLAN.md
+setup/scripts/watchflashnext.py
+setup/scripts/watch-flashnext.sh
+tests/test_watchflashnext.py
+
+# The German originals of the measurement records. The published versions are
+# English; these are kept so that any figure in a translation can be checked
+# against the text it came from. Translating does not change a measurement —
+# but a translator can mistype one, and on 27.08. one did: three quoted Claude
+# Code counter messages were retyped instead of copied, and the check that
+# compares every number in both files is what caught it.
+docs/measurements/*.de.md
+
+# The machine documents: five German files describing this one machine — a
+# dated state record, a runbook, the setup path, a glossary, a note on the
+# shared NTFS partition. They are the SOURCE MATERIAL from which docs/setup/
+# and the translated measurement records were made, and they are the
+# maintainer's own working copies now.
+#
+# Making them internal was work rather than a deletion: everything published
+# that cited them had to be repointed at what actually carries the evidence.
+# tests/test_docs.py fails if a published link or command names one again.
+docs/px13/
+
+# docs/archive/ — withdrawn predecessors, surveys and .orig copies.
+# Kept on disk, deliberately NOT published: nothing in it is needed to set up a
+# Strix Halo or to get this stack running, and some of it is actively wrong —
+# px13-einrichtung.html carries the amdgpu.gttsize recommendation that runbook
+# rev. 7 revoked. Note what this does NOT do: files already committed stay in
+# the git HISTORY. This keeps them out of a clone and out of the file browser,
+# which is the point; it is not deletion.
+docs/archive/

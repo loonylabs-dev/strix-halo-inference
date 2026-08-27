@@ -1,0 +1,157 @@
+{
+ "label": "rocm-none-spec",
+ "url": "http://127.0.0.1:8080",
+ "seed": 7,
+ "started": "2026-08-24 23:12:48",
+ "gtt_gib": 24.45,
+ "records": [
+  {
+   "task": "impl-cache",
+   "tags": [
+    "code-novel"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "bugfix-intervals",
+   "tags": [
+    "code-novel"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "rewrite-modernize",
+   "tags": [
+    "code-repetitive"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "json-invoice",
+   "tags": [
+    "struct"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "sql-revenue",
+   "tags": [
+    "struct"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "regex-log",
+   "tags": [
+    "struct"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "longctx-retrieval",
+   "tags": [
+    "longctx"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "multiturn-edit",
+   "tags": [
+    "agentic"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  },
+  {
+   "task": "prose-cache",
+   "tags": [
+    "prose"
+   ],
+   "passed": false,
+   "reason": "request failed: HTTP Error 500: Internal Server Error",
+   "wall_s": 0.0,
+   "turns": [],
+   "rep": 1
+  }
+ ],
+ "probes": {
+  "error": "HTTP Error 500: Internal Server Error"
+ },
+ "summary": {
+  "tasks": 9,
+  "passed": 0,
+  "failed": [
+   {
+    "task": "impl-cache",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "bugfix-intervals",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "rewrite-modernize",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "json-invoice",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "sql-revenue",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "regex-log",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "longctx-retrieval",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "multiturn-edit",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   },
+   {
+    "task": "prose-cache",
+    "reason": "request failed: HTTP Error 500: Internal Server Error"
+   }
+  ],
+  "seconds_to_correct_median": null,
+  "seconds_total": 0.0,
+  "output_tokens_total": 0,
+  "reasoning_chars_total": 0
+ }
+}

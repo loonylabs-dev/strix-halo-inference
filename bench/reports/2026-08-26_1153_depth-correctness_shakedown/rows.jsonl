@@ -1,0 +1,16 @@
+{"target": 4000, "depth": 8663, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 40.96, "prompt_n": 8732}
+{"target": 4000, "depth": 8663, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 4000, "depth": 8663, "question": "anchor:middle", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 4000, "depth": 8663, "question": "anchor:middle", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 4000, "depth": 8663, "question": "anchor:last", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 4000, "depth": 8663, "question": "anchor:last", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 4000, "depth": 8663, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 1.08, "prompt_n": 29}
+{"target": 4000, "depth": 8663, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 0.81, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 1.09, "prompt_n": 34}
+{"target": 8000, "depth": 8663, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 0.81, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "anchor:middle", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "anchor:middle", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "anchor:last", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "anchor:last", "want": "10000", "got": "10000", "ok": true, "wall": 0.8, "prompt_n": 4}
+{"target": 8000, "depth": 8663, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 1.09, "prompt_n": 29}
+{"target": 8000, "depth": 8663, "question": "tools", "want": "grozzle_fetch, kwintle_apply, vermble_check", "got": "grozzle_fetch, kwintle_apply, vermble_check", "ok": true, "wall": 0.81, "prompt_n": 4}

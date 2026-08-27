@@ -1,0 +1,94 @@
+{
+  "model": "qwen38",
+  "_why": [
+    "The axes the model decision needs (docs/MODELS.md):",
+    "backend (Vulkan/ROCm) x speculation (off/MTP+ngram) x reasoning_effort",
+    "(xhigh=default/medium/low/none). NOT a full cross product - only the 7",
+    "cells that every question can be answered out of.",
+    "KV cache is f16 rather than q8_0 on purpose: q8+FlashAttention does not",
+    "load on ROCm (KyaniteLabs, negative result), and the variants have to",
+    "carry the SAME KV type or the sweep compares two things at once.",
+    "-c 65536 throughout, -np 1: clean single-stream numbers.",
+    "No --mmproj: the battery is text only and loading is faster without it.",
+    "Sampling: server default, identical in every variant.",
+    "@MODELS@ and @HOME@ are expanded by setup/lib/systemdfile.py, the same",
+    "reader the profiles and the unit use. Absolute paths stood here until",
+    "27.08. and tied the file to one computer - including to one CHECKOUT:",
+    "a second clone on the same machine could not run a sweep either.",
+    "",
+    "The build directories are named as they were MEASURED, and not moved",
+    "on to the current ones. build-rocm here is the stock build of 24.08.,",
+    "not build-rocm-patched: repointing it would silently change what these",
+    "cells compared, which is the one thing a recorded variant may not do.",
+    "A new question gets a new variants file."
+  ],
+  "base_args": [
+    "--alias", "qwen38-bench",
+    "-m", "@MODELS@/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+    "-ngl", "999", "-fa", "on",
+    "-c", "65536", "-np", "1", "-b", "2048", "-ub", "2048",
+    "--jinja", "--host", "127.0.0.1", "--port", "8080"
+  ],
+  "variants": [
+    {
+      "name": "vulkan-xhigh-nospec",
+      "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+      "args": [],
+      "note": "The baseline: what qwen38.env did at the time — Vulkan, no speculation, the template's default thinking level (xhigh)."
+    },
+    {
+      "name": "rocm-xhigh-nospec",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": [],
+      "note": "Isolates the backend effect alone, against vulkan-xhigh-nospec."
+    },
+    {
+      "name": "rocm-xhigh-spec",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": ["--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24"],
+      "note": "Isolates the speculation effect alone (MTP+ngram, the KyaniteLabs stack), against rocm-xhigh-nospec."
+    },
+    {
+      "name": "rocm-medium-spec",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": ["--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24",
+               "--chat-template-kwargs", "{\"reasoning_effort\":\"medium\"}"],
+      "note": "The candidate for the production default: medium rather than xhigh, which was an operator's choice and not a measurement."
+    },
+    {
+      "name": "rocm-low-spec",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": ["--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24",
+               "--chat-template-kwargs", "{\"reasoning_effort\":\"low\"}"],
+      "note": "What the community recommends for coding agents — VS Code, Cursor and Claude Code all suggest low."
+    },
+    {
+      "name": "rocm-nothink-spec",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": ["--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24",
+               "--chat-template-kwargs", "{\"enable_thinking\":false}"],
+      "note": "Lower bound: no thinking at all. Measured 24.08.: the template knows ONLY reasoning_effort xhigh/medium/low - 'none' raises a Jinja exception. Switching it off goes through enable_thinking:false (KyaniteLabs does the same)."
+    },
+    {
+      "name": "rocm-medium-spec-q8kv",
+      "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+      "args": ["-ctk", "q8_0", "-ctv", "q8_0",
+               "--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24",
+               "--chat-template-kwargs", "{\"reasoning_effort\":\"medium\"}"],
+      "note": "The KV question for production: qwen38.env carries q8_0 and KyaniteLabs reports a q8+FA load failure on ROCm. Does it load here? And what does it cost against f16 (rocm-medium-spec)?"
+    },
+    {
+      "name": "vulkan-medium-spec",
+      "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+      "args": ["--spec-type", "draft-mtp,ngram-mod",
+               "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24",
+               "--chat-template-kwargs", "{\"reasoning_effort\":\"medium\"}"],
+      "note": "Tests the KyaniteLabs claim that Vulkan halves speculative decode throughput. It held: 96.9 s against 51.7 s median, measured 24.08."
+    }
+  ]
+}

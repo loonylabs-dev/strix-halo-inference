@@ -1,0 +1,1015 @@
+"""Tests for cc-gateway — without a GPU, without llama-server, without a service.
+
+llama-server is replaced by a small aiohttp application that records what
+arrives at it. That makes it possible to check what the smoke test cannot do
+deterministically against the real stack: the per-access throttle, cancelled
+callers, and above all the contract between the gateway's id and the store on
+disk.
+"""
+import asyncio, json, os, shutil, tempfile, unittest
+from unittest import mock
+
+import aiohttp
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+
+import common
+
+GW  = common.load("setup/claude/cc-gateway.py", "cc_gateway",
+                     {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
+                      "SLOT_PATH": "/nonexistent-slots"})
+VW  = common.load("tools/prewarm.py", "prewarm",
+                     {"SLOT_PATH": "/nonexistent-slots"})
+SYN = common.load("tools/synthetic.py", "synthetic")
+
+
+# --------------------------------------------------------- Cache-Korrektur ---
+class TestCorrection(unittest.TestCase):
+    """The stable prefix has to stay equal character for character across
+    turns. If VOLATILE one day no longer matches the counter, it wanders into
+    the prefix, the id changes every turn, and EVERY request runs cold —
+    without any error message. Nobody would otherwise notice."""
+
+    def test_prefix_stays_equal_across_turns(self):
+        a, _ = GW.correct(SYN.body(turns=1, budget_left=15000000))
+        b, _ = GW.correct(SYN.body(turns=4, budget_left=14211873))
+        self.assertEqual(a["system"], b["system"],
+                         "the hoisted prefix must not differ between turns")
+
+
+    def test_counter_is_found_and_stays_behind(self):
+        p, n = GW.correct(SYN.body(turns=1))
+        self.assertGreaterEqual(n, 1, "the <total_tokens> counter was not found")
+        self.assertNotIn("total_tokens", json.dumps(p["system"]),
+                         "a volatile counter has got into the prefix")
+        self.assertIn("total_tokens", json.dumps(p["messages"]),
+                      "the counter must not be lost, only moved to the back")
+
+    def test_agent_block_moves_to_the_front(self):
+        p, _ = GW.correct(SYN.body(turns=1))
+        self.assertIn("Available agent types", json.dumps(p["system"]))
+        self.assertNotIn("Available agent types", json.dumps(p["messages"]))
+
+    def test_id_depends_on_system_and_tools(self):
+        k1 = GW.prefix_id(SYN.body(n_tools=24))[0]
+        k2 = GW.prefix_id(SYN.body(n_tools=25))[0]
+        k3 = GW.prefix_id(SYN.body(project="/tmp/projB"))[0]
+        self.assertNotEqual(k1, k2)
+        self.assertNotEqual(k1, k3)
+
+    def test_id_ignores_the_question(self):
+        k1 = GW.prefix_id(SYN.body(question="Sag alpha."))[0]
+        k2 = GW.prefix_id(SYN.body(question="Etwas ganz anderes."))[0]
+        self.assertEqual(k1, k2)
+
+
+# ------------------------------------------------------ Kennungs-Vertrag ---
+class TestMidSystemToUser(unittest.TestCase):
+    """Qwen 3.8's template rejects system messages after position 0 with a
+    500 — and the Claude Code body carries exactly one (the volatile counter
+    that correct() deliberately leaves in place). The opt-in rewrite has to
+    clear every such message without touching the prefix identity, or
+    switching models silently kills either the requests or the cache."""
+
+    def test_no_system_role_survives_after_position_zero(self):
+        p, _ = GW.correct(SYN.body(turns=3))
+        p, n = GW.mid_system_to_user(p)
+        self.assertGreater(n, 0)
+        roles = [m["role"] for m in p["messages"][1:]]
+        self.assertNotIn("system", roles)
+
+    def test_the_counter_text_stays_in_place_as_a_user_block(self):
+        p, _ = GW.correct(SYN.body(turns=1, budget_left=4242))
+        idx = [i for i, m in enumerate(p["messages"])
+               if m["role"] == "system"]
+        p, _ = GW.mid_system_to_user(p)
+        m = p["messages"][idx[0]]
+        self.assertEqual(m["role"], "user")
+        self.assertIn("4242 tokens left", m["content"][0]["text"])
+
+    def test_a_leading_system_message_is_left_alone(self):
+        p = {"messages": [{"role": "system", "content": "s"},
+                          {"role": "user", "content": "q"}]}
+        p, n = GW.mid_system_to_user(p)
+        self.assertEqual(n, 0)
+        self.assertEqual(p["messages"][0]["role"], "system")
+
+    def test_the_prefix_id_does_not_change(self):
+        """The id comes from system field and tools; if the rewrite ever
+        leaked into it, every saved prefix would go cold on the switch."""
+        p, _ = GW.correct(SYN.body(turns=2))
+        before = GW.prefix_id(p)
+        p, _ = GW.mid_system_to_user(p)
+        self.assertEqual(GW.prefix_id(p), before)
+
+    def test_the_rewrite_is_off_by_default(self):
+        self.assertFalse(GW.MID_SYSTEM_TO_USER)
+
+
+class TestModelKwargs(unittest.TestCase):
+    """One loaded model, several thinking modes: the map fills
+    chat_template_kwargs by model name. If it ever overwrote what a request
+    already carries, an explicit caller could no longer opt out."""
+
+    TABLE = {"qwen38": {"enable_thinking": False},
+             "qwen38-think": {"reasoning_effort": "medium"}}
+
+    def test_the_map_fills_by_model_name(self):
+        p, hit = GW.inject_model_kwargs({"model": "qwen38"}, self.TABLE)
+        self.assertTrue(hit)
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_request_kwargs_win_key_by_key(self):
+        p, _ = GW.inject_model_kwargs(
+            {"model": "qwen38-think",
+             "chat_template_kwargs": {"reasoning_effort": "low"}}, self.TABLE)
+        self.assertEqual(p["chat_template_kwargs"],
+                         {"reasoning_effort": "low"})
+
+    def test_an_unknown_model_passes_untouched(self):
+        p, hit = GW.inject_model_kwargs({"model": "laguna"}, self.TABLE)
+        self.assertFalse(hit)
+        self.assertNotIn("chat_template_kwargs", p)
+
+    def test_the_map_is_empty_by_default(self):
+        self.assertEqual(GW.KWARGS_BY_MODEL, {})
+
+
+class TestIdContract(unittest.TestCase):
+    """The bug that made the automatic saving useless.
+
+    The gateway forms the id from the RAW body but hands prewarm.py the
+    CORRECTED one — only from that can the prefix be rendered that later
+    actually arrives. Recomputing the id there yields a different value and
+    writes a key into the store that no request ever produces.
+    store that no request ever produces.
+    """
+
+    def setUp(self):
+        self.raw_body = SYN.body(turns=1)
+        self.ident = GW.prefix_id(json.loads(json.dumps(self.raw_body)))[0]
+
+    def test_raw_body_yields_the_same_id(self):
+        self.assertEqual(VW.gateway_id(self.raw_body), self.ident,
+                         "in manual use prewarm.py has to arrive at the same"
+                         " id as the gateway")
+
+    def test_corrected_body_yields_a_different_one(self):
+        corrected, _ = GW.correct(json.loads(json.dumps(self.raw_body)))
+        self.assertNotEqual(
+            VW.gateway_id(corrected), self.ident,
+            "If this ever becomes equal, --gateway-id has become superfluous. "
+            "As long as they differ, the id MUST NOT be recomputed in "
+            "automatic operation.")
+
+    def test_both_sides_agree_in_both_dialects(self):
+        """Gateway and prewarm now share dialects.py — but they are still two
+        processes, and only this holds them together. If it ever breaks, a
+        saved prefix lands under a key nobody produces: SAVED in the log,
+        file on disk, RESTORED never — the id contract, pinned here and in
+        tests/test_dialects.py."""
+        oai = {"model": "qwen38",
+               "messages": [{"role": "system", "content": "You are an agent."},
+                            {"role": "user", "content": "hi"}],
+               "tools": [{"type": "function",
+                          "function": {"name": "Read", "description": "d",
+                                       "parameters": {"type": "object"}}}]}
+        for dialect, body in ((GW.DIA.ANTHROPIC, self.raw_body),
+                              (GW.DIA.OPENAI, oai)):
+            with self.subTest(dialect=dialect):
+                gw = GW.prefix_id(json.loads(json.dumps(body)), dialect)[0]
+                pw = VW.gateway_id(json.loads(json.dumps(body)), dialect)
+                self.assertEqual(gw, pw)
+
+    def test_head_bytes_are_not_defined_twice(self):
+        self.assertIs(GW.HEAD_BYTES, GW.DIA.HEAD_BYTES)
+
+
+# ------------------------------------------------------------ store/disk ---
+class TestStore(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="slots-")
+        self.old = GW.SLOT_PATH
+        GW.SLOT_PATH = self.dir
+        GW.SAVED = {}
+        GW._saved_state = object()
+        self.log_patch = mock.patch.object(GW, "log", lambda *a: None)
+        self.log_patch.start()
+
+    def tearDown(self):
+        self.log_patch.stop()
+        GW.SLOT_PATH = self.old
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def put(self, name, gk, content=b"x" * 32):
+        with open(os.path.join(self.dir, name + ".json"), "w") as f:
+            json.dump({"name": name, "gateway_id": gk, "token": 1,
+                       "bytes": len(content), "saved_at": "2026-08-01 10:00"}, f)
+        with open(os.path.join(self.dir, name + ".bin"), "wb") as f:
+            f.write(content)
+
+    def test_store_is_indexed_by_the_gateway_id(self):
+        self.put("abc123abc123", "abc123abc123")
+        self.assertEqual(GW.load_saved(), {"abc123abc123": "abc123abc123"})
+
+    def test_sidecar_without_bin_does_not_count(self):
+        with open(os.path.join(self.dir, "leer.json"), "w") as f:
+            json.dump({"name": "leer", "gateway_id": "kkkkkkkkkkkk"}, f)
+        self.assertEqual(GW.load_saved(), {})
+
+    def test_refresh_notices_deleted_files(self):
+        self.put("abc123abc123", "abc123abc123")
+        self.assertIn("abc123abc123", GW.refresh_saved(force=True))
+        os.remove(os.path.join(self.dir, "abc123abc123.bin"))
+        # The cleanup service deletes in its own process. Without refreshing,
+        # the gateway would run into a restore onto nothing while holding a
+        # Leere.
+        self.assertNotIn("abc123abc123", GW.refresh_saved())
+
+    def test_restore_gives_up_when_the_file_is_gone(self):
+        self.put("abc123abc123", "abc123abc123")
+        GW.refresh_saved(force=True)
+        os.remove(os.path.join(self.dir, "abc123abc123.bin"))
+        self.assertFalse(asyncio.run(GW.restore_from_disk("abc123abc123")))
+        self.assertEqual(GW.SAVED, {})
+
+
+# ------------------------------------------------------ Automatik-Sichern ---
+class TestAutoSave(unittest.IsolatedAsyncioTestCase):
+    """Checks the call to prewarm.py without actually running it."""
+
+    async def asyncSetUp(self):
+        self.dir = tempfile.mkdtemp(prefix="slots-")
+        self.old_path, GW.SLOT_PATH = GW.SLOT_PATH, self.dir
+        self.old_max, GW.SAVE_QUEUE_MAX = GW.SAVE_QUEUE_MAX, 4
+        GW.SAVED = {}
+        GW._saved_state = object()
+        GW._save_lock = None
+        GW._save_pending.clear()
+        self.calls = []
+        self.log_lines = []
+        self.log_patch = mock.patch.object(
+            GW, "log", lambda *a: self.log_lines.append(" ".join(map(str, a))))
+        self.log_patch.start()
+
+    async def asyncTearDown(self):
+        self.log_patch.stop()
+        GW.SLOT_PATH = self.old_path
+        GW.SAVE_QUEUE_MAX = self.old_max
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _fake_exec(self, delay=0.0, write_files=True):
+        """Stand-in for prewarm.py: writes the sidecar file exactly the way
+        the real script does with --gateway-id."""
+        calls, verz = self.calls, delay
+        dir_ = self.dir
+
+        class Proc:
+            returncode = 0
+            async def communicate(self):
+                if verz:
+                    await asyncio.sleep(verz)
+                return (b"", b"")
+
+        async def exec_(*argv, **kw):
+            calls.append(list(argv))
+            if write_files:
+                name = argv[argv.index("--name") + 1]
+                gk = argv[argv.index("--gateway-id") + 1]
+                with open(os.path.join(dir_, name + ".json"), "w") as f:
+                    json.dump({"name": name, "gateway_id": gk}, f)
+                with open(os.path.join(dir_, name + ".bin"), "wb") as b:
+                    b.write(b"x")
+            return Proc()
+        return exec_
+
+    async def test_id_is_passed_through_and_found_again(self):
+        raw_body = SYN.body()
+        ident = GW.prefix_id(json.loads(json.dumps(raw_body)))[0]
+        corrected, _ = GW.correct(json.loads(json.dumps(raw_body)))
+        with mock.patch("asyncio.create_subprocess_exec", self._fake_exec()):
+            await GW.auto_save(ident, corrected)
+        self.assertEqual(len(self.calls), 1)
+        argv = self.calls[0]
+        self.assertIn("--gateway-id", argv)
+        self.assertEqual(argv[argv.index("--gateway-id") + 1], ident)
+        # The actual point: the freshly written store has to contain the id
+        # that the next request will arrive with.
+        self.assertIn(ident, GW.SAVED,
+                      "saved_ids, but under a key that no request ever "
+                      "produces — exactly the old bug")
+
+    async def test_second_save_is_not_dropped_silently(self):
+        k1, k2 = "a" * 12, "b" * 12
+        with mock.patch("asyncio.create_subprocess_exec",
+                        self._fake_exec(delay=0.05)):
+            await asyncio.gather(GW.auto_save(k1, {"system": "a"}),
+                                 GW.auto_save(k2, {"system": "b"}))
+        self.assertEqual(len(self.calls), 2,
+                         "the second save was discarded — the prefix then "
+                         "counts as warm and would never come up again")
+
+    async def test_the_same_id_is_saved_only_once(self):
+        k = "c" * 12
+        with mock.patch("asyncio.create_subprocess_exec",
+                        self._fake_exec(delay=0.05)):
+            await asyncio.gather(GW.auto_save(k, {"system": "a"}),
+                                 GW.auto_save(k, {"system": "a"}))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_queue_is_capped_but_not_concealed(self):
+        GW.SAVE_QUEUE_MAX = 2
+        messages = []
+        with mock.patch("asyncio.create_subprocess_exec",
+                        self._fake_exec(delay=0.05)), \
+             mock.patch.object(GW, "log", lambda *a: messages.append(" ".join(map(str, a)))):
+            await asyncio.gather(*[GW.auto_save("%012d" % i, {"system": str(i)})
+                                   for i in range(5)])
+        self.assertEqual(len(self.calls), 2)
+        self.assertTrue(any("not saved" in m for m in messages),
+                        "a discarded save has to appear in the log")
+
+
+# ------------------------------------------------------------- Schleuse ---
+class TestPriorityGate(unittest.IsolatedAsyncioTestCase):
+    async def test_priority_beats_arrival(self):
+        s = GW.PriorityGate(1)
+        await s.enter(0)                       # Platz belegt
+        order = []
+        async def waiter(prio, name):
+            await s.enter(prio)
+            order.append(name)
+        late = asyncio.create_task(waiter(2, "extern"))
+        await asyncio.sleep(0)
+        early = asyncio.create_task(waiter(0, "lokal"))
+        await asyncio.sleep(0)
+        s.leave(); await asyncio.sleep(0)
+        s.leave(); await asyncio.gather(late, early)
+        self.assertEqual(order, ["lokal", "extern"])
+
+    async def test_ageing_beats_priority_once_the_wait_is_long_enough(self):
+        """Priority decides who goes first, not who goes at all."""
+        old, GW.AGE_AFTER = GW.AGE_AFTER, 0
+        try:
+            g = GW.PriorityGate(1)
+            await g.enter(0)
+            order = []
+            async def waiter(prio, name):
+                await g.enter(prio)
+                order.append(name)
+            remote = asyncio.create_task(waiter(2, "remote"))
+            await asyncio.sleep(0)
+            local = asyncio.create_task(waiter(0, "local"))
+            await asyncio.sleep(0)
+            g.leave(); await asyncio.sleep(0)
+            g.leave(); await asyncio.gather(remote, local)
+            self.assertEqual(order[0], "remote",
+                             "the one that waited longest has to go first once "
+                             "it has aged in")
+            self.assertEqual(g.overtaken, 2)
+        finally:
+            GW.AGE_AFTER = old
+
+    async def test_a_waiter_is_not_starved_by_newcomers(self):
+        """Measured on the real stack: with four local streams a LAN caller was
+        still waiting after 200 s. Newer arrivals must not keep overtaking."""
+        old, GW.AGE_AFTER = GW.AGE_AFTER, 0.05
+        try:
+            g = GW.PriorityGate(1)
+            await g.enter(0)
+            served = []
+            async def waiter(prio, name):
+                await g.enter(prio)
+                served.append(name)
+            remote = asyncio.create_task(waiter(2, "remote"))
+            await asyncio.sleep(0.06)              # let it age in
+            newer = [asyncio.create_task(waiter(0, "local%d" % i)) for i in range(3)]
+            await asyncio.sleep(0)
+            for _ in range(4):
+                g.leave()
+                await asyncio.sleep(0)
+            await asyncio.gather(remote, *newer)
+            self.assertEqual(served[0], "remote")
+        finally:
+            GW.AGE_AFTER = old
+
+    async def test_priority_still_wins_while_everyone_is_fresh(self):
+        old, GW.AGE_AFTER = GW.AGE_AFTER, 3600
+        try:
+            g = GW.PriorityGate(1)
+            await g.enter(0)
+            order = []
+            async def waiter(prio, name):
+                await g.enter(prio)
+                order.append(name)
+            late = asyncio.create_task(waiter(2, "remote"))
+            await asyncio.sleep(0)
+            early = asyncio.create_task(waiter(0, "local"))
+            await asyncio.sleep(0)
+            g.leave(); await asyncio.sleep(0)
+            g.leave(); await asyncio.gather(late, early)
+            self.assertEqual(order, ["local", "remote"])
+            self.assertEqual(g.overtaken, 0)
+        finally:
+            GW.AGE_AFTER = old
+
+    async def test_cancel_while_queued_loses_no_slot(self):
+        s = GW.PriorityGate(1)
+        await s.enter(0)
+        t = asyncio.create_task(s.enter(1))
+        await asyncio.sleep(0)
+        t.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await t
+        s.leave()
+        # The slot has to be grantable again.
+        await asyncio.wait_for(s.enter(1), timeout=1)
+
+
+# ------------------------------------------- Zonen, Zugang, Positivliste ---
+class GatewayOnTheWire(unittest.IsolatedAsyncioTestCase):
+    """Shared setup: the real gateway, a fake llama-server."""
+    TUNNEL = True          # True = alles gilt als 'extern'
+
+    async def asyncSetUp(self):
+        self.seen = []
+        self.hang = None
+        async def llama(request):
+            self.seen.append((request.method, request.path_qs, await request.read()))
+            if self.hang is not None:
+                await self.hang.wait()
+            if request.path == "/slots":
+                return web.json_response([])
+            return web.json_response({"ok": True, "path": request.path})
+        lapp = web.Application()
+        lapp.router.add_route("*", "/{tail:.*}", llama)
+        self.lserver = TestServer(lapp)
+        await self.lserver.start_server()
+
+        port = await common.free_port()
+        self.backup = {k: getattr(GW, k) for k in
+                          ("LLAMA", "TUNNEL_PORT", "TOKENS", "PREFIXES",
+                           "SAVED", "IN_FLIGHT_PER_TOKEN", "GATE",
+                           "PER_TOKEN_MAX", "AUTO_SAVE")}
+        GW.LLAMA = str(self.lserver.make_url("")).rstrip("/")
+        GW.TUNNEL_PORT = port if self.TUNNEL else None
+        GW.TOKENS = {"geheim": "tester"}
+        GW.PREFIXES, GW.SAVED, GW.IN_FLIGHT_PER_TOKEN = {}, {}, {}
+        GW.GATE = GW.PriorityGate(2)
+        GW.PER_TOKEN_MAX = 2
+        GW.AUTO_SAVE = False
+
+        # Record the log instead of printing it — otherwise the test output
+        # drowns in operational messages.
+        self.log_lines = []
+        self.log_patch = mock.patch.object(
+            GW, "log", lambda *a: self.log_lines.append(" ".join(map(str, a))))
+        self.log_patch.start()
+
+        # Same runner regime as production (handler_cancellation) — the
+        # client-abort contract below only exists under it.
+        self.server = TestServer(GW.build_app(), port=port,
+                                 **GW.RUNNER_KWARGS)
+        await self.server.start_server()
+        self.url = "http://127.0.0.1:%d" % port
+        self.session = aiohttp.ClientSession()
+
+    async def asyncTearDown(self):
+        self.log_patch.stop()
+        await self.session.close()
+        await self.server.close()
+        await self.lserver.close()
+        for k, v in self.backup.items():
+            setattr(GW, k, v)
+
+    def payload(self, **kw):
+        return {"model": "laguna", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}], **kw}
+
+    async def fetch(self, path, token="geheim", method="POST", headers=None, payload=None):
+        k = dict(headers or {})
+        if token:
+            k["Authorization"] = "Bearer " + token
+        return await self.session.request(
+            method, self.url + path, headers=k,
+            json=(self.payload() if payload is None and method == "POST" else payload))
+
+
+class TestRestoreGuard(unittest.IsolatedAsyncioTestCase):
+    """A restore may only touch a FULLY idle server. The 25.08. incident:
+    restoring into an idle slot while the other slot was computing left the
+    server producing degenerate output until a fresh start. A skipped
+    restore costs one cold prefill; a poisoned KV state ruins everything
+    after it."""
+
+    async def _run(self, slots):
+        self.seen = []
+        async def llama(request):
+            self.seen.append(request.path_qs)
+            if request.path == "/slots":
+                return web.json_response(slots)
+            return web.json_response({"n_restored": 5})
+        lapp = web.Application()
+        lapp.router.add_route("*", "/{tail:.*}", llama)
+        server = TestServer(lapp)
+        await server.start_server()
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "n1.bin"), "wb").close()
+            with mock.patch.object(GW, "LLAMA",
+                                   str(server.make_url("")).rstrip("/")), \
+                 mock.patch.object(GW, "SLOT_PATH", d), \
+                 mock.patch.object(GW, "SAVED", {"id1": "n1"}), \
+                 mock.patch.object(GW, "log", lambda *a: None):
+                try:
+                    return await GW.restore_from_disk("id1")
+                finally:
+                    await server.close()
+
+    async def test_no_restore_while_any_slot_computes(self):
+        ok = await self._run([
+            {"id": 0, "is_processing": True, "n_prompt_tokens": 9000},
+            {"id": 1, "is_processing": False, "n_prompt_tokens": 0}])
+        self.assertFalse(ok)
+        self.assertFalse([p for p in self.seen if "action=restore" in p],
+                         "restore was sent although a slot was computing")
+
+    async def test_restore_proceeds_on_an_idle_server(self):
+        ok = await self._run([
+            {"id": 0, "is_processing": False, "n_prompt_tokens": 0},
+            {"id": 1, "is_processing": False, "n_prompt_tokens": 7000}])
+        self.assertTrue(ok)
+        self.assertTrue([p for p in self.seen if "action=restore" in p])
+
+
+class TestModelListing(unittest.TestCase):
+    """A consumer that builds its model picker from /v1/models (dsh does)
+    must see the names the GATEWAY serves, not only the server's own alias.
+    Reported from a second machine on 25.08.: the listing advertised
+    `qwen38` alone, so the thinking variants were invisible."""
+
+    TABLE = {"qwen38": {"enable_thinking": False},
+             "qwen38-think": {"enable_thinking": True,
+                              "reasoning_effort": "low"},
+             "qwen38-deep": {"enable_thinking": True,
+                             "reasoning_effort": "medium"}}
+
+    def _listing(self):
+        return {"models": [{"name": "qwen38", "model": "qwen38",
+                            "capabilities": ["completion", "multimodal"],
+                            "details": {"n_ctx": 204800}}]}
+
+    def test_every_configured_name_appears_once(self):
+        out = GW.add_aliases(self._listing(), self.TABLE)
+        names = [e["name"] for e in out["models"]]
+        self.assertEqual(sorted(names),
+                         sorted(["qwen38", "qwen38-think", "qwen38-deep"]))
+        self.assertEqual(len(names), len(set(names)), "no duplicates")
+
+    def test_aliases_inherit_what_the_server_reports(self):
+        """They ARE the same loaded model — capabilities and context size
+        must not be invented differently for them."""
+        out = GW.add_aliases(self._listing(), self.TABLE)
+        for e in out["models"]:
+            self.assertEqual(e["capabilities"], ["completion", "multimodal"])
+            self.assertEqual(e["details"]["n_ctx"], 204800)
+
+    def test_the_description_names_the_thinking_level(self):
+        out = GW.add_aliases(self._listing(), self.TABLE)
+        by = {e["name"]: e.get("description", "") for e in out["models"]}
+        self.assertIn("low", by["qwen38-think"])
+        self.assertIn("medium", by["qwen38-deep"])
+
+    def test_an_openai_shaped_listing_works_too(self):
+        listing = {"data": [{"id": "qwen38", "object": "model"}]}
+        out = GW.add_aliases(listing, self.TABLE)
+        self.assertEqual(sorted(e["id"] for e in out["data"]),
+                         sorted(["qwen38", "qwen38-think", "qwen38-deep"]))
+
+    def test_both_arrays_are_extended_when_both_are_present(self):
+        """llama-server answers with `models` AND `data` in one body.
+        Extending only the first left an OpenAI client — the dialect this
+        was written for — seeing a single model. Reported 26.08."""
+        listing = {"models": [{"name": "qwen38", "model": "qwen38"}],
+                   "object": "list",
+                   "data": [{"id": "qwen38", "object": "model"}]}
+        out = GW.add_aliases(listing, self.TABLE)
+        self.assertEqual(sorted(e["name"] for e in out["models"]),
+                         sorted(self.TABLE))
+        self.assertEqual(sorted(e["id"] for e in out["data"]),
+                         sorted(self.TABLE))
+
+    def test_an_empty_or_odd_listing_is_passed_through_untouched(self):
+        for listing in ({"models": []}, {}, {"models": "nonsense"}):
+            self.assertEqual(GW.add_aliases(dict(listing), self.TABLE),
+                             dict(listing))
+
+
+class TestClientAbort(GatewayOnTheWire):
+    """A caller that vanishes mid-request must not keep occupying the
+    gateway. Observed 25.08. in production, before RUNNER_KWARGS: a client
+    timeout left the gate slot and the per-token counter taken for the full
+    ~10-minute upstream generation — the consumer got nothing but 429s from
+    a machine that was working for nobody."""
+    TUNNEL = False
+
+    async def test_a_dead_client_frees_the_gate_at_once(self):
+        self.hang = asyncio.Event()          # the fake upstream hangs
+        body = {"model": "x", "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}]}
+        t = asyncio.create_task(
+            self.session.post(self.url + "/v1/messages", json=body))
+        entered = await common.wait_until(lambda: GW.GATE.free < 2)
+        self.assertTrue(entered, "the request never reached the gate")
+        t.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await t
+        freed = await common.wait_until(lambda: GW.GATE.free == 2, limit=3.0)
+        self.assertTrue(freed, "gate slot still taken after the client left")
+        self.assertEqual(GW.IN_FLIGHT_PER_TOKEN.get("local", 0), 0)
+        self.hang.set()
+
+
+class TestSaveSurvivesTheClientLeaving(GatewayOnTheWire):
+    """The saving of a cold prefix must not depend on how the CLIENT behaves.
+
+    Found 26.08. by running tests/live_prefix.sh: it reported "cold request
+    answered (72 s)" and then "not saved". The gateway log showed START and no
+    DONE. Reproduced on the live stack with two identical requests that
+    differed only in the client:
+
+        curl (closes at once)          START, no DONE, nothing saved
+        connection held open 5 s       START, DONE took=0.8s
+
+    RUNNER_KWARGS carries handler_cancellation=True, which exists so a caller
+    who vanishes frees the gate slot at once (TestClientAbort). With
+    aiohttp 3.13 the cancellation also lands when the client closes NORMALLY,
+    right after the answer — and it landed before the two lines that schedule
+    the save and record the use.
+
+    What that cost: the prefix store is the mechanism that turns a 100-180 s
+    cold start into 1.4 s, and it only filled for clients that happened to
+    keep the connection open. The accounting behind the LRU cleanup was
+    skipped the same way, so the store also evicted by wrong information.
+    """
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        GW.AUTO_SAVE = True
+        self.saved = []
+        async def fake_save(id_, body, dialect=None):
+            self.saved.append(id_)
+        self.save_patch = mock.patch.object(GW, "auto_save", fake_save)
+        self.save_patch.start()
+        self.min_backup, GW.AUTO_MIN_CHARS = GW.AUTO_MIN_CHARS, 0
+
+    async def asyncTearDown(self):
+        self.save_patch.stop()
+        GW.AUTO_MIN_CHARS = self.min_backup
+        await super().asyncTearDown()
+
+    def cancel_after_the_answer(self):
+        """Reproduce the production timing deterministically.
+
+        Racing a real disconnect against a fake upstream that answers in
+        microseconds is not reproducible — the handler simply finishes first.
+        What production does is unambiguous though, and this models exactly
+        that: the answer reaches the client in full (write_eof completed) and
+        THEN the handler is cancelled. Everything after the forward() call is
+        therefore skipped.
+        """
+        real = GW.forward
+        async def forward_then_cancelled(*a, **kw):
+            await real(*a, **kw)
+            raise asyncio.CancelledError()
+        return mock.patch.object(GW, "forward", forward_then_cancelled)
+
+    async def test_a_cold_prefix_is_saved_even_if_the_client_is_gone(self):
+        with self.cancel_after_the_answer():
+            try:
+                await self.fetch("/v1/messages", token=None)
+            except Exception:
+                pass                     # the client sees a broken connection
+        ok = await common.wait_until(lambda: bool(self.saved), limit=3.0)
+        self.assertTrue(ok,
+                        "the cold prefix of a client that closed at once was "
+                        "never scheduled for saving — every such consumer "
+                        "pays a full cold start on its next request")
+
+    async def test_the_completion_is_logged_even_then(self):
+        """DONE is what the operator reads. A log that shows START without an
+        end for every short-lived client cannot be used to find anything."""
+        with self.cancel_after_the_answer():
+            try:
+                await self.fetch("/v1/messages", token=None)
+            except Exception:
+                pass
+        ok = await common.wait_until(
+            lambda: any(l.startswith("DONE") for l in self.log_lines), limit=3.0)
+        self.assertTrue(ok, "no DONE line: %r" % self.log_lines)
+
+    async def test_the_use_is_recorded_even_then(self):
+        """PREFIXES[...]['last'] feeds the LRU that prefix-cleanup evicts by.
+        Skipping it makes the store throw away the wrong prefixes."""
+        with self.cancel_after_the_answer():
+            try:
+                await self.fetch("/v1/messages", token=None)
+            except Exception:
+                pass
+        ok = await common.wait_until(
+            lambda: any(e.get("last") for e in GW.PREFIXES.values()), limit=3.0)
+        self.assertTrue(ok, "no prefix recorded a time of last use")
+
+    async def test_an_abort_BEFORE_the_answer_saves_nothing(self):
+        """The other half of the contract, and the more important one: a
+        caller who leaves during the 100-180 s prefill has no complete answer
+        in the slot, so there is nothing worth saving and saving it would
+        write a partial prefix that later restores as one."""
+        real = GW.forward
+        async def cancelled_during(*a, **kw):
+            raise asyncio.CancelledError()
+        with mock.patch.object(GW, "forward", cancelled_during):
+            try:
+                await self.fetch("/v1/messages", token=None)
+            except Exception:
+                pass
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.saved, [],
+                         "a prefix was saved although the answer never finished")
+
+
+class TestZoneRemote(GatewayOnTheWire):
+    TUNNEL = True
+
+    async def test_without_a_token_401(self):
+        r = await self.fetch("/v1/messages", token=None)
+        self.assertEqual(r.status, 401)
+        self.assertEqual(self.seen, [], "llama-server darf nichts seen haben")
+
+    async def test_wrong_token_401(self):
+        r = await self.fetch("/v1/messages", token="erfunden")
+        self.assertEqual(r.status, 401)
+
+    async def test_valid_token_200(self):
+        r = await self.fetch("/v1/messages")
+        self.assertEqual(r.status, 200)
+        self.assertEqual(len(self.seen), 1)
+
+    async def test_x_api_key_is_accepted_too(self):
+        r = await self.fetch("/v1/messages", token=None, headers={"x-api-key": "geheim"})
+        self.assertEqual(r.status, 200)
+
+    async def test_blocked_paths_404_despite_a_token(self):
+        # /v1/chat/completions used to stand here. It is an allowed dialect
+        # of the same inference since 25.08. (test below) — /completion is
+        # NOT: it takes a raw prompt, bypasses the chat template and was the
+        # free-inference hole in docs/SECURITY.md.
+        for path, method in (("/slots", "GET"), ("/completion", "POST"),
+                              ("/props", "GET"), ("/health", "GET")):
+            with self.subTest(path=path):
+                r = await self.fetch(path, method=method, payload={"prompt": "hi"})
+                self.assertEqual(r.status, 404)
+        self.assertEqual(self.seen, [],
+                         "no blocked path may reach llama-server")
+
+    async def test_openai_dialect_is_allowed_but_still_needs_a_token(self):
+        """OpenAI-speaking agents (dsh) reach the model through the tunnel —
+        under exactly the same zone rules as Claude Code."""
+        r = await self.fetch("/v1/chat/completions", token="erfunden")
+        self.assertEqual(r.status, 401)
+        self.assertEqual(self.seen, [], "no token, no forwarding")
+        r = await self.fetch("/v1/chat/completions")
+        self.assertEqual(r.status, 200)
+        self.assertEqual(len(self.seen), 1)
+
+    async def test_allowed_paths(self):
+        r = await self.fetch("/v1/models", method="GET")
+        self.assertEqual(r.status, 200)
+        r = await self.fetch("/v1/messages/count_tokens")
+        self.assertEqual(r.status, 200)
+
+    async def test_allow_list_cannot_be_bypassed(self):
+        for path in ("/v1/messages/../slots", "/V1/MESSAGES", "/slots?x=1",
+                     "//v1/messages", "/v1/messages/x"):
+            with self.subTest(path=path):
+                r = await self.fetch(path, method="GET")
+                self.assertEqual(r.status, 404)
+
+    async def test_status_is_blocked_from_remote(self):
+        # The tunnel comes from 127.0.0.1 when cloudflared runs natively.
+        # Looking only at the IP here hands out prefix and consumer names.
+        r = await self.session.get(self.url + "/gateway/status",
+                                   headers={"Authorization": "Bearer geheim"})
+        self.assertEqual(r.status, 403)
+
+    async def test_throttle_per_access(self):
+        GW.PER_TOKEN_MAX = 1
+        self.hang = asyncio.Event()
+        erste = asyncio.create_task(self.fetch("/v1/messages"))
+        while not self.seen:
+            await asyncio.sleep(0.01)
+        zweite = await self.fetch("/v1/messages")
+        self.assertEqual(zweite.status, 429)
+        self.hang.set()
+        self.assertEqual((await erste).status, 200)
+        # and free again afterwards
+        await common.wait_until(lambda: GW.IN_FLIGHT_PER_TOKEN.get("tester", 0) == 0)
+        self.assertEqual(GW.IN_FLIGHT_PER_TOKEN.get("tester", 0), 0)
+
+    async def test_a_queued_streaming_caller_gets_a_sign_of_life(self):
+        """Between GATE.enter() and forward() nothing used to be written. A
+        queued remote caller therefore saw only silence, and Cloudflare drops a
+        connection after 125 s of it — measured: with four local streams the
+        caller was still waiting after 200 s."""
+        old_ka, GW.KEEPALIVE = GW.KEEPALIVE, 0.05
+        GW.GATE = GW.PriorityGate(1)
+        try:
+            self.hang = asyncio.Event()
+            busy = asyncio.create_task(self.fetch("/v1/messages"))
+            while not self.seen:
+                await asyncio.sleep(0.01)
+            r = await self.session.post(
+                self.url + "/v1/messages",
+                headers={"Authorization": "Bearer geheim"},
+                json=self.payload(stream=True))
+            self.assertEqual(r.status, 200)
+            self.assertEqual(r.headers.get("content-type"), "text/event-stream")
+            chunk = await asyncio.wait_for(r.content.read(3), timeout=5)
+            self.assertEqual(chunk, b":\n\n", "no sign of life while queued")
+            r.close()
+            self.hang.set()
+            await busy
+        finally:
+            GW.KEEPALIVE = old_ka
+
+    async def test_a_queued_non_streaming_caller_keeps_its_status_code(self):
+        """Only a stream can be kept alive — committing to a status code for
+        everyone would throw away the upstream's answer."""
+        old_ka, GW.KEEPALIVE = GW.KEEPALIVE, 0.05
+        GW.GATE = GW.PriorityGate(1)
+        try:
+            self.hang = asyncio.Event()
+            busy = asyncio.create_task(self.fetch("/v1/messages"))
+            while not self.seen:
+                await asyncio.sleep(0.01)
+            queued = asyncio.create_task(self.fetch("/v1/messages"))
+            await asyncio.sleep(0.2)             # long enough for two keep-alives
+            self.assertFalse(queued.done(), "it should still be waiting")
+            self.hang.set()
+            r = await queued
+            self.assertEqual(r.status, 200)
+            self.assertNotEqual(r.headers.get("content-type"), "text/event-stream")
+            await busy
+        finally:
+            GW.KEEPALIVE = old_ka
+
+    async def test_counter_returns_when_waiting_is_cancelled(self):
+        """The caller aborts while standing in the queue.
+
+        The counter used to stay put: after PER_TOKEN_MAX such cases the
+        access got nothing but 429 until the service was restarted.
+        """
+        async def boom(prio):
+            raise asyncio.CancelledError()
+        GW.GATE.enter = boom
+        try:
+            await self.fetch("/v1/messages")
+        except Exception:
+            pass
+        await common.wait_until(lambda: GW.IN_FLIGHT_PER_TOKEN.get("tester", 0) == 0)
+        self.assertEqual(GW.IN_FLIGHT_PER_TOKEN.get("tester", 0), 0)
+
+    async def test_gate_slot_returns_when_the_reload_is_cancelled(self):
+        """Cancelled during restore_from_disk — that catches only 'except
+        Exception', and CancelledError is not one."""
+        ident = GW.prefix_id(self.payload())[0]
+        GW.SAVED = {ident: "irgendwas"}
+        async def boom(k):
+            raise asyncio.CancelledError()
+        GW.restore_from_disk = boom
+        free_before = GW.GATE.free
+        try:
+            await self.fetch("/v1/messages")
+        except Exception:
+            pass
+        await common.wait_until(lambda: GW.GATE.free == free_before)
+        self.assertEqual(GW.GATE.free, free_before,
+                         "MAX_INFLIGHT has dropped permanently")
+        self.assertEqual(GW.IN_FLIGHT_PER_TOKEN.get("tester", 0), 0)
+
+
+class TestSaveThreshold(GatewayOnTheWire):
+    """Not every cold prefix is worth 628 MB."""
+    TUNNEL = False
+
+    async def _watch_saving(self, payload, path="/v1/messages"):
+        GW.AUTO_SAVE = True
+        saved_ids = []
+        async def fake(ident, body, dialect=GW.DIA.ANTHROPIC):
+            saved_ids.append((ident, dialect))
+        GW.auto_save = fake
+        r = await self.fetch(path, token=None, payload=payload)
+        self.assertEqual(r.status, 200)
+        await asyncio.sleep(0.05)          # the save runs as a task
+        return saved_ids
+
+    async def test_minimal_body_is_not_saved(self):
+        # Exactly the body from setup/smoketest.sh. In production it left a
+        # file with seven tokens in the store.
+        self.assertEqual(await self._watch_saving(self.payload()), [])
+
+    async def test_real_prefix_is_saved(self):
+        p = SYN.body()
+        p["model"], p["max_tokens"] = "laguna", 1
+        saved = await self._watch_saving(p)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][1], GW.DIA.ANTHROPIC,
+                         "the dialect has to reach prewarm — it decides how "
+                         "the prefix is rendered")
+
+    async def test_an_openai_prefix_is_saved_under_its_own_dialect(self):
+        """A dsh-shaped body must be saved too, and prewarm has to be told
+        which shape it has: rendered as Anthropic it would lose the system
+        prompt and the tools, and the saved state would fit no request."""
+        p = {"model": "qwen38", "max_tokens": 1,
+             "messages": [{"role": "system",
+                           "content": SYN.system_text("/tmp/p", "/tmp/m")},
+                          {"role": "user", "content": "hi"}],
+             "tools": [{"type": "function",
+                        "function": {"name": "T%02d" % i,
+                                     "description": "d" * 200,
+                                     "parameters": {"type": "object"}}}
+                       for i in range(8)]}
+        saved = await self._watch_saving(p, path="/v1/chat/completions")
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0][1], GW.DIA.OPENAI)
+
+
+class TestZoneLocal(GatewayOnTheWire):
+    TUNNEL = False
+
+    async def test_local_needs_no_token(self):
+        r = await self.fetch("/v1/messages", token=None)
+        self.assertEqual(r.status, 200)
+
+    async def test_local_may_do_everything(self):
+        r = await self.fetch("/slots", token=None, method="GET")
+        self.assertEqual(r.status, 200)
+
+    async def test_status_is_readable_locally(self):
+        r = await self.session.get(self.url + "/gateway/status")
+        self.assertEqual(r.status, 200)
+        self.assertIn("prefixes", await r.json())
+
+
+# ---------------------------------------------------------------- Token ---
+class TestSseError(unittest.TestCase):
+    """Once the keep-alives have gone out the HTTP status is spent — a later
+    failure can only be delivered inside the stream."""
+
+    def test_shape(self):
+        raw = GW.sse_error(400, "context window exceeded").decode()
+        self.assertTrue(raw.startswith("event: error\ndata: "))
+        self.assertTrue(raw.endswith("\n\n"))
+        payload = json.loads(raw.split("data: ", 1)[1])
+        self.assertEqual(payload["type"], "error")
+        self.assertIn("400", payload["error"]["message"])
+        self.assertIn("context window exceeded", payload["error"]["message"])
+
+
+class TestTokenFile(unittest.TestCase):
+    def read_tokens(self, content):
+        with tempfile.NamedTemporaryFile("w", suffix=".tokens", delete=False) as f:
+            f.write(content)
+            path = f.name
+        old, GW.TOKEN_FILE = GW.TOKEN_FILE, path
+        old_t, GW.TOKEN = GW.TOKEN, ""
+        try:
+            return GW.load_tokens()
+        finally:
+            GW.TOKEN_FILE, GW.TOKEN = old, old_t
+            os.unlink(path)
+
+    def test_name_and_secret(self):
+        self.assertEqual(self.read_tokens("a eins\nb zwei\n"), {"eins": "a", "zwei": "b"})
+
+    def test_comments_and_blank_lines(self):
+        self.assertEqual(self.read_tokens("# nichts\n\n  a  eins  \n"), {"eins": "a"})
+
+    def test_secret_may_contain_spaces(self):
+        # split(None, 1): everything after the name is the secret. smoketest.sh
+        # used to read only the first word here and then reported false 401s.
+        self.assertEqual(self.read_tokens("a eins zwei\n"), {"eins zwei": "a"})
+
+    def test_no_file_means_no_access(self):
+        old, GW.TOKEN_FILE = GW.TOKEN_FILE, "/does/not/exist"
+        old_t, GW.TOKEN = GW.TOKEN, ""
+        try:
+            self.assertEqual(GW.load_tokens(), {})
+        finally:
+            GW.TOKEN_FILE, GW.TOKEN = old, old_t
+
+
+if __name__ == "__main__":
+    unittest.main()

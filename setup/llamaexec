@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# llamaexec — expand the profile's placeholders, then exec llama-server.
+#
+# Called from ExecStart= with no arguments; LLAMA_ARGS and LLAMA_BIN come from
+# the unit's EnvironmentFile.
+#
+# Why a script and not a `bash -c` one-liner in the unit. That is what was
+# tried first, on 26.08., and it started llama-server with NO ARGUMENTS AT
+# ALL — the server came up in router mode, listening and modelless, and
+# /slots answered so it looked alive. systemd does its own $VAR/${VAR}
+# substitution inside ExecStart before any shell sees it, and bash's
+# ${VAR//a/b} is not systemd syntax; what reached bash was empty. A file has
+# no such layer: systemd execs it, and the shell inside sees the environment.
+#
+# The two placeholders are what keeps a profile from being tied to one
+# person's directories. The same pair is expanded in setup/waitformodel
+# (ExecStartPre, which has to find the model file) and in
+# setup/lib/systemdfile.py (every tool that reads a profile).
+# tests/test_scripts.py pins that all three still know both.
+#
+#   @HOME@     $HOME
+#   @MODELS@   $LLAMA_MODELS, which the unit loads from
+#              ~/.config/llm-stack.env. NO default: a directory that
+#              exists on one machine is not one.
+#
+# Parameter expansion, not sed: no delimiter that a path could contain, and
+# no '&' to be reinterpreted in a replacement. Deliberately not `eval`: a
+# profile is a file users are invited to edit, and eval on it would turn a
+# configuration mistake into arbitrary code.
+set -u
+
+: "${LLAMA_ARGS:?llamaexec: LLAMA_ARGS is empty — the unit has no profile}"
+
+A="${LLAMA_ARGS//@HOME@/$HOME}"
+# Required only when the placeholder is actually THERE. A profile that names
+# an absolute model path needs no answer, and demanding one anyway would stop
+# a start that has nothing to do with model directories. Same rule as
+# systemdfile.expand(), which resolves only when the token is present.
+case "$A" in
+  *@MODELS@*) : "${LLAMA_MODELS:?is not set, and this profile needs it. The unit
+  loads it from ~/.config/llm-stack.env; run bash setup/install.sh}" ;;
+esac
+A="${A//@MODELS@/${LLAMA_MODELS:-}}"
+BIN="$HOME/${LLAMA_BIN:-llama.cpp/build-vulkan/bin/llama-server}"
+
+# Word splitting on whitespace is exactly what systemd would have done, and
+# quotes are DATA — --chat-template-kwargs {"enable_thinking":false} has to
+# arrive with its quotes intact, which is why this is not shlex or eval.
+# shellcheck disable=SC2086
+exec "$BIN" $A

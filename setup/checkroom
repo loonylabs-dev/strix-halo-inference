@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# llm-check-room — refuse a start that would take the machine down.
+#
+# Called without arguments from ExecStartPre=; LLAMA_ARGS and the profile's
+# MODEL_* declarations come from the unit's EnvironmentFile, which systemd has
+# already put in this process's environment. setup/lib/budget.py does the
+# arithmetic and owns the reasoning; this file is the part that has to survive
+# being run by systemd at boot.
+#
+#   0 = it fits, or nothing here could tell (see below)
+#   1 = it does not fit, and the unit must not start
+#
+# Why this exists as its own ExecStartPre and not inside waitformodel
+# ------------------------------------------------------------------
+# They look like the same kind of check and they are not. waitformodel WAITS —
+# a missing NTFS mount comes back. This one REFUSES — a model that is too big
+# does not become smaller. Different semantics, different timeouts, and
+# folding them together would mean one of the two behaviours got applied to
+# the wrong problem.
+#
+# Why it fails CLOSED
+# -------------------
+# The failure it prevents is not a crash. GTT comes out of system RAM, is
+# pinned, and is not swappable: a model that does not fit does not page and
+# does not get OOM-killed — the machine stops responding. That happened three
+# times on 26.08.2026, twice in one day.
+#
+# So a service that refuses to start is the GOOD outcome here. It is visible
+# (`systemctl --user status`, the journal), it is reversible, and inference is
+# missing rather than the desktop. That is a deliberate trade against the
+# lesson waitformodel was written for — "the machine comes up and inference is
+# simply gone" — because the alternative is a machine that does not come up at
+# all.
+#
+# But it retries first. At boot, memory is still settling: another unit may
+# hold a page cache the kernel has not yet reclaimed, and GTT from a previous
+# server may still be being torn down. A single reading at the wrong second is
+# not a verdict about a profile.
+#
+# Both knobs are environment variables so the retry can be tuned per unit
+# without touching this file.
+set -uo pipefail
+TRIES="${LLM_GUARD_TRIES:-6}"
+SLEEP="${LLM_GUARD_SLEEP:-5}"
+
+# budget.py imports systemdfile.py from its OWN directory, so the two travel
+# together — the same rule that keeps dialects.py next to cc-gateway.py. Three
+# places may hold them: next to this script (the repo, or /usr/local/bin next
+# to the installed copy), the user's bin, and the system-wide library the
+# root unit may execute from. First one wins.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BUDGET=""
+for d in "$HERE" "$HERE/lib" "$HOME/.claude/bin" /usr/local/lib/llm-profile; do
+  if [ -r "$d/budget.py" ] && [ -r "$d/systemdfile.py" ]; then BUDGET="$d/budget.py"; break; fi
+done
+# Which copy answered, when it is not the one beside this script. The search
+# path has a tail — /usr/local/lib/llm-profile — that is populated only by
+# 'install.sh --system-unit' and is NOT watched by check.sh when the system
+# unit is absent. A stale copy there would not fail: it would guard with OLD
+# arithmetic and say nothing, which is precisely the failure this guard was
+# written against, in the guard's own lookup. So a fallback is named.
+FROM=""
+[ -n "$BUDGET" ] && [ "$(dirname "$BUDGET")" != "$HERE" ] \
+  && FROM="  [budget.py from $(dirname "$BUDGET")]"
+
+if [ -z "$BUDGET" ]; then
+  # Not a reason to block a start. A guard that cannot be found has no opinion
+  # about whether the model fits, and refusing on that basis would turn a
+  # packaging mistake into an outage.
+  echo "llm-check-room: budget.py not found — starting without the memory guard" >&2
+  exit 0
+fi
+
+if [ "${LLM_NO_MEMORY_GUARD:-${BENCH_NO_MEMORY_GUARD:-0}}" = "1" ]; then
+  echo "llm-check-room: LLM_NO_MEMORY_GUARD=1 — not checking" >&2
+  exit 0
+fi
+
+i=1
+while : ; do
+  # Captured rather than streamed: a refusal that is retried six times would
+  # print its whole arithmetic six times into the journal, and the reader would
+  # have to work out which one was the verdict.
+  out="$(python3 "$BUDGET" --from-env --check --brief 2>&1)"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # Say so even when it passes. A guard that is silent on success cannot be
+    # told from a guard that is not installed — and checkroom deliberately
+    # exits 0 when it cannot find budget.py, so those two really are the same
+    # journal. One line, with the numbers, ends that ambiguity. It is the same
+    # argument setup/scripts/probe.py makes about the silent failure modes.
+    printf '%s\n' "llm-check-room: $out$FROM" >&2
+    [ "$i" -gt 1 ] && echo "llm-check-room: (on attempt $i)" >&2
+    exit 0
+  fi
+  if [ "$i" -ge "$TRIES" ]; then
+    printf '%s\n' "$out" >&2
+    echo "llm-check-room: still does not fit after $i attempts over ~$((TRIES * SLEEP))s — refusing to start" >&2
+    echo "  What is holding memory:  systemctl --user status 'llama-user@*'  /  pgrep -a llama-server" >&2
+    echo "  What this profile needs: python3 $BUDGET --from-env" >&2
+    exit 1
+  fi
+  [ "$i" -eq 1 ] && echo "llm-check-room: does not fit yet — retrying for ~$((TRIES * SLEEP))s" >&2
+  i=$((i + 1))
+  sleep "$SLEEP"
+done

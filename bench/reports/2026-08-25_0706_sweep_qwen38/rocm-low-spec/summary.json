@@ -1,0 +1,32 @@
+{
+ "label": "rocm-low-spec",
+ "url": "http://127.0.0.1:8080",
+ "seed": 7,
+ "started": "2026-08-25 07:08:27",
+ "gtt_gib": 24.44,
+ "records": [],
+ "probes": {
+  "prefill_cold": {
+   "new": 14985,
+   "cached": 0,
+   "rate": 0.0,
+   "seconds": 69.45,
+   "tps": 215.8
+  },
+  "decode_warm": {
+   "out": 256,
+   "seconds": 13.09,
+   "cached_pct": 93.0,
+   "tps": 19.6
+  }
+ },
+ "summary": {
+  "tasks": 0,
+  "passed": 0,
+  "failed": [],
+  "seconds_to_correct_median": null,
+  "seconds_total": 0,
+  "output_tokens_total": 0,
+  "reasoning_chars_total": 0
+ }
+}

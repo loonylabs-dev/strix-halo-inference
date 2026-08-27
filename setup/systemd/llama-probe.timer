@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch for the silent failure modes of this hardware
+
+[Timer]
+# Every ten minutes. The fault does not heal: a poisoned server stays poisoned
+# until it restarts, so the interval decides how long a consumer talks to a
+# broken model, not whether it is caught. Ten minutes costs one 16-token
+# request per interval and bounds the damage; one minute would cost six times
+# as much for a bound nobody needs.
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

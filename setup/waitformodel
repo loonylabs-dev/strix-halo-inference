@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# llm-wait-for-model — wait until the model file from LLAMA_ARGS is readable.
+#
+# Why this is needed: models are large, so they usually live on a volume of
+# their own rather than on the root filesystem — and a volume in /etc/fstab
+# with `nofail` is not there yet at boot, or not at all. On the machine this
+# was written for it is an NTFS partition shared with Windows, where ntfs3 also
+# refuses the mount outright when fast startup left the volume dirty. Either
+# way llama-server does not find its model.
+#
+# What happens then is the actual problem: with Restart=on-failure,
+# RestartSec=5 and StartLimitBurst=3 that is three attempts in fifteen seconds,
+# after which the service stays down FOR GOOD. Nothing shows at boot, because
+# `nofail` passes over the missing mount silently too. The machine comes up and
+# inference is simply gone.
+#
+# Called without arguments from ExecStartPre=; LLAMA_ARGS comes from the unit's
+# EnvironmentFile.
+#
+#   0 = model readable (possibly after waiting)
+#   1 = still not readable after WAIT_MAX seconds
+#
+# Paths with spaces are not supported — the unit's ExecStart line could not
+# handle them either.
+set -uo pipefail
+WAIT_MAX="${WAIT_MAX:-${WARTEN_MAX:-120}}"      # WARTEN_MAX: pre-rename name
+
+if [ -z "${LLAMA_ARGS:-}" ]; then
+  echo "llm-wait-for-model: LLAMA_ARGS is empty, nothing to check" >&2
+  exit 0
+fi
+
+# @MODELS@ and @HOME@ are placeholders a profile uses so that it is not tied
+# to one person's directories. Expanded here as well as in the unit's ExecStart
+# and in setup/lib/systemdfile.py — three call sites, one meaning, and they
+# must not drift. tests/test_scripts.py pins that they all know both tokens.
+# Bash parameter expansion rather than sed: no delimiter to collide with a
+# path, and no '&' to be reinterpreted in a replacement.
+#
+# $LLAMA_MODELS comes from the unit's first EnvironmentFile,
+# ~/.config/llm-stack.env, and has NO default. The default it used to have was
+# `/mnt/shared/LLM`, a directory that exists on one computer — and an empty
+# expansion here would build `/Qwen….gguf` and wait 120 s for a file that can
+# never appear. Failing at the assignment says which knob is missing.
+ARGS="${LLAMA_ARGS//@HOME@/$HOME}"
+# Required only when the placeholder is actually THERE. A profile that names
+# an absolute model path needs no answer, and demanding one anyway would stop
+# a start that has nothing to do with model directories. Same rule as
+# systemdfile.expand(), which resolves only when the token is present.
+case "$ARGS" in
+  *@MODELS@*) : "${LLAMA_MODELS:?is not set, and this profile needs it. The unit
+  loads it from ~/.config/llm-stack.env; run bash setup/install.sh}" ;;
+esac
+ARGS="${ARGS//@MODELS@/${LLAMA_MODELS:-}}"
+
+model=""
+# shellcheck disable=SC2086  # word splitting is exactly what is wanted here
+set -- $ARGS
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--model) model="${2:-}"; break ;;
+  esac
+  shift
+done
+
+if [ -z "$model" ]; then
+  echo "llm-wait-for-model: no -m in LLAMA_ARGS, skipping" >&2
+  exit 0
+fi
+
+i=0
+while [ ! -r "$model" ]; do
+  if [ "$i" -eq 0 ]; then
+    echo "llm-wait-for-model: waiting for $model" >&2
+  fi
+  i=$((i + 1))
+  if [ "$i" -ge "$WAIT_MAX" ]; then
+    echo "llm-wait-for-model: not readable after ${WAIT_MAX}s: $model" >&2
+    # The mount point is DERIVED from the model path rather than named. It
+    # used to say /mnt/shared, which is one machine's answer and sends anybody
+    # else looking at a directory they do not have.
+    echo "  Is the volume there?  findmnt -T '$model'" >&2
+    echo "  If it is NTFS on a dual boot: 'dmesg | grep -i ntfs3', and Windows" >&2
+    echo "  fast startup leaves the volume dirty." >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+[ "$i" -gt 0 ] && echo "llm-wait-for-model: there after ${i}s: $model" >&2
+exit 0

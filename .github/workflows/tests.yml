@@ -1,0 +1,99 @@
+# The unit tests, on every push and every pull request.
+#
+# They are the whole point of running CI on a repository about one specific
+# piece of hardware: they need no GPU, no llama-server, no model and no
+# service. What they check is the CONTRACTS between the parts — which is where
+# this repo's bugs actually live, the kind where nothing breaks and an effect
+# simply fails to appear. tests/README.md makes that argument at length.
+#
+# THE FIRST RUN OF THIS WORKFLOW WAS RED, and it is worth saying why, because
+# the sentence above was very nearly false. Nine tests failed on a runner with
+# 7.8 GiB of RAM: setup/scripts/gtt.sh refuses a cap larger than the machine,
+# bench/sideserver.py derives its ceiling from the RAM present, and
+# switch-model.sh runs the real memory guard — whose 6 GiB buffer floor plus
+# 12 GiB host reserve cannot be satisfied under about 18 GiB. All three were
+# correct. The TESTS were asserting things about the machine they ran on.
+#
+# They now state the machine instead of reading it, or scale their values to
+# it. So the claim is true again: no GPU, no model, no service — and no
+# assumption about how much memory the runner has.
+#
+# It had been "verified" the same morning against a simulated clone in an
+# empty environment. That run shared the one thing that decided the outcome:
+# this machine. An independent check that is not independent is the failure
+# this repository keeps finding, and it found it here in its own CI comment.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# Actions are pinned to majors that run on Node 24. v4/v5 target Node 20,
+# which GitHub deprecated — they still ran, forced onto Node 24, with a
+# warning on every job. A warning that is tolerated once is tolerated forever,
+# and this one has an end date.
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor and it is a MEASURED one, not a guess: the syntax
+        # parses back to 3.8, and tests/test_scripts.py uses
+        # sys.stdlib_module_names, which arrived in 3.10. Development happens
+        # on 3.14. The matrix is here to keep the claim honest — if a version
+        # breaks, that is information rather than an inconvenience.
+        python: ["3.10", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: install aiohttp
+        # The only third-party dependency, and it is the gateway's own — the
+        # tests replace llama-server with a small aiohttp application so that
+        # things which would be a gamble against a real GPU (the per-consumer
+        # throttle, cancelled callers, a reload whose file was deleted) can be
+        # checked deterministically. No pytest: a setup repo whose tests need
+        # an installation first does not get run.
+        run: python -m pip install --disable-pip-version-check aiohttp
+      - name: unit tests
+        run: bash tests/run.sh
+
+  shell:
+    runs-on: ubuntu-latest
+    # BLOCKING since 27.08.2026. It was advisory before that, honestly so:
+    # shellcheck was not available on the machine this repo is written on, so
+    # nobody had read a single finding. They have now — 73 of them, run in a
+    # container, and four were real:
+    #
+    #   preflight.sh   an unterminated printf swallowed two lines of the UMA
+    #                  branch and emitted a locale-dependent error instead
+    #   llmprofile     `$( [[ -r $f ]] && <"$f" || echo - )` looks like bash's
+    #                  $(<file) and is not: the profile field was EMPTY exactly
+    #                  when it was known, and `-` only when it was not
+    #   llmprofile     `cat $(ls …)` unquoted: on hardware where the glob finds
+    #                  nothing, cat reads STDIN — the watch loop hangs, and the
+    #                  `|| echo 0` written for that case never runs
+    #   4 scripts      `# shellcheck source=…  — prose` is not a directive.
+    #                  The prose voids it (SC1125), so nothing was followed
+    #
+    # Every one of them ran clean and did nothing, which is the failure this
+    # repo keeps meeting. That is the argument for the gate, not tidiness.
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          # The scripts without a .sh suffix are units' ExecStart targets and
+          # are just as much shell as the rest.
+          FILES="$(git ls-files '*.sh') setup/llamaexec setup/waitformodel setup/checkroom setup/llmprofile"
+          # -x follows sourced files, --source-path resolves `. ../lib/…`
+          # against the script rather than the checkout root. Without both,
+          # every consumer of lib/models.sh reported variables as unused.
+          #
+          # Printed in full, so a style note is visible without being a gate.
+          # This repo uses `A && B || C` and single-quoted `$VAR` on purpose.
+          shellcheck -x --source-path=SCRIPTDIR --format=gcc $FILES || true
+          # And the gate: warning or error fails the build. Currently zero.
+          shellcheck -x --source-path=SCRIPTDIR --severity=warning $FILES

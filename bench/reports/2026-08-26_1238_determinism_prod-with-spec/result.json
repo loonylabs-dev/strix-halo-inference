@@ -1,0 +1,97 @@
+{
+ "label": "prod-with-spec",
+ "url": "http://127.0.0.1:8080",
+ "stamp": "2026-08-26_1238",
+ "reps": 5,
+ "tokens": 300,
+ "conditions": [
+  {
+   "name": "warm",
+   "reps": 5,
+   "identical": true,
+   "distinct": 1,
+   "first_divergence": null,
+   "runs": [
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 45.0
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 4,
+     "wall": 1.8
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 4,
+     "wall": 1.8
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 4,
+     "wall": 1.8
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 4,
+     "wall": 1.8
+    }
+   ]
+  },
+  {
+   "name": "cold",
+   "reps": 5,
+   "identical": true,
+   "distinct": 1,
+   "first_divergence": null,
+   "runs": [
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 39.8
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 40.2
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 41.2
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 41.8
+    },
+    {
+     "sha": "c89b48a1bb34",
+     "chars": 481,
+     "tokens": 140,
+     "prompt_n": 8164,
+     "wall": 42.7
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "label": "qwen38-repfix",
+ "url": "http://127.0.0.1:8080",
+ "started": "2026-08-27 09:14:38",
+ "gtt_gib": 36.03,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "workload": "count",
+   "depth_n": 9126,
+   "prompt_n": 2048,
+   "cache_n": 7078,
+   "cached_pct": 77.6,
+   "pp_tps": 202.2,
+   "predicted_n": 128,
+   "tg_tps": 114.4,
+   "draft_n": 124,
+   "draft_accepted": 124,
+   "draft_accept_pct": 100.0,
+   "wall_s": 11.24,
+   "reps": 3,
+   "reps_ok": 3,
+   "copied_pct": null,
+   "tg_min": 114.1,
+   "tg_max": 116.4,
+   "asked": 8192
+  },
+  {
+   "workload": "copy",
+   "depth_n": 9358,
+   "prompt_n": 2280,
+   "cache_n": 7078,
+   "cached_pct": 75.6,
+   "pp_tps": 200.3,
+   "predicted_n": 128,
+   "tg_tps": 146.0,
+   "draft_n": 125,
+   "draft_accepted": 125,
+   "draft_accept_pct": 100.0,
+   "wall_s": 12.25,
+   "copied_pct": 95.7,
+   "reps": 3,
+   "reps_ok": 3,
+   "tg_min": 145.3,
+   "tg_max": 150.0,
+   "asked": 8192
+  }
+ ]
+}

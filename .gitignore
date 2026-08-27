@@ -91,3 +91,6 @@ docs/px13/
 # the git HISTORY. This keeps them out of a clone and out of the file browser,
 # which is the point; it is not deletion.
 docs/archive/
+
+# The entry point for a new session. Internal, like the handover it points at.
+docs/NEXT-SESSION.md

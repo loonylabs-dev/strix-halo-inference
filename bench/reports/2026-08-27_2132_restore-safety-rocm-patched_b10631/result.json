@@ -1,0 +1,146 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-patched-b10631/bin/llama-server",
+  "build_from_binary": "b252-6b39dd5",
+  "build_id": "b10631",
+  "stamp": {
+   "build_id": "b10631",
+   "backend": "rocm",
+   "upstream_ref": "origin/master",
+   "upstream_commit": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "patch_commit": "6b39dd5d5b986404c88bfe2370c770ae979bb222",
+   "patch_branch": "gfx1151-patched",
+   "built_at": "2026-08-26T09:10:14+02:00",
+   "version": "version: 0.3.0-dev (build 252, commit 6b39dd5d5)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true
+ },
+ "save-spec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-spec": {
+  "phase": "restore",
+  "restore_returned": true,
+  "restore_seconds": 0.0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-spec": {
+  "phase": "done",
+  "restore_returned": true,
+  "restore_seconds": 68.8,
+  "generations_still_running": 0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ],
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "prefill-spec": {
+  "phase": "done",
+  "restore_returned": true,
+  "restore_seconds": 6.2,
+  "prefill_still_running": 0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null
+ },
+ "save-nospec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-nospec": {
+  "phase": "restore",
+  "restore_returned": true,
+  "restore_seconds": 0.0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "busy-nospec": {
+  "phase": "done",
+  "restore_returned": false,
+  "restore_error": "TimeoutError: timed out",
+  "restore_seconds": 300.1,
+  "generations_still_running": 0,
+  "clean": false,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "probes_clean": true,
+  "generations_sane": true,
+  "gen_tails": [
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ],
+   [
+    "648",
+    "649",
+    "650",
+    "651",
+    "652"
+   ]
+  ],
+  "gen_errors": [
+   null,
+   null
+  ]
+ },
+ "prefill-nospec": {
+  "phase": "done",
+  "restore_returned": true,
+  "restore_seconds": 16.3,
+  "prefill_still_running": 0,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null
+ }
+}

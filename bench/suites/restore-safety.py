@@ -540,8 +540,19 @@ def main():
     # The build belongs in the NAME, not only in the file. Two runs of two
     # builds in one session used to land in directories distinguished by the
     # minute they started.
+    #
+    # And the label is the build's FAMILY, not --backend. --backend is a role
+    # that --binary overrides, so with both in play the directory name said
+    # `rocm-patched` for a build stamped `patched=no` — the file was honest and
+    # its name was not, which is the worse half. Believed only when the stamp
+    # has been checked against the binary; otherwise the role, which is all
+    # that is known.
+    label = a.backend
+    if meta.get("stamp_matches_binary") and meta.get("stamp", {}).get("family"):
+        label = meta["stamp"]["family"]
+    meta["label"] = label
     dest = os.path.join(BENCH, "reports", "%s_restore-safety-%s_%s"
-                        % (stamp, a.backend, meta["build_id"]))
+                        % (stamp, label, meta["build_id"]))
     os.makedirs(dest, exist_ok=True)
     print("binary: %s" % BINARY)
     print("build:  %s  (the binary itself reports %s)"

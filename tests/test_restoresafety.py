@@ -367,6 +367,27 @@ class TestTheReportSaysWhichBuildProducedIt(unittest.TestCase):
             RS.resolve_binary("rocm-patched", "no-such-build-id")
         self.assertIn("no-such-build-id", str(e.exception))
 
+    def test_the_family_and_not_the_role_names_the_report(self):
+        """--backend is a ROLE and --binary overrides it, so with both in play
+        the directory name said `rocm-patched` for a build stamped
+        `patched=no`. The file was honest and its name was not, which is the
+        worse half: a name is what a reader sees first and what a report is
+        cited by."""
+        import ast, inspect
+        src = inspect.getsource(RS.main)
+        self.assertIn('meta["stamp"]["family"]', src)
+        self.assertIn("stamp_matches_binary", src)
+        # and the label, not a.backend, is what reaches the path
+        tree = ast.parse(src.lstrip())
+        joins = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "join"]
+        names = {a.id for j in joins for a in ast.walk(j)
+                 if isinstance(a, ast.Name)}
+        self.assertIn("label", names,
+                      "the report path must be built from the label")
+
     def test_a_stamp_is_believed_only_if_it_matches_the_binary(self):
         """A .build-stamp is a file BESIDE the binary, not a property of it.
         Believing a stale one attributes a measurement to the wrong commit,

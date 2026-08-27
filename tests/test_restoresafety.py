@@ -331,13 +331,13 @@ class TestTheReportSaysWhichBuildProducedIt(unittest.TestCase):
 
     def test_a_build_can_be_named_without_moving_the_production_symlink(self):
         import os
-        src = RS.LLAMA_SRC
-        default = RS.resolve_binary("rocm-patched", None)
+        src = RS.runlib.LLAMA_SRC
+        default = RS.resolve_binary(None, RS.BINARIES["rocm-patched"])
         self.assertEqual(default, RS.BINARIES["rocm-patched"])
-        self.assertEqual(RS.resolve_binary("rocm-patched", "/bin/sh"), "/bin/sh")
+        self.assertEqual(RS.resolve_binary("/bin/sh"), "/bin/sh")
         self.assertNotEqual(
             os.path.realpath(default),
-            os.path.realpath(RS.resolve_binary("rocm-patched", "/bin/sh")))
+            os.path.realpath(RS.resolve_binary("/bin/sh")))
         self.assertTrue(src)
 
     def test_a_bare_build_directory_name_resolves(self):
@@ -352,19 +352,19 @@ class TestTheReportSaysWhichBuildProducedIt(unittest.TestCase):
                 b = os.path.join(d, name, "bin", "llama-server")
                 open(b, "w").close()
                 os.chmod(b, 0o755)
-            old = RS.LLAMA_SRC
-            self.addCleanup(setattr, RS, "LLAMA_SRC", old)
-            RS.LLAMA_SRC = d
+            old = RS.runlib.LLAMA_SRC
+            self.addCleanup(setattr, RS.runlib, "LLAMA_SRC", old)
+            RS.runlib.LLAMA_SRC = d
             for spec, want in (("rocm", "build-rocm"),
                                ("b1", "build-rocm-patched-b1"),
                                ("loose", "loose")):
-                self.assertEqual(RS.resolve_binary("rocm-patched", spec),
+                self.assertEqual(RS.resolve_binary(spec),
                                  os.path.join(d, want, "bin", "llama-server"),
                                  spec)
 
     def test_an_unknown_build_fails_loudly_and_names_what_it_tried(self):
         with self.assertRaises(SystemExit) as e:
-            RS.resolve_binary("rocm-patched", "no-such-build-id")
+            RS.resolve_binary("no-such-build-id")
         self.assertIn("no-such-build-id", str(e.exception))
 
     def test_the_family_and_not_the_role_names_the_report(self):

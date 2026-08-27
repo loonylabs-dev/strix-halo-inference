@@ -96,9 +96,31 @@ same tree — three runs each, interleaved. Synthesis and every caveat:
 **That does not retire this patch, and the reason is the second bullet above.**
 Every cell in that suite involves a restore. Defect 1 — two slots, an EMPTY
 store, no restore at all, CORRUPT 6/6 on stock — is what this patch was
-written for, and #27311 was not tested against it. The nearest measurement is
-`bench/suites/restore-safety.py --cells parallel` on an unpatched build with
-and without the PR, and it has not been run.
+written for.
+
+**It was attempted on 28.08. and the attempt is a NULL RESULT, not a green
+light.** `np2-candidates.py` on three builds, one fresh server start each:
+
+    unpatched master 5d5cb4c            clean 6/6
+    unpatched master + #27311           clean 6/6
+    stock 54ee5ee — THE POSITIVE CONTROL clean 6/6   <- and it must not be
+
+The third line is the finding. `54ee5ee` is the exact binary defect 1 was
+measured CORRUPT 6/6 on, and it came back clean. So the suite reproduced
+nothing on any build, and the two lines above it are therefore about nothing.
+
+That is not a surprise once the first paragraph of this file is read again:
+**the unit of risk is the START, not the answer.** Same configuration, one
+start clean and the next CORRUPT 3/6; four fresh starts gave 24 of 24 clean on
+26.08. while the defect was known to be present. Three starts is a sample of
+three from a per-start rate bounded at about 10 % — getting three clean is the
+ordinary outcome whether or not the defect is there.
+
+**So the patch question is exactly where it was**, and what would move it is
+written down already: rule (a) of the decision in
+`bench/suites/stock-vs-patched.py` — 30 fresh starts, on the binary that would
+actually ship. Per build, on a side server, with production up. That is a
+session, not a postscript.
 
 The open sequence, in order:
 

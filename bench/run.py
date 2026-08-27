@@ -311,6 +311,115 @@ def start_server(argv, logfile, binary):
     raise SystemExit("server did not finish in time, see %s" % logfile)
     log.close()
 
+# ---------------------------------------------------------------- builds ---
+# Which llama-server a measurement is about, and what produced its numbers.
+#
+# These live here rather than in one suite because two suites now need them:
+# bench/suites/restore-safety.py, which compares builds, and
+# bench/suites/np2-candidates.py, which asks the same question of the other
+# gfx1151 defect. The second copy of anything is where this repository's bugs
+# live — three parsers for LLAMA_ARGS, three copies of the memory arithmetic,
+# a convention list in three places within three hours.
+LLAMA_SRC = os.path.expanduser(os.environ.get("LLAMA_SRC", "~/llama.cpp"))
+
+
+def resolve_binary(spec, default=None):
+    """Which llama-server to measure.
+
+    `--backend` names a ROLE: `rocm-patched` is whatever the production
+    symlink points at today. That is the right default and the wrong handle
+    for a BUILD COMPARISON, which is what this suite is used for — "does
+    llama.cpp PR #27311 fix this" means running one build against another,
+    and through --backend alone the only way to reach a second build is to
+    move the symlink that production starts from. A measurement must not
+    require a production change first, and a rollback must not be the thing
+    standing between a report and a serving machine.
+
+    So `--binary` takes a path, a build directory name, or a build id.
+    """
+    if not spec:
+        if default is None:
+            raise SystemExit("no binary: pass --binary, or give a default")
+        return default
+    if "/" in spec or spec.startswith("~"):
+        cands = [os.path.expanduser(spec)]
+    else:
+        # Three shapes, because the help text promises "a build directory
+        # name, or a build id" and the first version honoured only two of
+        # them: `--binary rocm` — the stock build, and the obvious thing to
+        # type — resolved to nothing. Found by typing it, which is the only
+        # way this kind of gap is ever found.
+        cands = [os.path.join(LLAMA_SRC, spec, "bin", "llama-server"),
+                 os.path.join(LLAMA_SRC, "build-" + spec, "bin", "llama-server"),
+                 os.path.join(LLAMA_SRC, "build-rocm-patched-" + spec,
+                              "bin", "llama-server")]
+    for c in cands:
+        if os.access(c, os.X_OK):
+            return c
+    raise SystemExit("no executable llama-server for --binary %r. Tried:\n  %s"
+                     % (spec, "\n  ".join(cands)))
+
+
+def provenance(binary):
+    """What produced these numbers.
+
+    result.json recorded the cells and nothing about the build until 27.08.
+    For a suite whose entire output is "clean or dirty ON THIS BINARY" that
+    is the one field a reader cannot reconstruct afterwards: the report
+    directory carried the backend LABEL, and a label is a role, not a build.
+    Two runs a day apart under the same name were two different binaries and
+    said so nowhere.
+    """
+    reported = build_id(binary)
+    # RECORDED unexpanded. A report lives in the repository and is read on
+    # other machines: "/home/<someone>/llama.cpp/build-.../bin/llama-server"
+    # names a person and tells a reader nothing they can use. What identifies
+    # the binary is the stamp and the commit, both recorded beside it. Three
+    # reports were written with the raw path before tests/test_localenv.py
+    # said so — the same rule bench/sweep.py learned earlier the same day.
+    meta = {"binary": systemdfile.unexpand(binary),
+            "build_from_binary": reported, "build_id": reported}
+    stamp = os.path.join(os.path.dirname(os.path.dirname(binary)),
+                         ".build-stamp")
+    if not os.path.exists(stamp):
+        return meta
+    fields = {}
+    with open(stamp, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            k, sep, v = line.partition("=")
+            if sep:
+                fields[k.strip()] = v.strip()
+    meta["stamp"] = fields
+    # A stamp is a FILE BESIDE the binary, not a property of it. Nothing makes
+    # the two agree once anything has renamed a directory or rebuilt in place,
+    # and a build comparison that reads the wrong stamp attributes a
+    # measurement to the wrong commit — which is the one error this whole
+    # report exists not to make. So the stamp is believed only when the commit
+    # in it is the commit the binary itself prints.
+    #
+    # WHICH commit that is depends on what the build is. A patched build is
+    # built from the patch branch's tip; an unpatched one is built from the
+    # upstream commit and carries `patch_commit=none`. The first version
+    # compared `patch_commit` in both cases, so every unpatched build failed
+    # the check against the literal string "none" — a FALSE NEGATIVE that then
+    # made the report fall back to the --backend label and name three
+    # directories `rocm-patched` for builds stamped `patched=no`.
+    #
+    # It failed safe, which is the right direction and not an excuse: a check
+    # that refuses a correct stamp teaches its reader to ignore the warning.
+    if fields.get("patched") == "no":
+        commit = (fields.get("upstream_commit") or "")[:9]
+    else:
+        commit = (fields.get("patch_commit") or "")[:9]
+    meta["stamp_matches_binary"] = bool(commit and commit[:7] in reported)
+    if meta["stamp_matches_binary"]:
+        meta["build_id"] = fields.get("build_id") or reported
+    else:
+        print("  ! .build-stamp says %s, the binary says %s — using the "
+              "binary" % (commit or "nothing", reported))
+    return meta
+
+
 def build_id(binary):
     try:
         r = subprocess.run([binary, "--version"], capture_output=True, text=True,

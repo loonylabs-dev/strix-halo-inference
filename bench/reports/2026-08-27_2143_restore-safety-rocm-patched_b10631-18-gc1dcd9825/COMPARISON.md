@@ -84,8 +84,20 @@ different unpatched builds.
 **Says nothing about the other gfx1151 defect.** `setup/patches/hip-integrated-off.patch`
 exists for the plain two-slot corruption — `-np 2` with an *empty* prefix
 store, no restore involved, CORRUPT 6/6 on stock. Every cell here involves a
-restore. Whether #27311 also removes that is untested; the nearest cell is
-`--cells parallel`, and it was not run.
+restore.
+
+That was attempted separately on 28.08. with `np2-candidates.py`, one fresh
+start per build, and it is a **null result**: unpatched master clean 6/6,
+unpatched master + #27311 clean 6/6, and **the positive control — stock
+`54ee5ee`, the binary that defect measured CORRUPT 6/6 on — also clean 6/6.**
+The control did not fire, so nothing was reproduced on any build and the two
+lines above it are about nothing.
+
+The reason is in that defect's own record: the unit of risk is the START. One
+start clean and the next CORRUPT 3/6 in the same configuration; 24 of 24 clean
+over four starts while the defect was known present. Three starts cannot see a
+per-start rate bounded at ~10 %. Reports:
+`bench/reports/2026-08-28_001{2,3,5}_np2-candidates_*`.
 
 **One machine, one model, one quant.**
 

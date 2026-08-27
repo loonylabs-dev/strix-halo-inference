@@ -1,0 +1,10 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+  "build_from_binary": "b200-54ee5ee",
+  "build_id": "b200-54ee5ee"
+ },
+ "cases": {
+  "stock-54ee5ee": 0
+ }
+}

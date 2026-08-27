@@ -229,11 +229,15 @@ class TestRecordingIsTheInverseOfRunning(unittest.TestCase):
 
     def test_the_report_writer_actually_uses_it(self):
         """The rule is only worth having where it is applied. Pinned in the
-        source, because the alternative is running a measurement to find
-        out."""
-        src = (REPO / "bench/suites/restore-safety.py").read_text(
-            encoding="utf-8")
-        self.assertIn("systemdfile.unexpand(binary)", src)
+        source, because the alternative is running a measurement to find out.
+
+        It lives in bench/run.py — provenance() moved there when a second
+        suite needed it, which is the point: one implementation, so the rule
+        is applied once rather than remembered twice."""
+        src = (REPO / "bench/run.py").read_text(encoding="utf-8")
+        self.assertIn("systemdfile.unexpand(binary)", src,
+                      "bench/run.py:provenance() must fold the path it "
+                      "records")
 
 
 class TestNothingInTheRepoNamesOneMachine(unittest.TestCase):

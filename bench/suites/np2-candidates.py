@@ -2,10 +2,22 @@
 """Can we get -np 2 back? Test the candidates on a SIDE server (port 8081),
 so production keeps running untouched.
 
-    vulkan-np2   the Vulkan backend with two slots
-    rocm-np2     the same on ROCm, as the control that must fail
+    python3 bench/suites/np2-candidates.py rocm
+    python3 bench/suites/np2-candidates.py nopatch --binary rocm-unpatched-b10631
+
+This is the suite for DEFECT 1: two slots, an EMPTY prefix store, and no
+restore anywhere. That is what setup/patches/hip-integrated-off.patch was
+written for — CORRUPT 6/6 on the stock build — and it is a different code path
+from the restore-during-prefill corruption that bench/suites/restore-safety.py
+measures. Answering one says nothing about the other, which is exactly the
+mistake of 27.08.: llama.cpp PR #27311 was shown to remove the restore
+corruption, and that was briefly read as "we do not need the patch".
+
+`--binary` takes a path, a build directory name, or a build id, and measures
+that build without moving the symlink production starts from. With it, the
+first word of a case is just a LABEL for the report.
 """
-import json, os, signal, subprocess, sys, time, urllib.request
+import argparse, json, os, signal, subprocess, sys, time, urllib.request
 
 # The repo, derived from this file rather than written down. It used to be
 # the absolute path of one clone, which made every suite here unusable
@@ -72,10 +84,16 @@ EXTRA = {"plain": [],
          "slotsave": ["--slot-save-path", "/tmp/claude-1000/sideslots"]}
 
 
+BINARY_OVERRIDE = None
+
+
 def run_case(backend):
     log = "/tmp/claude-1000/side-%s.log" % backend
     parts = backend.split("+")
-    bin_ = BIN[parts[0]]
+    # With an override the first word is a label, not a key — so a build that
+    # is not one of the three roles can be measured without inventing a role
+    # for it.
+    bin_ = BINARY_OVERRIDE or BIN[parts[0]]
     args = list(BASE)
     for extra in parts[1:]:
         if extra == "bigctx":
@@ -110,10 +128,48 @@ def run_case(backend):
                 break
 
 
-results = {}
-for backend in (sys.argv[1:] or ["vulkan"]):
-    results[backend] = run_case(backend)
-print("\nRESULT")
-for b, bad in results.items():
-    print("  %-8s np2 -> %s" % (b, "CORRUPT (%d)" % bad if bad else
-                                ("clean" if bad == 0 else "no result")))
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("cases", nargs="*", default=["vulkan"],
+                    help="backend[+extra…]; with --binary the first word is "
+                         "only a label")
+    ap.add_argument("--binary",
+                    help="a path, a build directory name, or a build id — "
+                         "measured WITHOUT moving the production symlink")
+    a = ap.parse_args()
+    global BINARY_OVERRIDE
+    BINARY_OVERRIDE = runlib.resolve_binary(a.binary) if a.binary else None
+
+    meta = (runlib.provenance(BINARY_OVERRIDE) if BINARY_OVERRIDE
+            else {"binary": "per case, from BIN"})
+    if BINARY_OVERRIDE:
+        print("binary: %s" % meta["binary"])
+        print("build:  %s  (the binary itself reports %s)"
+              % (meta["build_id"], meta["build_from_binary"]))
+
+    results = {}
+    for backend in (a.cases or ["vulkan"]):
+        results[backend] = run_case(backend)
+
+    # A report, because a printed number cannot be cited. Same shape as every
+    # other suite here: one directory per run, the build in its name, and the
+    # provenance in _meta — a reader must never have to ask which binary a
+    # verdict is about.
+    stamp = time.strftime("%Y-%m-%d_%H%M")
+    tag = meta.get("build_id", "per-case")
+    dest = os.path.join(REPO, "bench", "reports",
+                        "%s_np2-candidates_%s" % (stamp, tag))
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, "result.json"), "w", encoding="utf-8") as f:
+        json.dump({"_meta": meta, "cases": results}, f, indent=1,
+                  ensure_ascii=False)
+
+    print("\nRESULT")
+    for b, bad in results.items():
+        print("  %-16s np2 -> %s" % (b, "CORRUPT (%d of 6)" % bad if bad else
+                                     ("clean 6/6" if bad == 0 else "no result")))
+    print("report: %s" % dest)
+
+
+if __name__ == "__main__":
+    main()

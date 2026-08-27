@@ -66,5 +66,50 @@ class TestGtt(unittest.TestCase):
         self.assertTrue(w is None or isinstance(w, float))
 
 
+class TestTheBuildHelpersAreSharedNotCopied(unittest.TestCase):
+    """Which binary a measurement is about, and what produced its numbers.
+
+    Two suites need this now — restore-safety.py, which compares builds for
+    the restore corruption, and np2-candidates.py, which asks the same of the
+    OTHER gfx1151 defect. The second copy of anything is where this
+    repository's bugs live: three parsers for LLAMA_ARGS that disagreed, three
+    copies of the memory arithmetic of which the one that ran checked the
+    wrong quantity, a convention list that existed in three places within
+    three hours.
+
+    So both go through bench/run.py, and neither carries its own.
+    """
+
+    SUITES = ("bench/suites/restore-safety.py",
+              "bench/suites/np2-candidates.py")
+
+    def src(self, path):
+        return (common.REPO / path).read_text(encoding="utf-8")
+
+    def test_neither_suite_defines_its_own(self):
+        for suite in self.SUITES:
+            src = self.src(suite)
+            for name in ("def resolve_binary", "def provenance"):
+                self.assertNotIn(name, src,
+                                 "%s defines %s — it belongs in bench/run.py"
+                                 % (suite, name))
+
+    def test_both_suites_reach_the_shared_one(self):
+        """And the count is asserted, so this cannot pass by finding
+        nothing."""
+        found = 0
+        for suite in self.SUITES:
+            src = self.src(suite)
+            if "resolve_binary" in src and "provenance" in src:
+                found += 1
+        self.assertEqual(found, len(self.SUITES),
+                         "a suite that measures a build must say which one")
+
+    def test_the_one_implementation_is_where_it_says(self):
+        src = self.src("bench/run.py")
+        self.assertIn("def resolve_binary(", src)
+        self.assertIn("def provenance(", src)
+
+
 if __name__ == "__main__":
     unittest.main()

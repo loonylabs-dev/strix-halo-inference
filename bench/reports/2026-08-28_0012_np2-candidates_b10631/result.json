@@ -1,0 +1,24 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-unpatched-b10631/bin/llama-server",
+  "build_from_binary": "b251-5d5cb4c",
+  "build_id": "b10631",
+  "stamp": {
+   "build_id": "b10631",
+   "backend": "rocm",
+   "family": "rocm-unpatched",
+   "patched": "no",
+   "upstream_ref": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "upstream_commit": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "patch_commit": "none",
+   "patch_branch": "none",
+   "built_at": "2026-08-27T23:07:45+02:00",
+   "version": "version: 0.3.0-dev (build 251, commit 5d5cb4c3a)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true
+ },
+ "cases": {
+  "nopatch-base": 0
+ }
+}

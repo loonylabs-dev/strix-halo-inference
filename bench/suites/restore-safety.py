@@ -59,6 +59,7 @@ sys.path.insert(0, os.path.join(REPO, "tools"))
 sys.path.insert(0, BENCH)
 import speed, sweep                                          # noqa: E402
 import run as runlib                                         # noqa: E402
+from run import provenance, resolve_binary                   # noqa: E402
 from measure import request_body                             # noqa: E402
 sys.path.insert(0, os.path.join(REPO, "setup", "lib"))
 import systemdfile                                           # noqa: E402
@@ -78,7 +79,7 @@ URL = sweep.URL
 # binary nobody serves, and by 26.08. that stock directory was 52 upstream
 # builds behind as well. Stock is kept as a deliberate comparison, not as
 # the thing you get by typing nothing.
-LLAMA_SRC = os.path.expanduser(os.environ.get("LLAMA_SRC", "~/llama.cpp"))
+LLAMA_SRC = runlib.LLAMA_SRC
 BINARIES = {"rocm-patched": os.path.join(LLAMA_SRC, "build-rocm-patched/bin/llama-server"),
             "rocm": os.path.join(LLAMA_SRC, "build-rocm/bin/llama-server"),
             "vulkan": os.path.join(LLAMA_SRC, "build-vulkan/bin/llama-server")}
@@ -122,101 +123,6 @@ PROBE_TIMEOUT_AFTER_FAILURE = 120
 # new is that a cell now says when the bound was the shorter of the two.
 RESTORE_TIMEOUT_DEFAULT = 300
 RESTORE_TIMEOUT = RESTORE_TIMEOUT_DEFAULT
-
-
-def resolve_binary(backend, spec):
-    """Which llama-server to measure.
-
-    `--backend` names a ROLE: `rocm-patched` is whatever the production
-    symlink points at today. That is the right default and the wrong handle
-    for a BUILD COMPARISON, which is what this suite is used for — "does
-    llama.cpp PR #27311 fix this" means running one build against another,
-    and through --backend alone the only way to reach a second build is to
-    move the symlink that production starts from. A measurement must not
-    require a production change first, and a rollback must not be the thing
-    standing between a report and a serving machine.
-
-    So `--binary` takes a path, a build directory name, or a build id.
-    """
-    if spec is None:
-        return BINARIES[backend]
-    if "/" in spec or spec.startswith("~"):
-        cands = [os.path.expanduser(spec)]
-    else:
-        # Three shapes, because the help text promises "a build directory
-        # name, or a build id" and the first version honoured only two of
-        # them: `--binary rocm` — the stock build, and the obvious thing to
-        # type — resolved to nothing. Found by typing it, which is the only
-        # way this kind of gap is ever found.
-        cands = [os.path.join(LLAMA_SRC, spec, "bin", "llama-server"),
-                 os.path.join(LLAMA_SRC, "build-" + spec, "bin", "llama-server"),
-                 os.path.join(LLAMA_SRC, "build-rocm-patched-" + spec,
-                              "bin", "llama-server")]
-    for c in cands:
-        if os.access(c, os.X_OK):
-            return c
-    raise SystemExit("no executable llama-server for --binary %r. Tried:\n  %s"
-                     % (spec, "\n  ".join(cands)))
-
-
-def provenance(binary):
-    """What produced these numbers.
-
-    result.json recorded the cells and nothing about the build until 27.08.
-    For a suite whose entire output is "clean or dirty ON THIS BINARY" that
-    is the one field a reader cannot reconstruct afterwards: the report
-    directory carried the backend LABEL, and a label is a role, not a build.
-    Two runs a day apart under the same name were two different binaries and
-    said so nowhere.
-    """
-    reported = runlib.build_id(binary)
-    # RECORDED unexpanded. A report lives in the repository and is read on
-    # other machines: "/home/<someone>/llama.cpp/build-.../bin/llama-server"
-    # names a person and tells a reader nothing they can use. What identifies
-    # the binary is the stamp and the commit, both recorded beside it. Three
-    # reports were written with the raw path before tests/test_localenv.py
-    # said so — the same rule bench/sweep.py learned earlier the same day.
-    meta = {"binary": systemdfile.unexpand(binary),
-            "build_from_binary": reported, "build_id": reported}
-    stamp = os.path.join(os.path.dirname(os.path.dirname(binary)),
-                         ".build-stamp")
-    if not os.path.exists(stamp):
-        return meta
-    fields = {}
-    with open(stamp, encoding="utf-8", errors="replace") as f:
-        for line in f:
-            k, sep, v = line.partition("=")
-            if sep:
-                fields[k.strip()] = v.strip()
-    meta["stamp"] = fields
-    # A stamp is a FILE BESIDE the binary, not a property of it. Nothing makes
-    # the two agree once anything has renamed a directory or rebuilt in place,
-    # and a build comparison that reads the wrong stamp attributes a
-    # measurement to the wrong commit — which is the one error this whole
-    # report exists not to make. So the stamp is believed only when the commit
-    # in it is the commit the binary itself prints.
-    #
-    # WHICH commit that is depends on what the build is. A patched build is
-    # built from the patch branch's tip; an unpatched one is built from the
-    # upstream commit and carries `patch_commit=none`. The first version
-    # compared `patch_commit` in both cases, so every unpatched build failed
-    # the check against the literal string "none" — a FALSE NEGATIVE that then
-    # made the report fall back to the --backend label and name three
-    # directories `rocm-patched` for builds stamped `patched=no`.
-    #
-    # It failed safe, which is the right direction and not an excuse: a check
-    # that refuses a correct stamp teaches its reader to ignore the warning.
-    if fields.get("patched") == "no":
-        commit = (fields.get("upstream_commit") or "")[:9]
-    else:
-        commit = (fields.get("patch_commit") or "")[:9]
-    meta["stamp_matches_binary"] = bool(commit and commit[:7] in reported)
-    if meta["stamp_matches_binary"]:
-        meta["build_id"] = fields.get("build_id") or reported
-    else:
-        print("  ! .build-stamp says %s, the binary says %s — using the "
-              "binary" % (commit or "nothing", reported))
-    return meta
 
 
 def post(path, payload, timeout=900):
@@ -548,7 +454,7 @@ def main():
     a = ap.parse_args()
     global BINARY, RESTORE_TIMEOUT
     RESTORE_TIMEOUT = a.restore_timeout
-    BINARY = resolve_binary(a.backend, a.binary)
+    BINARY = resolve_binary(a.binary, BINARIES[a.backend])
     cells = {c.strip() for c in a.cells.split(",") if c.strip()}
 
     sweep.reexec_with_inhibit()

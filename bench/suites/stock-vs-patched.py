@@ -141,7 +141,7 @@ Everything runs on a SIDE server (port 8081); production is untouched.
 CAUTION: a corrupting run leaves that side server poisoned until it is
 stopped. Each case gets a fresh one.
 """
-import json, os, signal, subprocess, sys, time, urllib.request
+import argparse, json, os, signal, subprocess, sys, time, urllib.request
 
 # The repo, derived from this file rather than written down. It used to be
 # assigned TWICE here — once derived and once as the absolute path of one
@@ -203,7 +203,14 @@ CASES = {                  # name -> (binary key, -np, faithful-to-the-original)
     "official-rocm-np2-orig":   ("official-rocm", 2, True),
     "patched-rocm-np2-orig":    ("patched-rocm", 2, True),
     "official-rocm-np1-orig":   ("official-rocm", 1, True),
+    # Binary-agnostic, for --binary: the shape the defect was found in, with
+    # the build named on the command line instead of baked into a key.
+    "np2-orig":                 (None, 2, True),
+    "np1-orig":                 (None, 1, True),
 }
+
+# Set by main() from --binary. With it, a case's binary key is only a label.
+BINARY_OVERRIDE = None
 
 
 def body(which, nonce):
@@ -241,13 +248,15 @@ def ready(timeout=420):
 
 def one_start(case, run_no):
     key, np_, faithful = CASES[case]
-    binary = BIN[key]
+    binary = BINARY_OVERRIDE or (BIN[key] if key else "")
     if not binary or not os.path.exists(binary):
-        print("   %s: no binary (set OFFICIAL_ROCM / OFFICIAL_VULKAN)" % key)
+        print("   %s: no binary (--binary, or set OFFICIAL_ROCM / "
+              "OFFICIAL_VULKAN)" % (key or case))
         return None
     # The official tarballs ship their own shared libraries next to the binary.
     os.environ["LD_LIBRARY_PATH"] = os.path.dirname(binary)
     log = "/tmp/claude-1000/stock-vs-patched-%s-%d.log" % (case, run_no)
+    before = runlib._gtt("used")
     proc = runlib.start_server(args_for(np_, faithful), log, binary)
     try:
         if not ready():
@@ -274,12 +283,44 @@ def one_start(case, run_no):
                 time.sleep(1)
             except Exception:
                 break
+        # And then wait for the MEMORY, which is a different question from
+        # whether the port closed. A process can be gone from the port while
+        # its GTT allocation is still being torn down, and the next start
+        # loads on top of it — the transition that took the machine down on
+        # 26.08. Harmless at three starts; this loop is meant to run THIRTY,
+        # beside a production server holding 35 GiB of the same pool.
+        try:
+            runlib.wait_for_gtt_release(before)
+        except Exception as e:                                # noqa: BLE001
+            print("   (gtt wait: %s)" % e)
 
 
 def main():
-    cases = sys.argv[1:] or ["official-rocm-np1", "patched-rocm-np1",
-                             "official-rocm-np2"]
-    starts = int(os.environ.get("STARTS", "3"))
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("cases", nargs="*", help="one or more of: "
+                    + ", ".join(CASES))
+    ap.add_argument("--binary",
+                    help="a path, a build directory name, or a build id — "
+                         "measured WITHOUT moving the production symlink. "
+                         "With it, a case's binary key is only a label.")
+    ap.add_argument("--starts", type=int,
+                    default=int(os.environ.get("STARTS", "3")),
+                    help="fresh server starts per case. The unit of risk is "
+                         "the START, not the answer, and rule (a) above asks "
+                         "for 30 (default: %(default)s)")
+    a = ap.parse_args()
+    global BINARY_OVERRIDE
+    BINARY_OVERRIDE = runlib.resolve_binary(a.binary) if a.binary else None
+    meta = (runlib.provenance(BINARY_OVERRIDE) if BINARY_OVERRIDE
+            else {"binary": "per case, from BIN"})
+    if BINARY_OVERRIDE:
+        print("binary: %s" % meta["binary"])
+        print("build:  %s  (the binary itself reports %s)"
+              % (meta["build_id"], meta["build_from_binary"]))
+
+    cases = a.cases or ["official-rocm-np1", "patched-rocm-np1",
+                        "official-rocm-np2"]
+    starts = a.starts
     results = {}
     for case in cases:
         if case not in CASES:
@@ -292,7 +333,15 @@ def main():
             runs.append(one_start(case, r))
         results[case] = runs
 
-    print("\nRESULT — corrupt answers of 6 per start")
+    stamp = time.strftime("%Y-%m-%d_%H%M")
+    dest = os.path.join(REPO, "bench", "reports", "%s_stock-vs-patched_%s"
+                        % (stamp, meta.get("build_id", "per-case")))
+    os.makedirs(dest, exist_ok=True)
+    with open(os.path.join(dest, "result.json"), "w", encoding="utf-8") as f:
+        json.dump({"_meta": dict(meta, starts=starts), "cases": results}, f,
+                  indent=1, ensure_ascii=False)
+
+    print("\nRESULT — corrupt answers of 6 per start   (report: %s)" % dest)
     for case, runs in results.items():
         shown = ["-" if r is None else str(r) for r in runs]
         done = [r for r in runs if r is not None]

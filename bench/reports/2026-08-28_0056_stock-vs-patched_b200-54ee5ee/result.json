@@ -1,0 +1,42 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+  "build_from_binary": "b200-54ee5ee",
+  "build_id": "b200-54ee5ee",
+  "starts": 30
+ },
+ "cases": {
+  "np2-orig": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ]
+ }
+}

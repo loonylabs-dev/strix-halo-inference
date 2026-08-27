@@ -93,11 +93,16 @@ unpatched master + #27311 clean 6/6, and **the positive control — stock
 The control did not fire, so nothing was reproduced on any build and the two
 lines above it are about nothing.
 
-The reason is in that defect's own record: the unit of risk is the START. One
-start clean and the next CORRUPT 3/6 in the same configuration; 24 of 24 clean
-over four starts while the defect was known present. Three starts cannot see a
-per-start rate bounded at ~10 %. Reports:
-`bench/reports/2026-08-28_001{2,3,5}_np2-candidates_*`.
+The reason looked like sampling — the unit of risk there is the START, and one
+start clean with the next CORRUPT 3/6 is on record. So rule (a) was run on the
+control: **30 fresh starts, 180 answers, zero corrupt**, in the shape the
+defect was found in. It did not fire either.
+
+**Defect 1 does not reproduce on this machine any more**, on the binary it was
+found on. So no build can be compared against another for it, #27311 included,
+and the patch stays: a mitigation is not dropped on the strength of a control
+that will not fire. Reports: `2026-08-28_001{2,3,5}_np2-candidates_*` and
+`2026-08-28_0056_stock-vs-patched_b200-54ee5ee`.
 
 **One machine, one model, one quant.**
 

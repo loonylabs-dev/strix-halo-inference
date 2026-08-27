@@ -116,11 +116,39 @@ start clean and the next CORRUPT 3/6; four fresh starts gave 24 of 24 clean on
 three from a per-start rate bounded at about 10 % — getting three clean is the
 ordinary outcome whether or not the defect is there.
 
-**So the patch question is exactly where it was**, and what would move it is
-written down already: rule (a) of the decision in
-`bench/suites/stock-vs-patched.py` — 30 fresh starts, on the binary that would
-actually ship. Per build, on a side server, with production up. That is a
-session, not a postscript.
+**Rule (a) was then run on the control, 28.08. 00:25-00:56 — and it did not
+fire either.** 30 fresh server starts on the stock `54ee5ee` build, the shape
+the defect was found in (`np2-orig`: `-np 2 --no-kv-unified -cram 32768
+--mmproj`, speculation on), on a side server with production up:
+
+    30 starts · 180 answers · ZERO corrupt · zero failed starts
+    bench/reports/2026-08-28_0056_stock-vs-patched_b200-54ee5ee
+
+**So defect 1 does not reproduce on this machine any more**, on the binary it
+was found on, in the recipe it was found in. That is the finding, and it is
+not the same sentence as "the defect is gone": 30 clean starts bound the
+per-start rate at about 10 % with 95 % confidence, which is an upper bound and
+not a bill of health.
+
+Two readings, and nothing here separates them:
+
+* something about the MACHINE changed — the GTT cap has been 96, then 116,
+  then 108 since the original measurement, and ROCm and the kernel have moved;
+* or the recipe still is not the one the 6/6 was found in. The suite's own
+  docstring calls `np2-orig` "the exact shape the defect was found in", which
+  is the best statement available and is not the same as a proof.
+
+**What follows for this patch: it stays, and the reason is now sharper.** A
+mitigation is not dropped on the strength of a control that will not fire.
+There is currently NO configuration on this machine in which defect 1 can be
+observed, so no build can be compared against another for it — including
+#27311. Running the other two builds for 30 starts each would produce the same
+clean columns and mean exactly as much.
+
+**The next step is a hunt, not a run:** find any configuration in which defect
+1 appears at all. `bench/suites/slot-corruption.py` is the instrument for that
+— one variable per case — and it has not been pointed at this question since
+the original finding.
 
 The open sequence, in order:
 

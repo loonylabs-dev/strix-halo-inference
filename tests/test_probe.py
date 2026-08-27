@@ -109,7 +109,12 @@ class TestPatienceWithARestartingServer(unittest.TestCase):
             ConnectionRefusedError(111, "Connection refused"))
         text, err = probe.ask_with_patience("x", grace=0, sleep=self.slept.append)
         self.assertIsNone(text)
-        self.assertIn("still refusing", err)
+        # "not ready" rather than "refusing" since 27.08.: the window now
+        # covers a 503 as well, and one message has to describe both.
+        self.assertIn("still not ready", err)
+        self.assertIn("Connection refused", err,
+                      "the reason must survive into the message, or a dead "
+                      "server and a slow one read the same")
 
     def test_a_server_that_ANSWERS_is_judged_at_once(self):
         """The whole point. A poisoned server answers — retrying it would let
@@ -125,6 +130,54 @@ class TestPatienceWithARestartingServer(unittest.TestCase):
         self.assertIsNone(text)
         self.assertEqual(len(calls), 1, "an answered request must not be retried")
         self.assertEqual(self.slept, [])
+
+    def test_a_503_is_not_ready_rather_than_a_verdict(self):
+        """llama-server returns 503 while the weights load and the gateway
+        passes it through. Treating it as an answer made the patience cover
+        only half the case it exists for: measured 27.08. at 23:19:06 and
+        23:42:36, two red lines in check.sh from a probe that fired into a
+        model still coming up after a measurement restored production."""
+        calls = []
+
+        def slow_then_up(url, timeout=180):
+            calls.append(1)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError("u", 503, "Service Unavailable",
+                                             None, None)
+            return "391"
+        probe.ask = slow_then_up
+        text, err = probe.ask_with_patience("x", grace=90,
+                                            sleep=self.slept.append)
+        self.assertEqual(text, "391")
+        self.assertIsNone(err)
+        self.assertEqual(len(calls), 3)
+
+    def test_a_503_that_persists_still_fails(self):
+        """The patience must not turn a server that never becomes ready into
+        a green light — the same property the connection case already has."""
+        probe.ask = lambda url, timeout=180: (_ for _ in ()).throw(
+            urllib.error.HTTPError("u", 503, "Service Unavailable", None, None))
+        text, err = probe.ask_with_patience("x", grace=0,
+                                            sleep=self.slept.append)
+        self.assertIsNone(text)
+        self.assertIn("503", err)
+        self.assertIn("still not ready", err)
+
+    def test_every_other_status_is_still_judged_at_once(self):
+        """The positive control for the exemption: 503 must be the only one.
+        A 500 from a server that is up is a real fault and retrying it would
+        hide it for another minute."""
+        for code in (400, 404, 500, 502, 504):
+            calls = []
+
+            def answered(url, timeout=180, code=code, calls=calls):
+                calls.append(1)
+                raise urllib.error.HTTPError("u", code, "x", None, None)
+            probe.ask = answered
+            text, err = probe.ask_with_patience("x", grace=90,
+                                                sleep=self.slept.append)
+            self.assertIsNone(text)
+            self.assertEqual(len(calls), 1, "status %d was retried" % code)
 
     def test_the_grace_covers_a_big_model_coming_up(self):
         """16.7 GiB took nine seconds on 27.08.; the window has to hold more

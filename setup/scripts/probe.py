@@ -109,9 +109,24 @@ RETRY_EVERY_S = 10
 def ask_with_patience(url, grace=GRACE_S, sleep=time.sleep):
     """(text, None) once it answers, or (None, reason) after `grace` seconds.
 
-    Only CONNECTION failures are retried. A server that answers is judged on
-    what it said, immediately — that is the fault this watchdog is for, and
-    retrying it would let a poisoned server look healthy for another minute.
+    A server that ANSWERS is judged on what it said, immediately — that is the
+    fault this watchdog is for, and retrying it would let a poisoned server
+    look healthy for another minute.
+
+    Retried: a connection failure, and **503**. Those are the two ways of
+    saying "not ready yet", and the grace window exists for exactly that. 503
+    is not an answer about the model — llama-server returns it while the
+    weights load and the gateway passes it through — so treating it as a
+    verdict made the patience cover only half the case it was written for.
+
+    Measured 27.08. 23:19:06 and 23:42:36, both `UNREACHABLE
+    <HTTPError 503: 'Service Unavailable'>`: two red lines in check.sh from a
+    probe that fired into a model still coming up after a measurement had
+    restored production. Nothing was wrong either time, which is the whole
+    problem — a watchdog that cries wolf after every measurement is a watchdog
+    that gets ignored, and this one exists to make silent faults loud.
+
+    A 503 that PERSISTS past the window still fails, so nothing is lost.
     """
     deadline = time.monotonic() + max(0, grace)
     last = ""
@@ -119,11 +134,13 @@ def ask_with_patience(url, grace=GRACE_S, sleep=time.sleep):
         try:
             return ask(url), None
         except urllib.error.HTTPError as e:
-            return None, repr(e)          # it answered, with a status. Real.
+            if e.code != 503:
+                return None, repr(e)      # it answered, with a status. Real.
+            last = repr(e)                # "not ready", not a verdict
         except Exception as e:
             last = repr(e)
         if time.monotonic() >= deadline:
-            return None, "%s (still refusing after %ds)" % (last, grace)
+            return None, "%s (still not ready after %ds)" % (last, grace)
         sleep(RETRY_EVERY_S)
 
 

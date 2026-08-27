@@ -56,6 +56,10 @@ BACKEND=rocm
 REF=""
 JOBS="${JOBS:-$(( $(nproc) > 8 ? $(nproc) - 8 : 2 ))}"
 DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; KEEP="${KEEP:-1}"
+# How many commits the patch branch may carry over the ref being built.
+# The patch is ONE commit; three leaves room for it to become a short
+# series without an override every time. See step 2 for why this exists.
+MAX_REPLAY="${MAX_REPLAY:-3}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -401,6 +405,49 @@ PIDS="$(in_use_by "$BUILD_DIR")"
 
 # --------------------------------------------------------------------------
 step "2/6 replay the patch onto $BUILD_ID"
+# WHAT IS ABOUT TO BE REPLAYED, looked at before the rebase rather than after
+# the report. `git rebase <target>` replays EVERY commit in target..HEAD, not
+# "the patch" — and those are the same thing only while the patch branch is
+# what its name says.
+#
+# On 27.08.2026 it was not, and nothing said so. gfx1151-patched had been
+# rebased onto PR #27742 on the 26th to build Flash-Next, so it carried 26
+# commits over origin/master; and PR #27311's base sat 65 commits behind that
+# master. The documented `--ref pr/27311` would therefore have replayed 91
+# commits — and it does not fail. Tried in a throwaway worktree first: the
+# rebase SUCCEEDS, exit 0, no conflict, and the build comes out stamped
+# `upstream_ref=pr-27311` while containing an entire unmerged 180B-model PR
+# and 65 extra master commits. The measurement would have been attributed to
+# the wrong change, and every check downstream would have agreed with it.
+#
+# A wrong answer that exits 0 is the defect this repository keeps finding.
+# The count is cheap and it is the whole guard.
+REPLAY=""
+if git_ rev-parse --verify -q "$TARGET^{commit}" >/dev/null 2>&1; then
+  REPLAY="$(git_ rev-list --count "$TARGET..$PATCH_BRANCH")"
+fi
+if [ -n "$REPLAY" ] && [ "$REPLAY" -gt "$MAX_REPLAY" ]; then
+  die "the patch branch '$PATCH_BRANCH' carries $REPLAY commits over $BUILD_ID,
+    and a rebase would replay ALL of them into this build. At most
+    $MAX_REPLAY is expected — the gfx1151 patch is one commit.
+
+$(git_ log --oneline -8 "$TARGET..$PATCH_BRANCH" | sed 's/^/      /')
+$([ "$REPLAY" -gt 8 ] && printf '      … and %s more\n' "$((REPLAY - 8))")
+
+    This is not a failure to work around; it is the answer to a question
+    nobody asked. Two ways on, and the first is almost always the right one:
+
+      * Build the ref plus the patch and NOTHING else, on a branch of its
+        own — which is also what makes it a one-variable comparison:
+
+            git -C $SRC branch -f mybranch <the ref you want>
+            git -C $SRC checkout mybranch
+            git -C $SRC cherry-pick \$(git -C $SRC rev-parse $PATCH_BRANCH)
+            PATCH_BRANCH=mybranch bash setup/scripts/build-llama.sh --ref mybranch
+
+      * Or say you meant it:  MAX_REPLAY=$REPLAY bash setup/scripts/build-llama.sh …"
+fi
+[ -n "$REPLAY" ] && ok "$REPLAY commit(s) to replay onto $BUILD_ID"
 if [ "$DRY" = 0 ]; then
   BEFORE="$(git_ rev-parse --abbrev-ref HEAD)"
   git_ checkout -q "$PATCH_BRANCH"

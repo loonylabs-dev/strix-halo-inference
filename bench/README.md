@@ -272,12 +272,17 @@ The build lands in the report's directory name and in `result.json` under
 27.08.2026 the report recorded the backend LABEL and nothing else, and a
 label is a role: `rocm-patched` is whatever the symlink pointed at that day.
 
-And a cell that fails is recorded rather than fatal. The restore in
-`busy-nospec` hangs on this hardware — defect `slot-restore-hangs-busy` — and
-its timeout used to end the whole run, so `prefill-nospec` was never measured
-on the patched build: 26.08. twice, 27.08. once. Three reports that looked
-complete, because the verdict printed the same `?` for a cell it never
-reached as for a cell nobody asked for.
+And a cell that fails is recorded rather than fatal. `busy-nospec`'s restore
+used to run into its timeout, which ended the whole run, so `prefill-nospec`
+was never measured on the patched build: 26.08. twice, 27.08. once. Three
+reports that looked complete, because the verdict printed the same `?` for a
+cell it never reached as for a cell nobody asked for.
+
+That timeout was filed as the defect `slot-restore-hangs-busy` and is
+**withdrawn**: a restore queues behind the slot it targets, and the cell had
+put 325-341 s of generation in front of a 300 s bound. `--restore-timeout`
+exists so the bound is visible, and a cell whose bound was the shorter of the
+two says so.
 
 ### Measuring a build WITHOUT the patch
 

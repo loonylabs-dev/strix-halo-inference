@@ -86,6 +86,20 @@ That is not yet a reason to drop anything:
 * four clean starts against an intermittent, SILENT failure raise the odds
   without making an argument.
 
+**A candidate fix for defect 2 is measured, 27.08.2026: llama.cpp PR #27311**
+("Scheduler UMA ring buffer"), open and unmerged. On builds WITHOUT this
+patch, the restore-during-prefill cells are DIRTY 6 of 6 on upstream master
+`5d5cb4c` and on stock `54ee5ee`, and CLEAN 6 of 6 with #27311 applied to the
+same tree — three runs each, interleaved. Synthesis and every caveat:
+`bench/reports/2026-08-27_2143_restore-safety-rocm-patched_b10631-18-gc1dcd9825/COMPARISON.md`.
+
+**That does not retire this patch, and the reason is the second bullet above.**
+Every cell in that suite involves a restore. Defect 1 — two slots, an EMPTY
+store, no restore at all, CORRUPT 6/6 on stock — is what this patch was
+written for, and #27311 was not tested against it. The nearest measurement is
+`bench/suites/restore-safety.py --cells parallel` on an unpatched build with
+and without the PR, and it has not been run.
+
 The open sequence, in order:
 
 1. **An unwritten suite** — two slots WITH a populated store and real

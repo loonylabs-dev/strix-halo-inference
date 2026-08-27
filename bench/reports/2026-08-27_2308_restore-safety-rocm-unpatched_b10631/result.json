@@ -1,23 +1,24 @@
 {
  "_meta": {
-  "binary": "@HOME@/llama.cpp/build-rocm-unpatched-b10631-18-gc1dcd9825/bin/llama-server",
-  "build_from_binary": "b269-c1dcd98",
-  "build_id": "b269-c1dcd98",
+  "binary": "@HOME@/llama.cpp/build-rocm-unpatched-b10631/bin/llama-server",
+  "build_from_binary": "b251-5d5cb4c",
+  "build_id": "b10631",
   "stamp": {
-   "build_id": "b10631-18-gc1dcd9825",
+   "build_id": "b10631",
    "backend": "rocm",
    "family": "rocm-unpatched",
    "patched": "no",
-   "upstream_ref": "pr-27311-on-master",
-   "upstream_commit": "c1dcd98252a44f1712b1a887ed8085e87a1ae435",
+   "upstream_ref": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "upstream_commit": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
    "patch_commit": "none",
    "patch_branch": "none",
-   "built_at": "2026-08-27T23:08:24+02:00",
-   "version": "version: 0.3.0-dev (build 269, commit c1dcd9825)",
+   "built_at": "2026-08-27T23:07:45+02:00",
+   "version": "version: 0.3.0-dev (build 251, commit 5d5cb4c3a)",
    "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
   },
-  "stamp_matches_binary": false,
-  "restore_timeout": 900.0
+  "stamp_matches_binary": true,
+  "restore_timeout": 900.0,
+  "label": "rocm-unpatched"
  },
  "save-spec": {
   "phase": "done",
@@ -39,7 +40,7 @@
   "phase": "done",
   "restore_timeout": 900.0,
   "restore_returned": true,
-  "restore_seconds": 77.6,
+  "restore_seconds": 47.8,
   "generations_still_running": 0,
   "clean": true,
   "probes": [
@@ -51,11 +52,11 @@
   "generations_sane": true,
   "gen_tails": [
    [
-    "648",
-    "649",
-    "650",
-    "651",
-    "652"
+    "26",
+    "27",
+    "28",
+    "29",
+    "3"
    ],
    [
     "648",
@@ -66,31 +67,31 @@
    ]
   ],
   "gen_seconds": [
-   85.0,
-   83.6
+   2.6,
+   53.8
   ],
   "gen_errors": [
    null,
    null
   ],
-  "blocking_seconds": 85.0
+  "blocking_seconds": 53.8
  },
  "prefill-spec": {
   "phase": "done",
   "restore_timeout": 900.0,
   "restore_returned": true,
-  "restore_seconds": 6.4,
+  "restore_seconds": 5.5,
   "prefill_still_running": 0,
-  "clean": true,
+  "clean": false,
   "probes": [
-   "391",
-   "391",
-   "391"
+   "```toml: {\"message!",
+   "2",
+   "1980\n</think>\n\n1980"
   ],
   "prefill_survived": true,
   "prefill_error": null,
-  "prefill_seconds": 81.2,
-  "blocking_seconds": 81.2
+  "prefill_seconds": 73.2,
+  "blocking_seconds": 73.2
  },
  "save-nospec": {
   "phase": "done",
@@ -112,7 +113,7 @@
   "phase": "done",
   "restore_timeout": 900.0,
   "restore_returned": true,
-  "restore_seconds": 333.0,
+  "restore_seconds": 279.4,
   "generations_still_running": 0,
   "clean": true,
   "probes": [
@@ -124,11 +125,11 @@
   "generations_sane": true,
   "gen_tails": [
    [
-    "648",
-    "649",
-    "650",
-    "651",
-    "652"
+    "5",
+    "6",
+    "7",
+    "8",
+    "##"
    ],
    [
     "648",
@@ -139,30 +140,30 @@
    ]
   ],
   "gen_seconds": [
-   339.1,
-   339.0
+   2.7,
+   285.4
   ],
   "gen_errors": [
    null,
    null
   ],
-  "blocking_seconds": 339.1
+  "blocking_seconds": 285.4
  },
  "prefill-nospec": {
   "phase": "done",
   "restore_timeout": 900.0,
   "restore_returned": true,
-  "restore_seconds": 15.9,
+  "restore_seconds": 15.6,
   "prefill_still_running": 0,
-  "clean": true,
+  "clean": false,
   "probes": [
-   "391",
-   "391",
-   "391"
+   "<tool_call>\nfunction",
+   "{\" this is a simple response that should be handled correctly.\": \"alpha\",",
+   "288"
   ],
   "prefill_survived": true,
   "prefill_error": null,
-  "prefill_seconds": 77.9,
-  "blocking_seconds": 77.9
+  "prefill_seconds": 76.9,
+  "blocking_seconds": 76.9
  }
 }

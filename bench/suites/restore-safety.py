@@ -40,11 +40,15 @@ was never measured. Three times: 26.08. twice and 27.08. once. Every one of
 those reports looked complete, because the verdict prints `?` for a cell it
 never reached and `?` for a cell nobody asked for.
 
-The hang is itself a registered defect (`slot-restore-hangs-busy` in
-setup/defects.json), so the cell that dies is one of the two carrying
-information — and the cells after it are the ones the NEXT question needs.
-This suite exists to compare BUILDS, and a comparison missing the same cell
-on both sides compares nothing there.
+The cell that dies may be the one carrying information, and the cells after
+it are the ones the NEXT question needs. This suite exists to compare BUILDS,
+and a comparison missing the same cell on both sides compares nothing there.
+
+What the timeout in that cell actually was is worth keeping, because it was
+filed as a defect (`slot-restore-hangs-busy`, now WITHDRAWN in
+setup/defects.json) and blocked a decision for three sessions: a restore
+queues behind the slot it targets, and the cell had put a 325-341 s
+generation in front of a 300 s bound. See RESTORE_TIMEOUT below.
 """
 import argparse, json, os, sys, threading, time, urllib.request
 
@@ -191,7 +195,21 @@ def provenance(binary):
     # measurement to the wrong commit — which is the one error this whole
     # report exists not to make. So the stamp is believed only when the commit
     # in it is the commit the binary itself prints.
-    commit = (fields.get("patch_commit") or "")[:9]
+    #
+    # WHICH commit that is depends on what the build is. A patched build is
+    # built from the patch branch's tip; an unpatched one is built from the
+    # upstream commit and carries `patch_commit=none`. The first version
+    # compared `patch_commit` in both cases, so every unpatched build failed
+    # the check against the literal string "none" — a FALSE NEGATIVE that then
+    # made the report fall back to the --backend label and name three
+    # directories `rocm-patched` for builds stamped `patched=no`.
+    #
+    # It failed safe, which is the right direction and not an excuse: a check
+    # that refuses a correct stamp teaches its reader to ignore the warning.
+    if fields.get("patched") == "no":
+        commit = (fields.get("upstream_commit") or "")[:9]
+    else:
+        commit = (fields.get("patch_commit") or "")[:9]
     meta["stamp_matches_binary"] = bool(commit and commit[:7] in reported)
     if meta["stamp_matches_binary"]:
         meta["build_id"] = fields.get("build_id") or reported

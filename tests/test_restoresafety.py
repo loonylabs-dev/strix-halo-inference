@@ -419,6 +419,55 @@ class TestTheReportSaysWhichBuildProducedIt(unittest.TestCase):
             self.assertTrue(meta["stamp_matches_binary"])
             self.assertEqual(meta["build_id"], "b10631-18-gc1dcd9825")
 
+    def test_an_unpatched_stamp_is_checked_against_the_right_field(self):
+        """A patched build is built from the patch branch's tip; an unpatched
+        one from the upstream commit, and carries patch_commit=none. Comparing
+        patch_commit in both cases made every unpatched build fail against the
+        literal string "none" — a false negative that then named three report
+        directories `rocm-patched` for builds stamped `patched=no`.
+
+        It failed SAFE, which is the right direction and not an excuse: a
+        check that refuses a correct stamp teaches its reader to ignore it."""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "bin"))
+            binary = os.path.join(d, "bin", "llama-server")
+            with open(binary, "w") as f:
+                f.write("#!/bin/sh\necho 'version: 0.3.0-dev "
+                        "(build 269, commit c1dcd9825)'\n")
+            os.chmod(binary, 0o755)
+            with open(os.path.join(d, ".build-stamp"), "w") as f:
+                f.write("build_id=b10631-18-gc1dcd9825\n"
+                        "family=rocm-unpatched\npatched=no\n"
+                        "upstream_commit=c1dcd98252a44f1712b1a887ed8085e87a1"
+                        "ae435\npatch_commit=none\n")
+            meta = RS.provenance(binary)
+            self.assertTrue(meta["stamp_matches_binary"],
+                            "an unpatched stamp is identified by its UPSTREAM "
+                            "commit, not by patch_commit=none")
+            self.assertEqual(meta["build_id"], "b10631-18-gc1dcd9825")
+            self.assertEqual(meta["stamp"]["family"], "rocm-unpatched")
+
+    def test_an_unpatched_stamp_from_a_different_build_is_still_refused(self):
+        """The positive control for the fix: reading the other field must not
+        mean reading no field at all."""
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "bin"))
+            binary = os.path.join(d, "bin", "llama-server")
+            with open(binary, "w") as f:
+                f.write("#!/bin/sh\necho 'version: 0.3.0-dev "
+                        "(build 269, commit c1dcd9825)'\n")
+            os.chmod(binary, 0o755)
+            with open(os.path.join(d, ".build-stamp"), "w") as f:
+                f.write("build_id=somebody-elses\npatched=no\n"
+                        "upstream_commit=deadbeef1234567890\n"
+                        "patch_commit=none\n")
+            with quiet():
+                meta = RS.provenance(binary)
+            self.assertFalse(meta["stamp_matches_binary"])
+            self.assertEqual(meta["build_id"], meta["build_from_binary"])
+
 
 if __name__ == "__main__":
     unittest.main()

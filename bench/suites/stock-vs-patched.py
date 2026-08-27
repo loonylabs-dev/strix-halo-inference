@@ -68,42 +68,73 @@ All three must hold. Any one failing and -np 1 stays:
       setup/defects.json sorts by.
 
 THE ANSWER, 26.08. — -np 2 STAYS CLOSED. Rule (a) was met and the other two
-decided it, which is the entire reason the rule was written down first:
+decided it, which is the entire reason the rule was written down first.
+
+AND IT CHANGED ON 27.08. LATE. Rule (b) had never actually been failing; what
+failed was the instrument, and the detail is under (b) below. All three
+conditions hold as of that evening. Production is still `-np 1` and nothing
+here changes it — this is a record of the conditions, not a switch.
 
   (a) MET.      30 fresh starts, 180 answers, zero corruption, zero failed
                 starts, on the patched b10631 build with the faithful recipe.
-  (b) FAILED.   restore-safety cell busy-nospec — a slot restore into a busy
-                server, speculation off — ran into its 300 s timeout, and
-                REPRODUCED on a re-run. Two of two.
+  (b) MET, 27.08.2026 late — AND IT HAD NEVER ACTUALLY FAILED.
+                It read FAILED for three sessions on the cell busy-nospec: a
+                slot restore into a busy server with speculation off ran into
+                its 300 s timeout, two of two on 26.08. and three of three on
+                27.08. Filed as the defect `slot-restore-hangs-busy`.
 
-                RE-RUN 27.08.2026, same build b10631, and it is three of
-                three. Four cells clean — idle-spec, busy-spec, prefill-spec,
-                idle-nospec, all 391 391 391 — and busy-nospec into the same
-                300 s wall. Rule (b) still fails, so -np 2 stays closed, and
-                the reason is now a reproduction rather than a pair.
+                The fourth reproduction recorded HOW LONG the restore waited
+                and what it was waiting for, and that ended it. A restore
+                QUEUES BEHIND THE SLOT IT TARGETS, and the cell fills that
+                slot with a 2,500-token generation first:
 
-                (c) has since been DONE differently than it reads below:
-                llama-probe.timer was `linked` and never `enabled` when that
-                was written, so the detector existed and had never fired. It
-                is armed since 27.08. That changes nothing here — (b) decides
-                — but it means the next attempt starts with two of the three
-                conditions met rather than one.
+                    idle-spec / idle-nospec  nothing in the slot     0.0 s
+                    prefill-spec              77.1 s of prefill      6.2 s
+                    prefill-nospec            78.1 s of prefill     16.3 s
+                    busy-spec                 73.7 s at 33.9 t/s    68.8 s
+                    busy-nospec              335.5 s at 7.45 t/s   the bound
+                                                                   was 300
 
-                WHAT THE RE-RUN ALSO SHOWED, about the instrument rather than
-                the defect: the timeout ABORTS the whole run instead of
-                recording the cell as DIRTY and continuing, so prefill-nospec
-                was never measured. A suite whose first hanging cell costs it
-                the remaining cells reports less than it found. Four other cells were
-                clean, including prefill-spec, which is the cell that matched
-                the production incident of 25.08. exactly. So the trigger has
-                MOVED again rather than gone: what used to poison now passes,
-                and what used to pass now hangs.
-  (c) DONE.     setup/scripts/probe.py plus llama-probe.timer.
+                The restore comes back when its slot frees. The asymmetry
+                nobody could explain — busy-SPEC clean every time — is the
+                DRAFTER: speculation runs the same counting generation 4.5x
+                faster, so the wait fits inside the bound. CONFIRMED with
+                --restore-timeout 900 on the same build and the same cell:
+                generations 325.8 s, restore RETURNED after 319.8 s, probes
+                391/391/391, generation tails intact.
+
+                So on b10631 at -np 2, restore-safety is CLEAN IN ALL SIX
+                CELLS — and prefill-nospec, never measured before that
+                evening because the abort always came first, is one of them.
+                Reports: bench/reports/2026-08-27_2132_restore-safety-rocm-
+                patched_b10631, and ..._2159_... for the confirmation.
+
+                THE INSTRUMENT WAS THE BLOCKER, and that is the part worth
+                keeping. The suite aborted at its first failing cell instead
+                of recording it, so three runs reported four cells of six and
+                looked complete; and the bound it gave the restore was never
+                compared with the work the same cell had just put in front of
+                it. A bound shorter than what it waits for is not a
+                measurement of the thing — it is a measurement of the bound.
+                Both are fixed, and tests/test_restoresafety.py pins both.
+  (c) DONE.     setup/scripts/probe.py plus llama-probe.timer — which was
+                `linked` and never `enabled` until 27.08., so the detector
+                existed and had never fired once.
+
+ALL THREE NOW HOLD. That is not a decision, and this docstring deliberately
+does not make one. The rule was written in advance so a tempting number could
+not become a decision, and "all three hold" is a tempting number: what (a)
+bounds is the per-start corruption rate at about 10 % with 95 % confidence —
+an UPPER bound, on a cause that is unchanged in master and only suppressed by
+our patch. Whoever reopens -np 2 should reread (a) and decide, not inherit
+this paragraph.
 
 Thirty clean starts had made two slots look tempting. A rule agreed in
 advance is what stops a tempting number from becoming a decision — written
 afterwards, "it hung, but it did not corrupt" would have been an easy thing
-to say.
+to say. What happened is the other way round and worth more: the rule held
+the line for three sessions against an instrument that was wrong, and it cost
+nothing but two slots nobody had yet.
 
 Everything runs on a SIDE server (port 8081); production is untouched.
 

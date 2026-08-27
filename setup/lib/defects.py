@@ -34,6 +34,7 @@ DEFAULT_BUILD = os.path.expanduser("~/llama.cpp/build-rocm-patched")
 SEVERITY = ["silent", "loud", "unrepeatable", "slow"]
 
 EXPOSED, GUARDED, MANUAL, UNKNOWN, NA = "EXPOSED", "guarded", "manual", "unknown", "n/a"
+WITHDRAWN = "withdrawn"
 
 
 # --- reading the world ----------------------------------------------------
@@ -113,6 +114,18 @@ def applies(defect, cmdline, gpu=None):
 
 def evaluate(defect, cmdline=None, stamp=None, gpu=None):
     """(verdict, detail) for one defect against one machine state."""
+    # A withdrawn entry is not an open question, and `manual` would keep
+    # sending the reader off to run a measurement that has already been run
+    # and has already answered. That is the crying-wolf failure this module's
+    # own docstring names, and slot-restore-hangs-busy walked straight into
+    # it on 27.08.: withdrawn as a defect, still printed by check.sh as
+    # "only a measurement answers this".
+    #
+    # It stays in the registry rather than being deleted — it was the stated
+    # reason -np 2 remained closed through three sessions, and a correction
+    # that is removed takes the record of the mistake with it.
+    if str(defect.get("status", "")).startswith("withdrawn"):
+        return WITHDRAWN, "withdrawn — not a defect; see `measured`"
     want = (defect.get("applies_to") or {}).get("gpu")
     scope = applies(defect, cmdline, gpu)
     if scope is False:
@@ -174,7 +187,8 @@ def report(defects, cmdline=None, stamp=None, gpu=None):
     def key(row):
         d, verdict, _ = row
         sev = SEVERITY.index(d.get("shows_as")) if d.get("shows_as") in SEVERITY else len(SEVERITY)
-        rank = {EXPOSED: 0, UNKNOWN: 1, MANUAL: 2, GUARDED: 3, NA: 4}.get(verdict, 5)
+        rank = {EXPOSED: 0, UNKNOWN: 1, MANUAL: 2, GUARDED: 3, NA: 4,
+                WITHDRAWN: 5}.get(verdict, 6)
         return (rank, sev, d.get("id", ""))
     return sorted(rows, key=key)
 
@@ -232,7 +246,7 @@ def _c(code, text):
 
 
 MARK = {EXPOSED: ("31", "!"), GUARDED: ("32", "="), MANUAL: ("33", "?"),
-        UNKNOWN: ("33", "?"), NA: ("90", "-")}
+        UNKNOWN: ("33", "?"), NA: ("90", "-"), WITHDRAWN: ("90", "~")}
 
 
 def print_report(rows, verbose=False):
@@ -306,7 +320,8 @@ def main(argv=None):
         print("  %d defect(s) EXPOSED. Silent ones do not announce themselves;" % exposed)
         print("  that is why they are listed first.")
     else:
-        print("  Every known defect is guarded, unmeasurable from here, or not applicable.")
+        print("  Every known defect is guarded, withdrawn, unmeasurable from here,")
+        print("  or not applicable.")
     return 1 if exposed else 0
 
 

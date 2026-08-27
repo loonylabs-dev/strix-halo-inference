@@ -96,7 +96,7 @@
       },
       "shows_as": "silent",
       "symptom": "After the restore the server produces degenerate output until a fresh start. Production incident 25.08.: the restore landed 0.6 s after two requests had started, while the slots were mid-prefill.",
-      "measured": "Five cells isolate the ingredient. idle-* clean, which is what pointed at the prefill path rather than at the restore itself. RE-MEASURED 26.08. on the patched b10631 build, and the picture has MOVED: prefill-spec — the cell that matched the production incident of 25.08. exactly — is now CLEAN, along with idle-spec, busy-spec and idle-nospec. The trigger has shifted, the way it shifted for the corruption defect. What appeared in its place is a hang; see slot-restore-hangs-busy.",
+      "measured": "Five cells isolate the ingredient. idle-* clean, which is what pointed at the prefill path rather than at the restore itself. RE-MEASURED 26.08. on the patched b10631 build, and the picture has MOVED: prefill-spec — the cell that matched the production incident of 25.08. exactly — is now CLEAN, along with idle-spec, busy-spec and idle-nospec. The trigger has shifted, the way it shifted for the corruption defect. RE-MEASURED AGAIN 27.08. and the picture is now COMPLETE for the first time: all six cells on b10631, including prefill-nospec, which three earlier runs never reached because the suite aborted at busy-nospec. Six of six CLEAN. The same six on b10631 + llama.cpp PR #27311: six of six CLEAN. That does NOT say the PR changes nothing: both builds carry hip-integrated-off.patch, which is what suppresses the symptom, so the PR was tested on top of its own competitor and there was no corruption in either build for it to fix. The 25.08. run whose prefill cells were DIRTY was the STOCK build (BINARY was hard-wired to build-rocm until commit fcaf6bb on 26.08.), so DIRTY-then and CLEAN-now differ by the patch AND 52 upstream builds. Whether stock gfx1151/ROCm still corrupts on a current binary is unmeasured. Reports: bench/reports/2026-08-27_2132_restore-safety-rocm-patched_b10631 and 2026-08-27_2143_restore-safety-rocm-patched_b10631-18-gc1dcd9825. What was filed as a hang in its place is withdrawn; see slot-restore-hangs-busy.",
       "mitigation": "-np 1, and the gateway restores only into a free slot. Re-run the suite after every llama.cpp build. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
       "detect": {
         "kind": "manual"
@@ -105,7 +105,7 @@
       "upstream": [],
       "status": "open",
       "first_seen": "2026-08-25",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-27"
     },
     {
       "id": "rocwmma-fattn-prefill",
@@ -270,23 +270,23 @@
     },
     {
       "id": "slot-restore-hangs-busy",
-      "title": "A slot restore into a busy two-slot server hangs",
+      "title": "WITHDRAWN 27.08.2026 — this was our own client timeout, not a hang",
       "applies_to": {
         "gpu": "gfx1151",
         "backend": "rocm"
       },
       "shows_as": "loud",
-      "symptom": "POST /slots/0?action=restore never returns while two generations are running. It does not raise and it does not corrupt — it stops. Classified loud rather than silent because a caller notices a request that never comes back, which is the one thing the corruption defect never gave anybody.",
-      "measured": "26.08., patched b10631, bench/suites/restore-safety.py cell busy-nospec: the restore ran into its 300 s timeout. REPRODUCED on a second run, two of two, so this is a defect and not a flake. The asymmetry is worth recording without explaining it away: busy-SPEC, the same cell with speculation ON, was clean both times.",
-      "mitigation": "-np 1, which is already the production setting for other reasons. With one slot and the gateway's MAX_INFLIGHT at 1 there is never a generation running when a restore lands, so this cannot be reached from production. It is the reason -np 2 stays closed: rule (b) of the decision in bench/suites/stock-vs-patched.py requires restore-safety clean in EVERY cell.",
+      "symptom": "WHAT WAS OBSERVED: POST /slots/0?action=restore did not return while two generations were running. WHAT IT WAS: a restore QUEUES BEHIND THE SLOT IT TARGETS, and bench/suites/restore-safety.py gave it 300 s while filling that slot with a 2,500-token generation that takes 325-341 s without speculation. The bound was shorter than the work, and nothing compared the two. There is no llama.cpp, ROCm or gfx1151 behaviour here.",
+      "measured": "Reproduced four times (26.08. twice, 27.08. twice, patched b10631 and again on b10631+PR#27311) and withdrawn on the fourth, because the fourth run recorded HOW LONG the restore waited and what it waited for. b10631: idle 0.0 s, prefill-spec 6.2 s against a 77.1 s prefill, prefill-nospec 16.3 s against 78.1 s, busy-spec 68.8 s against a 73.7 s generation — the restore returns when its slot frees. busy-nospec: the generation takes 335.5 s at 7.45 t/s and the bound was 300 s. The asymmetry this entry used to record as unexplained — busy-SPEC clean both times — is the DRAFTER: speculation runs the same counting generation at 33.9 t/s, 4.5x faster, so the wait fits inside the bound. CONFIRMED 27.08. 21:59 with --restore-timeout 900, same build, same cell: generations 325.8 s, restore RETURNED after 319.8 s, probes 391/391/391, generation tails intact. Report: bench/reports/2026-08-27_2159_restore-safety-rocm-patched_b10631.",
+      "mitigation": "None needed — there is nothing to mitigate. The entry is kept rather than deleted because it was the stated reason -np 2 stayed closed through three sessions: rule (b) of the decision in bench/suites/stock-vs-patched.py requires restore-safety clean in EVERY cell, and the cell was failing against a bound, not against the build. A withdrawn entry that is removed takes its correction with it.",
       "detect": {
         "kind": "manual"
       },
       "suite": "bench/suites/restore-safety.py",
       "upstream": [],
-      "status": "open",
+      "status": "withdrawn — not a defect, the measurement bound was shorter than the workload",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-27"
     },
     {
       "id": "qwen4exp-multislot-desync",

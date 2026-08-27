@@ -80,10 +80,24 @@ class TestTheRegistryItself(unittest.TestCase):
                 self.assertTrue(u.startswith("https://"), "%s: %s" % (d["id"], u))
 
     def test_a_manual_defect_says_so_rather_than_guessing(self):
+        """WITHDRAWN entries are excluded, and the exclusion is the finding.
+
+        `slot-restore-hangs-busy` still carries `detect.kind: manual` because
+        that is what it WAS, and the entry is kept as a correction rather
+        than deleted. It must not be reported as a question any more, so the
+        two states have to be separable here — see
+        TestAWithdrawnEntryStopsAsking. The count is asserted so that this
+        loop cannot pass by finding nothing to check.
+        """
+        checked = 0
         for d in self.defects:
+            if str(d.get("status", "")).startswith("withdrawn"):
+                continue
             if d["detect"].get("kind") == "manual":
+                checked += 1
                 self.assertEqual(defects.evaluate(d, QWEN38, STAMP_GOOD)[0],
                                  defects.MANUAL, d["id"])
+        self.assertGreater(checked, 0, "no manual defect left to check")
 
 
 class TestSilenceIsNotSafety(unittest.TestCase):
@@ -175,6 +189,58 @@ class TestOrdering(unittest.TestCase):
         exposed = [d["shows_as"] for d, v, _ in rows if v == defects.EXPOSED]
         self.assertEqual(exposed[0], "silent",
                          "a slow defect was listed above a silent one")
+
+
+class TestAWithdrawnEntryStopsAsking(unittest.TestCase):
+    """The third way the registry could lie, found 27.08.
+
+    `slot-restore-hangs-busy` was withdrawn that evening: it was not a
+    defect, it was bench/suites/restore-safety.py giving a slot restore 300 s
+    while filling that slot with 325-341 s of work. The entry stays, because
+    it was the stated reason `-np 2` remained closed through three sessions
+    and deleting a correction deletes the record of the mistake.
+
+    But `detect.kind` is `manual`, so without this the registry kept printing
+    "only a measurement answers this" for a question that had been measured
+    and answered — sending every future reader to re-run a suite to
+    rediscover an artefact. That is crying wolf, which this file's own
+    docstring already names as a way to make a registry worse than nothing.
+    """
+
+    def setUp(self):
+        self.defects = defects.load()
+
+    def test_the_withdrawn_entry_is_not_reported_as_an_open_question(self):
+        d = by_id("slot-restore-hangs-busy")
+        verdict, detail = defects.evaluate(d, QWEN38, STAMP_GOOD, "gfx1151")
+        self.assertEqual(verdict, defects.WITHDRAWN, detail)
+        self.assertNotEqual(verdict, defects.MANUAL)
+        self.assertNotEqual(verdict, defects.EXPOSED,
+                            "a withdrawn entry must never turn check.sh red")
+
+    def test_it_still_says_what_it_was_and_why_it_is_not(self):
+        """A withdrawn entry whose text was not rewritten is worse than a
+        deleted one: it reads as an open defect with a quiet status field."""
+        d = by_id("slot-restore-hangs-busy")
+        self.assertTrue(d["status"].startswith("withdrawn"), d["status"])
+        for field in ("symptom", "measured", "mitigation"):
+            self.assertIn("bound", d[field].lower() + " " + d["title"].lower(),
+                          "%s does not say what the bound had to do with it"
+                          % field)
+        self.assertIn("319.8", d["measured"],
+                      "the confirming measurement has to be IN the entry")
+
+    def test_withdrawn_sorts_below_everything_that_is_still_a_question(self):
+        rows = defects.report(self.defects, QWEN38, STAMP_GOOD, "gfx1151")
+        ids = [d["id"] for d, _, _ in rows]
+        self.assertEqual(ids[-1], "slot-restore-hangs-busy", ids)
+
+    def test_an_ordinary_entry_is_untouched_by_the_new_verdict(self):
+        """The positive control: if `status` decided everything, every entry
+        would be withdrawn the moment somebody wrote prose into the field."""
+        d = by_id("slot-restore-poison")
+        verdict, _ = defects.evaluate(d, QWEN38, STAMP_GOOD, "gfx1151")
+        self.assertEqual(verdict, defects.MANUAL)
 
 
 if __name__ == "__main__":

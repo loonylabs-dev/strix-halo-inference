@@ -56,7 +56,6 @@ KNOWN = {
     "test_defects.py::TestTheRegistryItself.test_shows_as_is_one_of_the_four",
     "test_defects.py::TestTheRegistryItself.test_every_named_suite_exists",
     "test_defects.py::TestTheRegistryItself.test_upstream_entries_are_urls",
-    "test_defects.py::TestTheRegistryItself.test_a_manual_defect_says_so_rather_than_guessing",
     "test_defects.py::TestSilenceIsNotSafety.test_an_argument_check_is_unknown_with_nothing_running",
     "test_gateway.py::TestModelListing.test_aliases_inherit_what_the_server_reports",
     "test_hardware.py::TestItIdentifiesTheGpuTwice.test_every_id_in_the_table_says_where_it_was_seen",

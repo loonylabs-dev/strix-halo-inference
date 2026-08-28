@@ -46,6 +46,19 @@ from aiohttp import web, ClientSession, ClientTimeout
 # working without an installation step.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dialects as DIA                                   # noqa: E402
+import modes as MODES_LIB                                # noqa: E402
+
+# The repo this file lives in, through the symlink in ~/.claude/bin. Needed for
+# two things and nothing else: the profile directory below, and systemdfile —
+# which is imported rather than re-implemented, because a fourth reader of
+# these files is exactly what systemdfile.py's own docstring warns about.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.realpath(__file__))))
+sys.path.insert(0, os.path.join(REPO_ROOT, "setup", "lib"))
+try:
+    import systemdfile as SDF                            # noqa: E402
+except ImportError:                                      # running outside the repo
+    SDF = None
 
 def env(name, old=None, default=None):
     """Read an environment variable, still accepting its former German name.
@@ -96,6 +109,24 @@ PER_TOKEN_MAX = int(env("PER_TOKEN_MAX", "JE_TOKEN_MAX", 2))
 # it changes the rendered prompt, and Laguna neither needs nor knows it.
 # See docs/MODELS.md.
 MID_SYSTEM_TO_USER = env("MID_SYSTEM_TO_USER", default="0") == "1"
+# Which model llama-server is actually holding, learned from it rather than
+# configured here — one source of truth, and it is the server. None until it
+# has answered once; cached after that, because switch-model.sh restarts this
+# gateway after every model change (setup/switch-model.sh, "ONLY NOW the
+# gateway, and the order is the whole point"), so the cache cannot outlive
+# the model it describes.
+SERVED = None
+# Model names that reached us and matched no mode. Kept so the note is printed
+# once per name rather than once per request — see inject_model_kwargs.
+UNKNOWN_MODELS = set()
+# Where the profiles live. Overridable for tests; in production it is the repo
+# this file is symlinked out of, so it cannot point at a different checkout
+# than the one switch-model.sh started the model from.
+PROFILE_DIR = os.environ.get("PROFILE_DIR") or os.path.join(REPO_ROOT, "setup", "env")
+# The served model's own declaration, read at startup and after a restart.
+# Empty is a NORMAL state: four of the seven profiles here read no levels at
+# all (bench/suites/effort-vocabulary.py). See modes.py.
+MODES = {}
 # Thinking mode per MODEL NAME, without a second server: llama-server merges a
 # request-level chat_template_kwargs over its command-line default (verified
 # in server-common.cpp, and the Anthropic route passes the field through).
@@ -114,6 +145,30 @@ except ValueError as e:
 
 HOP  = {"host", "content-length", "connection", "transfer-encoding",
         "keep-alive", "accept-encoding"}
+# Fields llama-server has no use for. MEASURED 28.08.2026 against the running
+# qwen38 server: all three, singly and together, answer 200 on
+# /v1/messages/count_tokens — server_chat_convert_anthropic_to_oai() builds
+# its body key by key, so an unknown field is not copied and cannot 400. The
+# "llama-server rejects these" premise this list inherited is therefore STALE,
+# and it is written down as fact in setup/README.md and cc-cachefix2.py too.
+# Removing the list is a behaviour change and not made here.
+#
+# What was tried and taken out again on 28.08.: translating Anthropic's own
+# `output_config.effort` and `thinking.type` into chat_template_kwargs, so the
+# harness's native parameter would work instead of the model-name detour. Four
+# reasons it went:
+#   1. it reimplements a six-line gap in llama.cpp's Anthropic route, which
+#      already does the same mapping on its OAI and Responses routes;
+#   2. writing into chat_template_kwargs BYPASSES upstream's normalisation —
+#      a top-level reasoning_effort of "none" is turned into
+#      enable_thinking=false (server-common.cpp:1326), the same value inside
+#      chat_template_kwargs is a 500 (measured, as is "max");
+#   3. an env switch is per deployment, the effort value is per request, so
+#      the switch cannot prevent the 500 it was added for;
+#   4. the primary consumer does not send the field at all —
+#      CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1 in setup/claude/local.json.
+# It belongs in the profile, with the template it describes, and with a
+# vocabulary map that clamps max/high to what the template accepts.
 DROP = ("thinking", "context_management", "output_config")
 
 # Content that changes from turn to turn and must therefore NOT move to the front.
@@ -576,6 +631,38 @@ def query_slots(wait=0):
                 return None
             time.sleep(3)
 
+def query_served_model():
+    """Ask the server WHICH model it is holding. One try, no waiting.
+
+    Asked here and not per request, for the reason the tests state plainly:
+    one client request must cause exactly one upstream request. A lazy lookup
+    in the request path made that two — it broke
+    TestZoneRemote::test_valid_token_200 on 28.08. before anyone had to
+    reason about it, which is what that assertion is for.
+
+    No `wait`: query_slots has already waited up to SLOTS_WAIT by the time
+    this runs, so the server is either up or it is not. If it is not, SERVED
+    stays None and inject_model_kwargs keeps its old, unscoped behaviour —
+    the same trade as the slot-count guess above it, and the milder one,
+    because the failure is a thinking mode rather than admission control.
+
+    Cached for the process lifetime, which is exactly as long as it is true:
+    switch-model.sh restarts this gateway after every model change.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(LLAMA + "/v1/models", timeout=10) as x:
+            listing = json.loads(x.read().decode())
+    except Exception:
+        return None
+    for key in DIA.model_listing_arrays(listing):
+        for e in listing.get(key) or []:
+            name = isinstance(e, dict) and (e.get("name") or e.get("id"))
+            if name:
+                return name
+    return None
+
+
 # The slot count is asked for in main(), not at import time: an import must
 # not reach out to the network, otherwise the tests under tests/ would depend
 # on a llama-server that does not exist there.
@@ -616,15 +703,60 @@ def correct(p, dialect=DIA.ANTHROPIC):
     """Hoist stable system messages to the front — see dialects.py."""
     return DIA.hoist_system_messages(p, dialect, VOLATILE)
 
-def inject_model_kwargs(p, table=None):
+def inject_model_kwargs(p, table=None, served=None, modes=None):
     """Fill chat_template_kwargs from the model-name table.
 
     Existing request kwargs win key by key: whoever sets them explicitly has
     read the docs and gets what they asked for. The model name itself stays
     untouched — llama-server ignores it, and the log keeps showing which
     mode a consumer chose.
+
+    `served` is the alias llama-server actually holds, and it is what keeps
+    this map honest. The map matches a NAME; which model is loaded is decided
+    by switch-model.sh; the consumer's name comes from ANTHROPIC_MODEL in a
+    third place again. Nothing tied those together, so after a switch the
+    client kept asking for `qwen38-think` and this function kept answering —
+    injecting qwen38's thinking mode into requests bound for another model,
+    over a command line that had deliberately set it otherwise, with no error
+    anywhere. The rule: a map is about the model whose names it carries, so if
+    the served model is not one of its keys, it does not apply.
+
+    `served=None` means "not known yet" and keeps the old behaviour. Refusing
+    to inject there would silently drop the daily thinking mode every time the
+    lookup failed — a regression dressed as caution.
     """
+    # Both sources are parameters with a module-level default, and that is
+    # deliberate: `served` used to be injected while MODES was reached as a
+    # global, so half the dependency was passed in and half was not — which is
+    # why every test of this had to poke module state to exercise it.
+    modes = MODES if modes is None else modes
+    if modes:
+        # Derived from the served alias, so a name for another model cannot
+        # exist and no scoping is needed. See modes.py.
+        model = p.get("model")
+        wanted, hit = MODES_LIB.resolve(model, served, modes)
+        if not hit and isinstance(model, str) and model not in UNKNOWN_MODELS:
+            # Once per name. The old code was wrong LOUDLY — it injected
+            # another model's mode. The new code is right QUIETLY, and after
+            # any switch-model.sh that is the expected steady state, because
+            # ANTHROPIC_MODEL lives in a file switch-model.sh does not touch.
+            # The user's only other signal would be that thinking stopped.
+            UNKNOWN_MODELS.add(model)
+            log("NOTE        %r matches no mode of %s — serving it as the bare "
+                "alias. Offered: %s"
+                % (model, served, "  ".join(MODES_LIB.names(served, modes))))
+        if not hit or not wanted:
+            return p, False
+        merged = dict(wanted)
+        given = p.get("chat_template_kwargs")
+        if isinstance(given, dict):
+            merged.update(given)
+        p["chat_template_kwargs"] = merged
+        return p, True
+
     table = KWARGS_BY_MODEL if table is None else table
+    if served is not None and served not in table:
+        return p, False
     wanted = table.get(p.get("model"))
     if not wanted:
         return p, False
@@ -675,6 +807,51 @@ REMOTE_ALLOWED = (
     "/v1/chat/completions",
     "/v1/models",
 )
+
+def load_profile_modes(alias):
+    """The MODES of the profile whose name is the served alias.
+
+    Alias and profile name are the same string by construction: the unit is
+    `llama-user@<name>.service`, the profile is `setup/env/<name>.env`, and its
+    LLAMA_ARGS carry `--alias <name>`. That is what lets the names be derived
+    instead of listed a third time — see modes.py.
+
+    A missing profile or a profile without MODES is not an error. It means this
+    model declares no thinking modes, which is the case for four of the seven
+    here, and the old KWARGS_BY_MODEL blob still answers for it until it is
+    migrated.
+    """
+    if not alias:
+        return {}
+    if SDF is None:
+        log("NOTE        systemdfile is not importable from %s — no profile "
+            "modes. Is this file still a symlink into the repo?"
+            % os.path.join(REPO_ROOT, "setup", "lib"))
+        return {}
+    path = os.path.join(PROFILE_DIR, "%s.env" % alias)
+    if not os.path.exists(path):
+        # Not an error: most models declare no modes. But say it once, because
+        # a wrong PROFILE_DIR looks exactly the same from here, and silence is
+        # how a stack ends up serving with a feature quietly switched off.
+        log("NOTE        no profile at %s — %s serves without reasoning modes"
+            % (path, alias))
+        return {}
+    try:
+        md = MODES_LIB.parse_modes(SDF.variable(path, "MODES"))
+        # Once, at load, instead of once per request forever: a mode naming a
+        # level this template raises on would be a 500 for whoever selects it.
+        # The levels are read here and nowhere else — nothing outside this
+        # check has any use for them.
+        MODES_LIB.check_modes(md, MODES_LIB.parse_levels(
+            SDF.variable(path, "TEMPLATE_LEVELS")))
+        return md
+    except SystemExit as e:
+        # A malformed declaration must not take the gateway down with it: the
+        # model is up and serving, and refusing every request over a typo in a
+        # thinking mode would be the larger failure.
+        log("NOTE        %s: %s" % (path, str(e).strip().replace("\n", " ")))
+        return {}
+
 
 def is_inference(path):
     return DIA.is_inference(path)
@@ -738,21 +915,35 @@ async def handler(req):
             for k in DROP:
                 p.pop(k, None)
             streaming = bool(p.get("stream"))
-            # The id comes from the RAW body, before any correction — the
-            # store is keyed by what arrives, not by what is forwarded.
+            # The mode BEFORE the id, and the id before any correction.
+            #
+            # The id is keyed by what ARRIVES, not by what is forwarded — that
+            # is why correct() and mid_system_to_user() come after it. The mode
+            # arrives too, though: it is the model name, and resolving it is
+            # not a rewrite of the request but a reading of it. It has to
+            # happen first because it changes the rendered prompt at character
+            # 19 (see dialects.prefix_text), so a name resolved after the id
+            # would put two different prompts on one key — which is what this
+            # gateway did until 28.08.2026, and what made a restore poison the
+            # slot it was supposed to warm.
+            p, _ = inject_model_kwargs(p, served=SERVED)
             ident, head = prefix_id(p, dialect)
             cold = ident not in PREFIXES
             p, n_vol = correct(p, dialect)
             if MID_SYSTEM_TO_USER:
                 p, _ = mid_system_to_user(p, dialect)
-            p, _ = inject_model_kwargs(p)
             out = json.dumps(p).encode()
         except Exception as e:
             log("passed through unchanged: %r" % (e,))
             out = None
 
     if not inference:
-        if req.path.rstrip("/") == "/v1/models" and KWARGS_BY_MODEL:
+        # Either source of names reaches the listing. Gating this on the old
+        # blob alone left a profile that declares MODES advertising nothing —
+        # the injection answered its names and the picker never showed them,
+        # which is the same disagreement between listing and injection that
+        # variant 1 exists to make impossible.
+        if req.path.rstrip("/") == "/v1/models" and (MODES or KWARGS_BY_MODEL):
             return await models_with_aliases(req, body)
         return await forward(req, body, out)
 
@@ -871,7 +1062,48 @@ async def handler(req):
         GATE.leave()
         IN_FLIGHT_PER_TOKEN[who] = max(0, IN_FLIGHT_PER_TOKEN.get(who, 1) - 1)
 
-def add_aliases(listing, table):
+def add_derived_names(listing, wanted):
+    """Replace the listing's entries with exactly the names we answer for.
+
+    REPLACE, not extend, and that is the difference from add_aliases(): the
+    names are derived from the served alias, so the set is complete by
+    construction and anything else in there is stale. Each entry is the served
+    one copied with its name changed, which keeps whatever the server reports
+    about itself true for all of them, because it IS the same loaded model.
+
+    What that is, measured 28.08.2026 against llama-server: `capabilities`
+    (completion, multimodal) and `details.format`. NOT n_ctx — the claim that
+    it carries one was inherited from add_aliases and is simply not in the
+    body llama-server sends.
+    """
+    def name_of(e):
+        return e.get("name") or e.get("id") or e.get("model")
+
+    for key in DIA.model_listing_arrays(listing):
+        entries = listing[key]
+        if not entries:
+            continue
+        base = entries[0]
+        derived = []
+        for name in wanted:
+            e = json.loads(json.dumps(base))
+            for field in ("name", "id", "model"):
+                if field in e:
+                    e[field] = name
+            derived.append(e)
+        # Anything the server reports that is NOT the entry we derived from is
+        # kept. Today llama-server sends exactly one model, so this changes
+        # nothing — but "the derived set is complete" is only true of the model
+        # we are serving. A draft model, a projector or a future multi-model
+        # server would have been erased rather than left alone, and erasing
+        # what you did not understand is not the same as replacing what you
+        # did.
+        foreign = [e for e in entries[1:] if name_of(e) not in wanted]
+        listing[key] = derived + foreign
+    return listing
+
+
+def add_aliases(listing, table, served=None):
     """Add one entry per configured model name to a /v1/models listing.
 
     llama-server only knows its own --alias, so a consumer listing the
@@ -885,7 +1117,19 @@ def add_aliases(listing, table):
     than inventing keeps whatever the server reports about itself —
     n_ctx, capabilities, multimodality — true for the aliases too, because
     it IS the same loaded model.
+
+    `served` scopes it by the same rule as inject_model_kwargs, and the two
+    must not be scoped separately. On 28.08. the injection was scoped and this
+    was not, for one afternoon: the picker went on offering `qwen38-think`
+    while another model served, the gateway refused to honour it, and a
+    consumer saw four models where one exists — three of them the served model
+    wearing another model's name, inheriting its n_ctx and capabilities. The
+    unscoped version at least did something wrong loudly; the half-scoped one
+    did nothing, quietly. A name this gateway will not honour must not be
+    advertised.
     """
+    if served is not None and served not in table:
+        return listing
     for key in DIA.model_listing_arrays(listing):
         entries = listing[key]
         have = {e.get("name") or e.get("id")
@@ -921,7 +1165,10 @@ async def models_with_aliases(req, body):
     except Exception as e:
         log("NOTE        /v1/models could not be extended: %r" % (e,))
         return await forward(req, body, None)
-    return web.json_response(add_aliases(listing, KWARGS_BY_MODEL))
+    if MODES:
+        return web.json_response(
+            add_derived_names(listing, MODES_LIB.names(SERVED, MODES)))
+    return web.json_response(add_aliases(listing, KWARGS_BY_MODEL, SERVED))
 
 async def forward(req, body, out, resp=None, answered=None):
     """Pass the request through. `resp` is an already-prepared response.
@@ -1013,7 +1260,7 @@ async def watch_server():
     request runs into a full cold start. Exactly that happened in testing:
     109.7 s although the file was ready.
     """
-    global PREFIXES
+    global PREFIXES, SERVED, MODES
     was_gone = False
     while True:
         await asyncio.sleep(15)
@@ -1023,19 +1270,53 @@ async def watch_server():
             async with ClientSession(timeout=timeout) as s_:
                 async with s_.get(LLAMA + "/slots") as r:
                     slots = await r.json()
+            restarted = False
             if was_gone:
                 if PREFIXES:
                     log("NOTE        llama-server was gone — prefix bookkeeping reset "
                         "so that disk loading kicks in again")
                     PREFIXES = {}
-                was_gone = False
+                restarted = True
             elif PREFIXES and not any(x.get("n_prompt_tokens") for x in slots):
                 # All slots empty although we know prefixes: restarted or
                 # cleared from outside.
                 log("NOTE        all slots empty — prefix bookkeeping reset")
                 PREFIXES = {}
+                restarted = True
+            if restarted:
+                await note_server_restart()
+            was_gone = False
         except Exception:
             was_gone = True
+
+
+async def note_server_restart():
+    """Re-read which model is served, after EITHER detector saw a restart.
+
+    Its own function so it can be tested. The version before this sat inline in
+    one of watch_server's two branches, and the only test of it grepped the
+    source for the word SERVED — which passed while the second branch, the one
+    that actually fires when a model reloads faster than the 15 s poll, left
+    the name stale. A `systemctl restart llama-user@gemma26` then had the
+    gateway advertising qwen38's names and injecting its thinking mode into a
+    model whose template ignores the field entirely.
+
+    `to_thread` because query_served_model is synchronous urllib and this runs
+    on the event loop. Ten seconds of a hung /v1/models would otherwise freeze
+    every streamed response in flight, with nothing logged and nothing failing
+    — see the ClientSession three lines above the caller, which exists for
+    exactly that reason.
+    """
+    global SERVED, MODES
+    name = await asyncio.to_thread(query_served_model)
+    if not name:
+        return
+    if name != SERVED:
+        log("NOTE        llama-server now serves %s (was %s)" % (name, SERVED))
+    SERVED = name
+    MODES = load_profile_modes(SERVED)
+    # The "matches no mode" notes were about the previous model's names.
+    UNKNOWN_MODELS.clear()
 
 # The accounting above relies on "aiohttp cancels the handler as soon as the
 # connection is gone" — which stopped being the DEFAULT in aiohttp 3.9: it is
@@ -1071,7 +1352,7 @@ def main():
     store, no network. That is exactly what the tests under tests/ need, which
     must run without a GPU and without a running service.
     """
-    global TOKENS, SAVED, MAX_INFLIGHT, GATE
+    global TOKENS, SAVED, MAX_INFLIGHT, GATE, SERVED, MODES
     if "MAX_INFLIGHT" not in os.environ:
         n = query_slots(wait=SLOTS_WAIT)
         if n:
@@ -1083,6 +1364,17 @@ def main():
                 "lower, the admission control is bypassed for the difference. "
                 "Restart this service once the model is up."
                 % (SLOTS_WAIT, MAX_INFLIGHT))
+    SERVED = query_served_model()
+    MODES = load_profile_modes(SERVED)
+    if MODES:
+        log("  modes for %s: %s" % (SERVED, "  ".join(MODES_LIB.names(SERVED, MODES))))
+    if SERVED:
+        log("  serving %s — the model-name map applies only to it" % SERVED)
+    elif KWARGS_BY_MODEL:
+        log("  WARNING: the server did not say which model it holds, so the "
+            "model-name map is applied unscoped. After a switch-model.sh to "
+            "another model a stale client name would reach it — restart this "
+            "service once the model is up.")
     TOKENS = load_tokens()
     SAVED = refresh_saved(force=True)
     log("cc-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))

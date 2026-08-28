@@ -135,6 +135,122 @@ class TestModelKwargs(unittest.TestCase):
         self.assertEqual(GW.KWARGS_BY_MODEL, {})
 
 
+class TestKwargsBelongToTheServedModel(unittest.TestCase):
+    """The map matches a NAME. It has to belong to the model that is loaded.
+
+    There is one llama-server, and which model it holds is decided by
+    switch-model.sh, not by the request. The consumer's name is set somewhere
+    else again — ANTHROPIC_MODEL in setup/claude/local.json, today
+    `qwen38-think`. Nothing tied the two together, so a switch to another model
+    left the client asking for a name that was no longer served, and the map
+    answered it anyway: qwen38's thinking mode injected into a request bound
+    for Flash-Next, over a command line that had set it otherwise, silently.
+
+    KNOWN LIMIT, and it is why this is a stopgap rather than the fix: the rule
+    is per-TABLE. The moment KWARGS_BY_MODEL names two profiles — the obvious
+    thing to do on a machine with seven of them — the served model IS in the
+    table, the guard switches off, and the fault is re-armed by a config change
+    nobody would think twice about. A bare name cannot say which base model it
+    belongs to; `served not in table` is a proxy for ownership that holds only
+    while the table describes one model. The structural answer is to derive the
+    names FROM the served alias instead of listing them in a third file.
+    """
+
+    TABLE = {"qwen38": {"enable_thinking": False},
+             "qwen38-think": {"reasoning_effort": "medium"}}
+
+    def test_the_served_model_still_gets_its_modes(self):
+        p, hit = GW.inject_model_kwargs({"model": "qwen38-think"}, self.TABLE,
+                                        served="qwen38")
+        self.assertTrue(hit)
+        self.assertEqual(p["chat_template_kwargs"], {"reasoning_effort": "medium"})
+
+    def test_a_name_from_another_model_injects_nothing(self):
+        """The switch happened, the client did not follow."""
+        p, hit = GW.inject_model_kwargs({"model": "qwen38-think"}, self.TABLE,
+                                        served="flashnext")
+        self.assertFalse(hit)
+        self.assertNotIn("chat_template_kwargs", p,
+                         "qwen38's thinking mode reached Flash-Next")
+
+    def test_a_map_written_for_the_served_model_applies(self):
+        table = dict(self.TABLE, flashnext={"enable_thinking": False})
+        p, hit = GW.inject_model_kwargs({"model": "flashnext"}, table,
+                                        served="flashnext")
+        self.assertTrue(hit)
+        self.assertEqual(p["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_the_known_limit_is_pinned_rather_than_believed_away(self):
+        """A table naming two models turns the guard off. Asserted so that the
+        docstring above cannot quietly become untrue, and so that whoever adds
+        a second profile to KWARGS_BY_MODEL meets this test first."""
+        table = dict(self.TABLE, flashnext={"enable_thinking": False})
+        p, hit = GW.inject_model_kwargs({"model": "qwen38-think"}, table,
+                                        served="flashnext")
+        self.assertTrue(hit, "the guard is per-table; this is the known hole")
+
+    def test_an_unknown_served_model_keeps_the_old_behaviour(self):
+        """llama-server may not have answered yet. Refusing to inject would
+        silently drop the daily thinking mode every time the lookup failed,
+        which is a regression dressed as caution."""
+        p, hit = GW.inject_model_kwargs({"model": "qwen38-think"}, self.TABLE,
+                                        served=None)
+        self.assertTrue(hit)
+
+
+class TestTheServedModelIsAskedForOnce(unittest.TestCase):
+    """Where the lookup lives is not a detail — it was the first attempt.
+
+    Resolving it lazily in the request path worked and broke
+    TestZoneRemote::test_valid_token_200, which asserts that one client request
+    causes exactly ONE upstream request. That assertion caught a per-request
+    round trip nobody would have noticed except as latency. So the lookup sits
+    in main(), beside query_slots, and the module import stays free of network.
+    """
+
+    def listing(self, payload):
+        import io, json as J
+        class Resp(io.BytesIO):
+            def __enter__(self_): return self_
+            def __exit__(self_, *a): return False
+        return mock.patch("urllib.request.urlopen",
+                          lambda *a, **k: Resp(J.dumps(payload).encode()))
+
+    def test_it_reads_the_name_the_server_reports(self):
+        with self.listing({"data": [{"id": "qwen38"}]}):
+            self.assertEqual(GW.query_served_model(), "qwen38")
+
+    def test_a_server_that_does_not_answer_is_not_a_name(self):
+        def boom(*a, **k):
+            raise OSError("connection refused")
+        with mock.patch("urllib.request.urlopen", boom):
+            self.assertIsNone(GW.query_served_model())
+
+    def test_an_unparseable_listing_is_not_a_name(self):
+        """The fake llama-server in these tests answers {"ok": true} to every
+        path. A lookup that read a name out of that would be inventing one."""
+        with self.listing({"ok": True, "path": "/v1/models"}):
+            self.assertIsNone(GW.query_served_model())
+
+    def test_main_asks_at_startup(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        body = src[src.index("def main("):]
+        self.assertIn("query_served_model()", body,
+                      "main() never learns which model is served")
+
+    def test_both_staleness_detectors_call_the_refresh(self):
+        """Not a grep for the word SERVED — that is what the first version of
+        this test did, and it stayed green while the second of watch_server's
+        two branches left the name stale. Both branches must reach the same
+        call."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        body = src[src.index("async def watch_server("):src.index("async def note_server_restart(")]
+        self.assertEqual(body.count("restarted = True"), 2,
+                         "one of the two detectors does not mark a restart")
+        self.assertEqual(body.count("await note_server_restart()"), 1,
+                         "the refresh must be reached from one place, after both")
+
+
 class TestIdContract(unittest.TestCase):
     """The bug that made the automatic saving useless.
 
@@ -434,10 +550,17 @@ class GatewayOnTheWire(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.seen = []
         self.hang = None
+        # Per-path canned answers. The default {"ok": true} is fine for the
+        # request path, but an endpoint the gateway RESHAPES — /v1/models —
+        # needs something with the real shape, or the test measures the fake
+        # instead of the gateway.
+        self.llama_json = {}
         async def llama(request):
             self.seen.append((request.method, request.path_qs, await request.read()))
             if self.hang is not None:
                 await self.hang.wait()
+            if request.path in self.llama_json:
+                return web.json_response(self.llama_json[request.path])
             if request.path == "/slots":
                 return web.json_response([])
             return web.json_response({"ok": True, "path": request.path})
@@ -493,6 +616,257 @@ class GatewayOnTheWire(unittest.IsolatedAsyncioTestCase):
         return await self.session.request(
             method, self.url + path, headers=k,
             json=(self.payload() if payload is None and method == "POST" else payload))
+
+
+class TestARestartChangesTheServedModel(GatewayOnTheWire):
+    """The behaviour, not the spelling.
+
+    A `systemctl restart llama-user@gemma26` that loads faster than the 15 s
+    poll is never seen as "gone": watch_server's SECOND branch fires, clears
+    the prefixes, and used to leave SERVED saying qwen38 — so the gateway went
+    on advertising qwen38's names and injecting its thinking mode into a model
+    whose template ignores the field entirely.
+    """
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in
+                      ("SERVED", "MODES", "PROFILE_DIR", "UNKNOWN_MODELS")}
+        self.envdir = tempfile.mkdtemp(prefix="prof-")
+        with open(os.path.join(self.envdir, "gemma26.env"), "w") as f:
+            f.write("MODES=low:on\nTEMPLATE_LEVELS=no-levels\n")
+        GW.PROFILE_DIR = self.envdir
+        GW.SERVED = "qwen38"
+        GW.MODES = {"low": "on+low"}
+        GW.UNKNOWN_MODELS = set()
+        self.addCleanup(shutil.rmtree, self.envdir, ignore_errors=True)
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+
+    async def test_the_refresh_picks_up_the_new_model_and_its_modes(self):
+        self.llama_json["/v1/models"] = {"data": [{"id": "gemma26"}]}
+        await GW.note_server_restart()
+        self.assertEqual(GW.SERVED, "gemma26")
+        self.assertEqual(dict(GW.MODES), {"low": "on"},
+                         "the new model's own profile must be read")
+
+    async def test_a_server_that_cannot_be_asked_leaves_the_old_answer(self):
+        """Better a name that is probably still right than none at all — the
+        same trade query_slots makes one function above."""
+        self.llama_json["/v1/models"] = {"ok": True}
+        await GW.note_server_restart()
+        self.assertEqual(GW.SERVED, "qwen38")
+
+    async def test_the_unknown_name_notes_are_forgotten_with_the_model(self):
+        """They were about the old model's names. Keeping them would silence
+        the note for a name that is genuinely wrong under the new one."""
+        GW.UNKNOWN_MODELS.add("qwen38-medium")
+        self.llama_json["/v1/models"] = {"data": [{"id": "gemma26"}]}
+        await GW.note_server_restart()
+        self.assertEqual(GW.UNKNOWN_MODELS, set())
+
+
+class TestAnUnmatchedNameIsSaidOnce(GatewayOnTheWire):
+    """The old code was wrong loudly; the new code is right quietly.
+
+    After any switch-model.sh the client's ANTHROPIC_MODEL still names the old
+    model's mode — that file is not touched by the switch — and the only other
+    signal a user gets is that thinking stopped happening.
+    """
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in ("SERVED", "MODES", "UNKNOWN_MODELS")}
+        GW.SERVED, GW.MODES, GW.UNKNOWN_MODELS = "qwen38", {"low": "on+low"}, set()
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+
+    async def test_it_is_logged_and_only_once(self):
+        for _ in range(3):
+            GW.inject_model_kwargs({"model": "qwen38-think"}, served="qwen38")
+        hits = [m for m in self.log_lines if "matches no mode" in m]
+        self.assertEqual(len(hits), 1, self.log_lines)
+        self.assertIn("qwen38-low", hits[0], "say what IS offered")
+
+    async def test_a_name_that_matches_says_nothing(self):
+        GW.inject_model_kwargs({"model": "qwen38-low"}, served="qwen38")
+        self.assertFalse([m for m in self.log_lines if "matches no mode" in m])
+
+
+class TestReasoningOnTheWire(GatewayOnTheWire):
+    """A tested function nobody calls is the failure this repo keeps naming.
+
+    TestKwargsBelongToTheServedModel pins the arithmetic. These pin that the
+    request path runs it — what llama-server receives, not what a helper
+    returns.
+    """
+    TUNNEL = False
+
+    TABLE = {"qwen38": {"enable_thinking": False},
+             "qwen38-think": {"reasoning_effort": "medium"}}
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in ("KWARGS_BY_MODEL", "SERVED")}
+        GW.KWARGS_BY_MODEL = dict(self.TABLE)
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+
+    async def sent(self, payload):
+        """The body that reached llama-server for an inference request."""
+        await self.session.post(self.url + "/v1/messages", json=payload)
+        bodies = [json.loads(b) for m, path, b in self.seen
+                  if path.startswith("/v1/messages") and b]
+        self.assertTrue(bodies, "nothing reached llama-server")
+        return bodies[-1]
+
+    async def test_the_served_model_gets_its_mode(self):
+        GW.SERVED = "qwen38"
+        body = await self.sent({"model": "qwen38-think", "messages": []})
+        self.assertEqual(body.get("chat_template_kwargs"),
+                         {"reasoning_effort": "medium"})
+
+    async def test_a_stale_client_name_reaches_another_model_clean(self):
+        """switch-model.sh ran, ANTHROPIC_MODEL did not follow."""
+        GW.SERVED = "flashnext"
+        body = await self.sent({"model": "qwen38-think", "messages": []})
+        self.assertNotIn("chat_template_kwargs", body,
+                         "qwen38's thinking mode was injected into a request "
+                         "bound for another model")
+
+    async def test_two_modes_are_two_prefixes(self):
+        """The id has to see the mode the name selects.
+
+        It is computed from the body BEFORE injection — deliberately, so that
+        the store is keyed by what arrives. But the mode arrives too, as the
+        model name, and it changes the rendered prompt at character 19. So the
+        name must be resolved to its kwargs before the id is taken, or two
+        different prompts land on one key and the restore poisons the slot.
+        """
+        GW.SERVED = "qwen38"
+        GW.PREFIXES.clear()
+        await self.sent({"model": "qwen38", "messages": [],
+                         "system": "same system", "tools": []})
+        await self.sent({"model": "qwen38-think", "messages": [],
+                         "system": "same system", "tools": []})
+        self.assertEqual(len(GW.PREFIXES), 2,
+                         "off and think shared one prefix id")
+
+    async def test_the_native_reasoning_fields_do_not_reach_the_server(self):
+        """They are dropped, not translated — see DROP for the four reasons a
+        translator was tried on 28.08. and taken out again. Pinned because the
+        next person to measure that llama-server answers 200 to these will be
+        tempted to pass them through, and passing them through is not the same
+        as making them work."""
+        GW.SERVED = "qwen38"
+        body = await self.sent({"model": "qwen38", "messages": [],
+                                "output_config": {"effort": "medium"},
+                                "thinking": {"type": "adaptive"}})
+        self.assertNotIn("output_config", body)
+        self.assertNotIn("thinking", body)
+        self.assertNotIn("reasoning_effort", body.get("chat_template_kwargs", {}))
+
+
+class TestModesComeFromTheProfile(GatewayOnTheWire):
+    """The names the gateway answers for are DERIVED from the served alias.
+
+    That is the whole of variant 1: `qwen38-think` cannot exist while flashnext
+    serves, because the names are built from what serves. No guard is needed
+    for a stale name, and the listing cannot advertise what the injection would
+    refuse — both read the same two inputs.
+    """
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in
+                      ("KWARGS_BY_MODEL", "SERVED", "PROFILE_DIR", "MODES")}
+        self.envdir = tempfile.mkdtemp(prefix="prof-")
+        with open(os.path.join(self.envdir, "qwen38.env"), "w") as f:
+            # A complete map, because check_modes() holds the two lines
+            # against each other: a mode may only name a level the template
+            # renders. The first version of this fixture declared `deep:medium`
+            # under a map without `medium` and the check caught it — which is
+            # what it is for.
+            f.write("MODES=none:off  low:on+low  medium:on+medium\n"
+                    "TEMPLATE_LEVELS=low medium xhigh\n")
+        GW.PROFILE_DIR = self.envdir
+        GW.KWARGS_BY_MODEL = {}
+        self.addCleanup(shutil.rmtree, self.envdir, ignore_errors=True)
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+
+    def serve(self, alias):
+        GW.SERVED = alias
+        GW.MODES = GW.load_profile_modes(alias)
+
+    async def sent(self, payload):
+        await self.session.post(self.url + "/v1/messages", json=payload)
+        bodies = [json.loads(b) for m, path, b in self.seen
+                  if path.startswith("/v1/messages") and b]
+        self.assertTrue(bodies, "nothing reached llama-server")
+        return bodies[-1]
+
+    def test_the_profile_is_read_for_the_served_alias(self):
+        self.serve("qwen38")
+        self.assertEqual(list(GW.MODES), ["none", "low", "medium"])
+
+    def test_a_model_without_a_profile_has_no_modes(self):
+        """laguna.env does not exist in this fixture. Absent is a normal
+        state, not an error — four of seven real profiles read no levels."""
+        self.serve("laguna")
+        self.assertEqual(GW.MODES, {})
+
+    async def test_a_declared_mode_reaches_the_server(self):
+        self.serve("qwen38")
+        body = await self.sent({"model": "qwen38-medium", "messages": []})
+        self.assertEqual(body.get("chat_template_kwargs"),
+                         {"enable_thinking": True, "reasoning_effort": "medium"})
+
+    async def test_the_bare_alias_asks_for_nothing(self):
+        """It means "whatever the profile's command line says". An empty map
+        must not be written into the body, or it buys a second prefix id for
+        the same rendering."""
+        self.serve("qwen38")
+        body = await self.sent({"model": "qwen38", "messages": []})
+        self.assertNotIn("chat_template_kwargs", body)
+
+    async def test_a_name_from_another_model_reaches_it_clean(self):
+        """switch-model.sh ran, ANTHROPIC_MODEL did not follow. Under the old
+        blob this injected qwen38's mode into another model."""
+        self.serve("flashnext")
+        body = await self.sent({"model": "qwen38-low", "messages": []})
+        self.assertNotIn("chat_template_kwargs", body)
+
+    async def test_the_listing_offers_exactly_the_names_that_work(self):
+        """The asymmetry that made dsh worse for one afternoon: injection was
+        scoped and the listing was not, so the picker offered names the
+        gateway then refused. Derived names cannot drift apart like that."""
+        self.serve("qwen38")
+        self.llama_json["/v1/models"] = {
+            "models": [{"name": "qwen38", "model": "qwen38",
+                        "capabilities": ["completion"],
+                        "details": {"n_ctx": 204800}}]}
+        r = await self.session.get(self.url + "/v1/models")
+        listing = await r.json()
+        offered = [e.get("name") or e.get("id")
+                   for e in listing.get("models", listing.get("data", []))]
+        self.assertEqual(offered, ["qwen38", "qwen38-none",
+                                   "qwen38-low", "qwen38-medium"])
+
+    async def test_the_old_blob_still_works_where_no_profile_declares_modes(self):
+        """Migration: a profile that has not been given MODES yet must keep
+        behaving exactly as before, or the switch becomes a flag day."""
+        GW.KWARGS_BY_MODEL = {"laguna": {"enable_thinking": False},
+                              "laguna-think": {"reasoning_effort": "low"}}
+        self.serve("laguna")
+        body = await self.sent({"model": "laguna-think", "messages": []})
+        self.assertEqual(body.get("chat_template_kwargs"),
+                         {"reasoning_effort": "low"})
+
+    def test_main_loads_them_at_startup(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        body = src[src.index("def main("):]
+        self.assertIn("load_profile_modes", body,
+                      "main() never reads the served profile's modes")
 
 
 class TestRestoreGuard(unittest.IsolatedAsyncioTestCase):
@@ -558,6 +932,59 @@ class TestModelListing(unittest.TestCase):
         return {"models": [{"name": "qwen38", "model": "qwen38",
                             "capabilities": ["completion", "multimodal"],
                             "details": {"n_ctx": 204800}}]}
+
+    def test_an_entry_we_did_not_derive_from_survives(self):
+        """REPLACE was the docstring's claim and it is only true of the model
+        being served. llama-server sends exactly one entry today, so replace
+        and extend are indistinguishable here — which is why the first test of
+        this used a single-entry listing and could not tell them apart. A draft
+        model or a projector would have been erased, and erasing what you did
+        not understand is not replacing what you did."""
+        listing = self._listing()
+        listing["models"].append({"name": "draft-0.5b", "model": "draft-0.5b"})
+        out = GW.add_derived_names(listing, ["qwen38", "qwen38-low"])
+        names = [e["name"] for e in out["models"]]
+        self.assertEqual(names, ["qwen38", "qwen38-low", "draft-0.5b"])
+
+    def test_the_copied_entries_keep_what_the_server_said_about_itself(self):
+        """Measured 28.08.: llama-server reports `capabilities` and
+        `details.format` per entry and NOT n_ctx, which the docstring used to
+        claim. Whatever it does report has to stay true for every derived
+        name, because it IS the same loaded model."""
+        out = GW.add_derived_names(self._listing(), ["qwen38", "qwen38-low"])
+        self.assertEqual(out["models"][1]["capabilities"],
+                         out["models"][0]["capabilities"])
+        self.assertEqual(out["models"][1]["details"],
+                         out["models"][0]["details"])
+
+    def test_a_name_the_gateway_will_not_honour_is_not_advertised(self):
+        """The listing and the injection have to agree, and until 28.08. they
+        did — both were unscoped, so a stale name did the WRONG thing.
+        Scoping only the injection made it worse, not better: the picker went
+        on offering `qwen38-think` while another model served, the gateway
+        refused to honour it, and dsh saw four models where one exists, three
+        of them lies inheriting the served model's n_ctx and capabilities.
+
+        One rule, both directions: a name the map will not honour must not be
+        offered."""
+        out = GW.add_aliases(self._listing(), self.TABLE, served="flashnext")
+        names = [e["name"] for e in out["models"]]
+        self.assertEqual(names, ["qwen38"],
+                         "the picker offers names the gateway now refuses")
+
+    def test_the_served_model_still_gets_its_variants(self):
+        out = GW.add_aliases(self._listing(), self.TABLE, served="qwen38")
+        self.assertEqual(len(out["models"]), 3)
+
+    def test_an_unknown_served_model_keeps_the_old_listing(self):
+        """Same trade as the injection: not knowing must not hide the modes."""
+        out = GW.add_aliases(self._listing(), self.TABLE, served=None)
+        self.assertEqual(len(out["models"]), 3)
+
+    def test_the_endpoint_passes_the_served_model_in(self):
+        """A rule the caller does not apply is a rule in a docstring."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        self.assertIn("add_aliases(listing, KWARGS_BY_MODEL, SERVED)", src)
 
     def test_every_configured_name_appears_once(self):
         out = GW.add_aliases(self._listing(), self.TABLE)

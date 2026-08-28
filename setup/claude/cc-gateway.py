@@ -40,6 +40,7 @@ Environment variables
 """
 import asyncio, heapq, ipaddress, json, os, re, sys, time
 from aiohttp import web, ClientSession, ClientTimeout
+import hashlib, urllib.request
 
 # dialects.py sits next to this file — both in the repo and as a symlink in
 # ~/.claude/bin. Importing by directory instead of by package keeps that
@@ -212,6 +213,17 @@ SAVED = {}
 # may have replaced the state being written out. The save compares this before
 # and after and throws its own file away if the number moved. See auto_save.
 SERVED_COUNT = 0
+# The last few (counter, prefix id) pairs. A save only has to fear a request
+# for a DIFFERENT prefix — the defect entry measures the same-prefix case as
+# harmless ("Save of the SAME prefix A: 12.8 s. A again: 1.5 s, unaffected"),
+# and dropping a good file over it costs a gigabyte and a prefill for nothing.
+SERVED_TRAIL = []
+# Prefixes whose save was dropped because the window was dirty. Without this
+# the retry needs another COLD request — and a prefix that stays warm would
+# never be saved again, silently. Counted, so a save that keeps losing the
+# race says so instead of looping at 1.1 GB a turn.
+SAVE_OWED = {}
+SAVE_STRIKES_MAX = 3
 
 # Save automatically once a prefix has warmed up for the first time. 0 turns
 # it off. The upper limit keeps the disk from filling up; cleanup goes by
@@ -380,18 +392,35 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                     "--gateway-id", id_, "--dialect", dialect,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
                 proc_out, _ = await pr.communicate()
-                if pr.returncode == 0 and SERVED_COUNT != served_before:
-                    n = SERVED_COUNT - served_before
-                    log("NOTE        %s saved while %d request(s) were served — "
-                        "dropping it rather than trusting it, see "
-                        "saved-prefix-holds-a-foreign-state" % (id_, n))
+                foreign = [i for n, i in SERVED_TRAIL
+                           if n > served_before and i != id_]
+                if pr.returncode == 0 and foreign:
+                    # Only traffic for ANOTHER prefix can have taken the slot
+                    # in a way that matters; the same prefix being served
+                    # during its own save is measured as harmless.
+                    strikes = SAVE_OWED.get(id_, 0) + 1
+                    SAVE_OWED[id_] = strikes
+                    log("NOTE        %s saved while %d request(s) for other "
+                        "prefixes were served — dropping it rather than "
+                        "trusting it (strike %d of %d), see "
+                        "saved-prefix-holds-a-foreign-state"
+                        % (id_, len(foreign), strikes, SAVE_STRIKES_MAX))
                     for suffix in (".bin", ".json"):
                         try:
                             os.remove(os.path.join(SLOT_PATH, id_ + suffix))
                         except OSError:
                             pass
+                    if strikes >= SAVE_STRIKES_MAX:
+                        # Stop. Three times means this prefix is always in
+                        # traffic, and a fourth attempt costs another 1.1 GB
+                        # write and another prefill to learn the same thing.
+                        log("WARNING     %s has lost the slot %d times — not "
+                            "trying again this run. It will start cold after a "
+                            "restart, which is the honest outcome of a machine "
+                            "that is never idle." % (id_, strikes))
                     SAVED = refresh_saved(force=True)
                 elif pr.returncode == 0:
+                    SAVE_OWED.pop(id_, None)
                     SAVED = refresh_saved(force=True)
                     if id_ not in SAVED:
                         log("WARNING     %s saved but missing from the store — "
@@ -410,7 +439,36 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
     finally:
         _save_pending.discard(id_)
 
-async def restore_from_disk(id_):
+def render_id_of(body, dialect):
+    """The hash prewarm writes into every sidecar, for THIS request.
+
+    Same recipe as tools/prewarm.py:build_prefix — hoist the stable system
+    messages, render through /apply-template, cut at the user marker, sha256.
+    Kept here rather than imported because prewarm is a CLI whose import pulls
+    in argparse handling; the recipe is four lines and the two are pinned
+    together by tests/test_gateway.py.
+
+    Returns None when it cannot be computed. None means "do not know", and the
+    caller must treat that as "carry on", never as "mismatch".
+    """
+    try:
+        b = json.loads(json.dumps(body))
+        b, _ = DIA.hoist_system_messages(b, dialect, VOLATILE)
+        payload = DIA.template_payload(b, dialect)
+        req = urllib.request.Request(
+            LLAMA + "/apply-template", data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as x:
+            full = json.loads(x.read().decode())["prompt"]
+        cut = full.find("<user>")
+        prefix = full[:cut if cut >= 0 else full.rfind("X")]
+        return hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12]
+    except Exception as e:
+        log("NOTE        render id not computed: %r" % (e,))
+        return None
+
+
+async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
     """Pull a saved prefix into a free slot.
 
     Returns (name, n_restored) so the caller can hold the CLAIM against what
@@ -419,6 +477,7 @@ async def restore_from_disk(id_):
     request that followed evaluated all 14960 of them. None when nothing was
     restored.
     """
+    global SAVED
     name = SAVED.get(id_)
     # The file may be gone since the last read (cleanup service). Then re-read
     # instead of handing llama-server a restore onto nothing.
@@ -427,6 +486,31 @@ async def restore_from_disk(id_):
         name = refresh_saved(force=True).get(id_)
     if not name:
         return None
+    # THE SIDECAR'S OWN HASH, read at last. prewarm has written `render_id`
+    # into every sidecar since the store existed and no line of code ever read
+    # it back — which is how a file holding another prefix's state kept its
+    # name and cost a full prefill on every request that found it.
+    #
+    # A mismatch skips the restore; it does NOT quarantine. The hash is a
+    # DERIVED value and this recipe could drift from prewarm's, so the file is
+    # condemned only by the measurement that follows (reuse == 0), never by
+    # this comparison alone. Being wrong here costs one restore; being wrong
+    # the other way would delete the store.
+    if body is not None:
+        want = await asyncio.to_thread(render_id_of, body, dialect)
+        have = None
+        try:
+            with open(os.path.join(SLOT_PATH, name + ".json"),
+                      encoding="utf-8") as f:
+                have = json.load(f).get("render_id")
+        except Exception:
+            pass
+        if want and have and want != have:
+            log("NOTE        %s renders %s but the file was saved for %s — not "
+                "restoring it; this request is genuinely cold"
+                % (name, want, have))
+            SAVED = {k: v for k, v in SAVED.items() if v != name}
+            return None
     try:
         timeout = ClientTimeout(total=300)
         async with ClientSession(timeout=timeout) as s:
@@ -501,6 +585,29 @@ def quarantine(name, id_, reason):
         return False
     SAVED = {k: v for k, v in SAVED.items() if v != name}
     log("QUARANTINED %s (%s) — %s" % (name, id_, reason))
+    return True
+
+
+def _window_was_clean(window, ident):
+    """Was this request alone with the slot from `window` until now?
+
+    Two ways it was not, and both make a reuse measurement meaningless: a
+    request for ANOTHER prefix was served (the trail says so), or somebody was
+    already in flight when we started (the gate was not free enough).
+
+    Same-prefix traffic does not count. Saving or restoring the prefix that is
+    already in the slot is measured as harmless in
+    autosave-evicts-the-working-slot, and treating it as dirty would throw
+    away good files for nothing.
+    """
+    if not window:
+        return False
+    before, free_before = window
+    if free_before < MAX_INFLIGHT - 1:
+        return False                    # somebody else already held a slot
+    for n, other in SERVED_TRAIL:
+        if n > before and other != ident:
+            return False
     return True
 
 
@@ -970,6 +1077,7 @@ def token_owner(req, prio):
     return TOKENS.get(secret)
 
 async def handler(req):
+    global SERVED_COUNT
     ip = req.remote or "?"
     prio = zone(req)
     inference = is_inference(req.path)
@@ -1100,7 +1208,13 @@ async def handler(req):
         # restore (up to 300 s) used to make the gate slot seep away, and
         # MAX_INFLIGHT dropped by one for the rest of the service's life.
         if cold and ident in SAVED:
-            restored = await restore_from_disk(ident)
+            # The window this request's verdict will be judged in, captured
+            # BEFORE the restore. The write side got this on 28.08. and the
+            # read side did not: anything else touching the one slot between
+            # the restore and the answer drives `reused` to 0, and a good file
+            # would then be quarantined for somebody else's traffic.
+            window = (SERVED_COUNT, GATE.free)
+            restored = await restore_from_disk(ident, p, dialect)
             if restored:
                 cold = False
         t_start = time.time()
@@ -1117,8 +1231,9 @@ async def handler(req):
             % (ip, PRIORITY_NAME[prio], who, ident, "COLD" if cold else "warm",
                waited, depth, "  kept-alive" if early is not None else ""))
         was_cold = cold
-        global SERVED_COUNT
         SERVED_COUNT += 1
+        SERVED_TRAIL.append((SERVED_COUNT, ident))
+        del SERVED_TRAIL[:-50]
         return await forward(req, body, out, early, answered, sniff)
     finally:
         # EVERYTHING that belongs after the answer happens HERE, not after the
@@ -1146,8 +1261,13 @@ async def handler(req):
             took = time.time() - t_start
             big_enough = (out is not None
                            and len(prefix_text(p, dialect)) >= AUTO_MIN_CHARS)
-            if (AUTO_SAVE and was_cold and ident and ident not in SAVED
-                    and big_enough):
+            # `was_cold` OR owed: a save that was dropped for a dirty
+            # window must be retried, and after the first attempt the prefix
+            # is warm forever — so waiting for another cold request means
+            # waiting for a server restart.
+            owed = SAVE_OWED.get(ident, 0)
+            if (AUTO_SAVE and ident and ident not in SAVED and big_enough
+                    and (was_cold or 0 < owed < SAVE_STRIKES_MAX)):
                 try:
                     # An independent task: it must outlive this handler, which
                     # may be in the middle of being cancelled right now.
@@ -1178,6 +1298,11 @@ async def handler(req):
             # wrong file — and one that would cost this again on every future
             # request for the same prefix.
             ok, why = restore_verdict(restored, reuse)
+            if restored and ok is False and not _window_was_clean(window, ident):
+                # UNKNOWN, not guilty. The measurement is only about this file
+                # if nothing else could have taken the slot during it.
+                ok, why = None, ("another request shared the window — the "
+                                 "reuse says nothing about this file")
             if ok is False:
                 quarantine(restored[0], ident, why)
             elif ok is None and restored:

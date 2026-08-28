@@ -1553,7 +1553,8 @@ class TestTheSaveIsBracketed(unittest.TestCase):
         src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("served_before = SERVED_COUNT", src)
-        self.assertIn("SERVED_COUNT != served_before", src)
+        self.assertIn("n > served_before", src,
+                      "the window has to be compared, however it is spelled")
 
     def test_the_counter_is_raised_where_the_request_reaches_the_model(self):
         """Not at admission and not at the answer: what matters is that the
@@ -1573,3 +1574,107 @@ class TestTheSaveIsBracketed(unittest.TestCase):
         src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("saved-prefix-holds-a-foreign-state", src)
+
+
+class TestTheWindowAVerdictNeeds(unittest.TestCase):
+    """A measurement is about THIS file only if nothing else could have taken
+    the slot during it. The write side got that on 28.08.; the read side did
+    not, and would have quarantined a good 1.1 GB file for somebody else's
+    traffic."""
+
+    def setUp(self):
+        self.saved = {k: getattr(GW, k) for k in ("SERVED_TRAIL", "MAX_INFLIGHT")}
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+        GW.SERVED_TRAIL = []
+        GW.MAX_INFLIGHT = 2
+
+    def test_alone_with_the_slot_is_a_clean_window(self):
+        GW.SERVED_TRAIL = [(5, "me")]
+        self.assertTrue(GW._window_was_clean((4, GW.MAX_INFLIGHT - 1), "me"))
+
+    def test_another_prefix_in_the_window_makes_it_unjudgeable(self):
+        GW.SERVED_TRAIL = [(5, "me"), (6, "somebody-else")]
+        self.assertFalse(GW._window_was_clean((4, GW.MAX_INFLIGHT - 1), "me"))
+
+    def test_the_same_prefix_does_not_spoil_it(self):
+        """Measured as harmless in autosave-evicts-the-working-slot: saving or
+        serving the prefix that is already in the slot changes nothing. A rule
+        that called this dirty would throw away good files for free."""
+        GW.SERVED_TRAIL = [(5, "me"), (6, "me")]
+        self.assertTrue(GW._window_was_clean((4, GW.MAX_INFLIGHT - 1), "me"))
+
+    def test_somebody_already_in_flight_makes_it_unjudgeable(self):
+        """MAX_INFLIGHT is 2 whenever the slot count could not be read, and
+        the gateway says so in a WARNING at startup. Then a second request can
+        be in the slot while this one is measured."""
+        self.assertFalse(GW._window_was_clean((4, 0), "me"))
+
+    def test_no_window_is_not_a_clean_window(self):
+        self.assertFalse(GW._window_was_clean(None, "me"))
+
+
+class TestASaveThatKeepsLosingSaysSo(unittest.TestCase):
+    """A dropped save used to need another COLD request to be retried — and
+    after the first attempt the prefix is warm forever, so the retry would
+    wait for a server restart. Now it is owed, and counted: three losses mean
+    this prefix is always in traffic, and a fourth attempt costs another 1.1 GB
+    to learn the same thing."""
+
+    def test_the_retry_does_not_wait_for_another_cold_request(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("async def handler(")
+        body = src[start:src.index("\n    finally:", start) + 4000]
+        self.assertIn("was_cold or 0 < owed < SAVE_STRIKES_MAX", body)
+
+    def test_it_stops_after_three(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("SAVE_STRIKES_MAX = 3", src)
+        self.assertIn("has lost the slot", src,
+                      "and it has to SAY so — a silent give-up is the failure "
+                      "mode this whole evening was about")
+
+
+class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
+    """prewarm has written `render_id` into every sidecar since the store
+    existed, and until 29.08.2026 no line of code read it back — which is how
+    a file holding another prefix's state kept its name and cost a full
+    prefill to everything that found it."""
+
+    def test_the_recipe_matches_prewarms(self):
+        """Both cut the rendered prompt at the user marker and take
+        sha256[:12] of what is in front. If they drift apart, every restore
+        looks like a mismatch — which is exactly why a mismatch must not
+        condemn a file."""
+        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        for piece in ('hashlib.sha256(', '[:12]', 'find("<user>")',
+                      'hoist_system_messages'):
+            with self.subTest(piece=piece):
+                self.assertIn(piece, gw)
+                self.assertIn(piece, pw)
+
+    def test_a_mismatch_skips_the_restore_and_does_not_condemn(self):
+        """The hash is DERIVED. Being wrong here costs one restore; being
+        wrong the other way would delete the store."""
+        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = gw.index("async def restore_from_disk(")
+        body = gw[start:gw.index("def quarantine(", start)]
+        self.assertIn("genuinely cold", body,
+                      "the request has to be called what it is")
+        self.assertNotIn("quarantine(", body,
+                         "a derived hash must not be able to delete anything")
+
+    def setUp(self):
+        self.llama = GW.LLAMA
+        self.addCleanup(lambda: setattr(GW, "LLAMA", self.llama))
+
+    def test_an_uncomputable_hash_means_carry_on(self):
+        """None is 'do not know'. Treating it as a mismatch would switch the
+        store off the first time /apply-template hiccups."""
+        GW.LLAMA = "http://127.0.0.1:1"          # nothing listens there
+        with mock.patch.object(GW, "log"):
+            self.assertIsNone(GW.render_id_of({"messages": []}, GW.DIA.ANTHROPIC))

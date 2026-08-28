@@ -150,6 +150,41 @@ that request holds the admission gate — so nothing else can take the slot, by
 construction rather than by policy. That is the freeze the operator asked for,
 and it is free because the state it freezes is the one we wanted anyway.
 
+## Built, and measured again on the live stack
+
+The ordering is in cc-gateway since 29.08. 00:47. A cold request whose prefix
+is not on disk saves it BEFORE the request is forwarded:
+
+    [ 2.9s] START  prefix=34576f74398b COLD
+    [16.1s] SAVED  prefix 34576f74398b automatically, 13.2 s
+    [17.5s] DONE   took=14.6s  reused=14885 computed=99
+    [18.5s] START  warm
+    [20.3s] DONE   took=1.8s   reused=14885 computed=99
+    [25.3s] START  warm
+    [27.0s] DONE   took=1.8s   reused=14885 computed=99
+
+The first turn carries the save (13.2 s of it is the prefill it had to do
+anyway; the write is 0.3 s of that). The request itself then computed 99
+tokens. The follow-up turns are 1.8 s and undisturbed — no eviction, nothing
+in the background to collide with.
+
+What came out of the code with it: the background task, the deferral, the
+strikes, the owed retries and the debounce. They existed to manage a race that
+the order does not have.
+
+Three guards went in instead, all of them about the save now sitting in the
+request path: a timeout (a strange server must not turn the save into a hung
+answer), an exception that costs a cold prefill rather than a reply, and a
+SHIELD — a client that leaves mid-write must not leave a `.bin` without its
+sidecar, which would be invisible to the store and undeletable by a cleanup
+that prunes by sidecar.
+
+One contract changed and is worth stating: "an abort before the answer saves
+nothing" no longer holds, because the file is no longer whatever the slot
+happened to hold. prewarm renders the prefix, prefills that alone and refuses
+to publish a file whose token count is not the prefix's — so an abort decides
+whether the work was worth doing, not whether the file is valid.
+
 ## Files
 
     postanswer.py / postanswer.log   the seven steps

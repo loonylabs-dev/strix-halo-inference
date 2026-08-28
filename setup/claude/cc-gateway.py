@@ -218,26 +218,17 @@ SERVED_COUNT = 0
 # harmless ("Save of the SAME prefix A: 12.8 s. A again: 1.5 s, unaffected"),
 # and dropping a good file over it costs a gigabyte and a prefill for nothing.
 SERVED_TRAIL = []
-# Prefixes whose save was dropped because the window was dirty. Without this
-# the retry needs another COLD request — and a prefix that stays warm would
-# never be saved again, silently. Counted, so a save that keeps losing the
-# race says so instead of looping at 1.1 GB a turn.
+# Prefixes whose save was dropped because another prefix was served while it
+# ran. Nothing retries them — since 29.08. a save happens INSIDE the first
+# cold request, so a dropped one means that request is over and the next cold
+# one will try again by itself. The count is kept for the log: a prefix that
+# keeps losing says so instead of failing quietly.
 SAVE_OWED = {}
-SAVE_STRIKES_MAX = 3
-# How long a save waits after the answer before it even looks at the machine.
-#
-# NOT a debounce that waits for quiet — that idea was tried and dropped: a
-# quiet window ten seconds out no longer has the prefix in the slot, and then
-# saving means PREFILLING it again, which is the 101.9 s and 153.5 s this
-# stack measured on 28.08. and the very thing being avoided.
-#
-# This is the opposite: short enough that the prefix is certainly still
-# resident, long enough to let the next turn go first. The median gap between
-# an answer and the next request is 1.0 s for this consumer's desktop and
-# 13.0 s for the phone (bench/reports/2026-08-28_save-policy), so two seconds
-# covers the burst that a tool loop produces without waiting for a pause that
-# may never come.
-SAVE_DELAY_S = float(env("SAVE_DELAY_S", default="2"))
+# How long the first request of a prefix may be held for its own save. It is
+# bounded because the save now sits IN the request path: the write is 314 ms
+# and the prefill in front of it is work the request had to do anyway, but a
+# server that has gone strange must not turn that into a hung answer.
+SAVE_TIMEOUT_S = int(env("SAVE_TIMEOUT_S", default="600"))
 
 # Save automatically once a prefix has warmed up for the first time. 0 turns
 # it off. The upper limit keeps the disk from filling up; cleanup goes by
@@ -345,47 +336,53 @@ def disk_used_gb():
 SAVE_QUEUE_MAX = int(env("SAVE_QUEUE_MAX", "SICHERN_WARTEN_MAX", 4))
 _save_pending = set()
 
-async def auto_save_when_free(id_, body, dialect=DIA.ANTHROPIC):
-    """Wait a moment, then save only if the machine is actually free.
+async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
+    """Write the prefix BEFORE the first real message is answered.
 
-    THE SMALLEST THING THAT ADDRESSES THE RACE, and deliberately not more. It
-    holds no lock, blocks nobody and has no forced path — the gate-holding,
-    debounced, deferral-counting design was dropped because the simulation
-    behind its numbers could not support them
-    (bench/reports/2026-08-28_save-policy).
+    THE WHOLE SAVE PROBLEM, dissolved by doing it in the other order. Measured
+    29.08.2026 (bench/reports/2026-08-29_restore-semantics):
 
-    Two conditions, and each is checkable in one line:
+        prefill the prefix ALONE   12.0 s   the slot then holds 14866 tokens,
+                                            which IS the prefix — exactly the
+                                            state a saved file has to contain
+        save it                     314 ms  n_saved 14866, matching
+        the first real request       1.6 s  reused 14866, computed 99
+        ... later, from the file     1.7 s  for a question it never saw
 
-      1. NOTHING IS IN FLIGHT. Saving means putting the prefix into the one
-         slot; doing that beside a request is the collision itself.
-      2. THE LAST REQUEST SERVED WAS THIS PREFIX. Then the slot still holds
-         it, and the save is a write of about 342 ms (measured 29.08.) rather
-         than a re-prefill of 100 s. This is what makes the exposure short
-         enough to stop worrying about: the window shrinks from the length of
-         a full prewarm run to the length of the write.
+    The prefill is not extra work: it is what the first request had to do
+    anyway, moved in front of it. The only addition is the write.
 
-    Neither condition can be met by waiting, so failing them counts as a
-    deferral and the prefix stays owed — the next answer for it tries again,
-    up to SAVE_STRIKES_MAX.
+    Doing it AFTER the answer, which is what this gateway did until now, means
+    the slot holds prefix+question+answer — and getting back to a prefix-only
+    state costs a recomputation (~11 s measured) and cuts the session's own
+    context out of the slot. Everything that was built around that ordering —
+    a background task, a deferral, strikes, owed retries, a debounce and its
+    parameters — exists only to manage a race this ordering does not have.
+
+    It runs INSIDE the request, holding the admission gate the request already
+    holds, so nothing else can take the slot while it happens. That is the
+    guarantee, and it comes from the order rather than from a lock.
+
+    Never raises into the request path: a save that fails must cost a cold
+    prefill, never an answer.
     """
+    # SHIELDED: a client that leaves mid-save must not interrupt the write.
+    # The handler is cancelled the moment a caller vanishes
+    # (handler_cancellation=True), and a save cut in half would leave a .bin
+    # without its sidecar — invisible to the store and undeletable by the
+    # cleanup, which prunes by sidecar. The save finishes on its own; only the
+    # WAITING for it is abandoned.
+    task = asyncio.ensure_future(
+        asyncio.wait_for(auto_save(id_, body, dialect), timeout=SAVE_TIMEOUT_S))
     try:
-        await asyncio.sleep(SAVE_DELAY_S)
-        busy = GATE.free < MAX_INFLIGHT
-        mine = bool(SERVED_TRAIL) and SERVED_TRAIL[-1][1] == id_
-        if busy or not mine:
-            strikes = SAVE_OWED.get(id_, 0) + 1
-            SAVE_OWED[id_] = strikes
-            log("NOTE        %s not saved yet: %s (strike %d of %d) — it stays "
-                "owed and the next answer for it tries again"
-                % (id_, "requests in flight" if busy
-                   else "the slot has moved on to another prefix",
-                   strikes, SAVE_STRIKES_MAX))
-            return
-        await auto_save(id_, body, dialect)
+        await asyncio.shield(task)
+    except asyncio.TimeoutError:
+        log("NOTE        save of %s exceeded %d s — carrying on without it"
+            % (id_, SAVE_TIMEOUT_S))
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        log("NOTE        deferred save of %s: %r" % (id_, e))
+        log("NOTE        save of %s: %r — carrying on without it" % (id_, e))
 
 
 async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
@@ -459,22 +456,14 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                     SAVE_OWED[id_] = strikes
                     log("NOTE        %s saved while %d request(s) for other "
                         "prefixes were served — dropping it rather than "
-                        "trusting it (strike %d of %d), see "
+                        "trusting it (%d so far), see "
                         "saved-prefix-holds-a-foreign-state"
-                        % (id_, len(foreign), strikes, SAVE_STRIKES_MAX))
+                        % (id_, len(foreign), strikes))
                     for suffix in (".bin", ".json"):
                         try:
                             os.remove(os.path.join(SLOT_PATH, id_ + suffix))
                         except OSError:
                             pass
-                    if strikes >= SAVE_STRIKES_MAX:
-                        # Stop. Three times means this prefix is always in
-                        # traffic, and a fourth attempt costs another 1.1 GB
-                        # write and another prefill to learn the same thing.
-                        log("WARNING     %s has lost the slot %d times — not "
-                            "trying again this run. It will start cold after a "
-                            "restart, which is the honest outcome of a machine "
-                            "that is never idle." % (id_, strikes))
                     SAVED = refresh_saved(force=True)
                 elif pr.returncode == 0:
                     SAVE_OWED.pop(id_, None)
@@ -1288,6 +1277,13 @@ async def handler(req):
             % (ip, PRIORITY_NAME[prio], who, ident, "COLD" if cold else "warm",
                waited, depth, "  kept-alive" if early is not None else ""))
         was_cold = cold
+        # THE SAVE, BEFORE THE ANSWER. The slot is about to be filled with
+        # this prefix anyway; saving it first is a write, saving it afterwards
+        # is a recomputation. See save_prefix_first.
+        if (AUTO_SAVE and cold and ident and ident not in SAVED
+                and out is not None
+                and len(prefix_text(p, dialect)) >= AUTO_MIN_CHARS):
+            await save_prefix_first(ident, json.loads(out), dialect)
         SERVED_COUNT += 1
         SERVED_TRAIL.append((SERVED_COUNT, ident))
         del SERVED_TRAIL[:-50]
@@ -1318,20 +1314,13 @@ async def handler(req):
             took = time.time() - t_start
             big_enough = (out is not None
                            and len(prefix_text(p, dialect)) >= AUTO_MIN_CHARS)
-            # `was_cold` OR owed: a save that was dropped for a dirty
-            # window must be retried, and after the first attempt the prefix
-            # is warm forever — so waiting for another cold request means
-            # waiting for a server restart.
-            owed = SAVE_OWED.get(ident, 0)
-            if (AUTO_SAVE and ident and ident not in SAVED and big_enough
-                    and (was_cold or 0 < owed < SAVE_STRIKES_MAX)):
-                try:
-                    # An independent task: it must outlive this handler, which
-                    # may be in the middle of being cancelled right now.
-                    asyncio.create_task(
-                        auto_save_when_free(ident, json.loads(out), dialect))
-                except Exception as e:
-                    log("NOTE        save not scheduled: %r" % (e,))
+            # NOTHING IS SCHEDULED HERE ANY MORE. The save happened before
+            # the answer, where the slot holds the prefix and nothing else —
+            # see save_prefix_first. A background save after the answer is
+            # what produced both defects of 28.08.2026, and no amount of
+            # deferring, striking or debouncing made it safe; changing the
+            # ORDER did.
+            _ = big_enough
             # WHAT THE SERVER ACTUALLY DID, before anything is claimed about
             # it. The numbers ride along in the answer that was just proxied.
             reuse = None

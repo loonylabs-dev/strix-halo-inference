@@ -1149,12 +1149,22 @@ class TestSaveSurvivesTheClientLeaving(GatewayOnTheWire):
             lambda: any(e.get("last") for e in GW.PREFIXES.values()), limit=3.0)
         self.assertTrue(ok, "no prefix recorded a time of last use")
 
-    async def test_an_abort_BEFORE_the_answer_saves_nothing(self):
-        """The other half of the contract, and the more important one: a
-        caller who leaves during the 100-180 s prefill has no complete answer
-        in the slot, so there is nothing worth saving and saving it would
-        write a partial prefix that later restores as one."""
-        real = GW.forward
+    async def test_an_abort_BEFORE_the_answer_no_longer_decides_anything(self):
+        """THE CONTRACT CHANGED ON 29.08.2026, and the old one is worth
+        keeping visible.
+
+        It read: a caller who leaves during the prefill has no complete answer
+        in the slot, so saving would write a PARTIAL prefix that later
+        restores as a whole one. True while the save copied whatever the slot
+        happened to hold, at the end of the request.
+
+        The save now happens BEFORE the answer and does not read the slot's
+        leftovers at all: prewarm renders the prefix, prefills that alone, and
+        refuses to publish a file whose token count is not the prefix's. The
+        file is complete by construction, so an abort no longer decides
+        whether it is valid — only whether the work was worth doing, which is
+        a cost question and not a correctness one.
+        """
         async def cancelled_during(*a, **kw):
             raise asyncio.CancelledError()
         with mock.patch.object(GW, "forward", cancelled_during):
@@ -1163,8 +1173,11 @@ class TestSaveSurvivesTheClientLeaving(GatewayOnTheWire):
             except Exception:
                 pass
         await asyncio.sleep(0.2)
-        self.assertEqual(self.saved, [],
-                         "a prefix was saved although the answer never finished")
+        self.assertEqual(self.saved, [self.saved[0]] if self.saved else [],
+                         "the save runs before the answer now")
+        self.assertTrue(self.saved,
+                        "and it is not cancelled by the caller leaving — the "
+                        "write is shielded so no half file can be left behind")
 
 
 class TestZoneRemote(GatewayOnTheWire):
@@ -1333,12 +1346,9 @@ class TestSaveThreshold(GatewayOnTheWire):
 
     async def _watch_saving(self, payload, path="/v1/messages"):
         GW.AUTO_SAVE = True
-        # Through the REAL deferral path, with its wait set to zero: since
-        # 29.08. a save is scheduled and then only happens if the machine is
-        # free and the slot still holds this prefix. Stubbing that away would
-        # leave these tests asserting a decision the gateway no longer makes.
-        self.delay, GW.SAVE_DELAY_S = GW.SAVE_DELAY_S, 0.0
-        self.addCleanup(lambda: setattr(GW, "SAVE_DELAY_S", self.delay))
+        # Through the REAL path: since 29.08. the save happens INSIDE the
+        # request, before it is forwarded, so there is no timing to arrange —
+        # by the time the answer is here, the decision has been made.
         saved_ids = []
         async def fake(ident, body, dialect=GW.DIA.ANTHROPIC):
             saved_ids.append((ident, dialect))
@@ -1622,29 +1632,6 @@ class TestTheWindowAVerdictNeeds(unittest.TestCase):
         self.assertFalse(GW._window_was_clean(None, "me"))
 
 
-class TestASaveThatKeepsLosingSaysSo(unittest.TestCase):
-    """A dropped save used to need another COLD request to be retried — and
-    after the first attempt the prefix is warm forever, so the retry would
-    wait for a server restart. Now it is owed, and counted: three losses mean
-    this prefix is always in traffic, and a fourth attempt costs another 1.1 GB
-    to learn the same thing."""
-
-    def test_the_retry_does_not_wait_for_another_cold_request(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
-            encoding="utf-8")
-        start = src.index("async def handler(")
-        body = src[start:src.index("\n    finally:", start) + 4000]
-        self.assertIn("was_cold or 0 < owed < SAVE_STRIKES_MAX", body)
-
-    def test_it_stops_after_three(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
-            encoding="utf-8")
-        self.assertIn("SAVE_STRIKES_MAX = 3", src)
-        self.assertIn("has lost the slot", src,
-                      "and it has to SAY so — a silent give-up is the failure "
-                      "mode this whole evening was about")
-
-
 class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
     """prewarm has written `render_id` into every sidecar since the store
     existed, and until 29.08.2026 no line of code read it back — which is how
@@ -1689,56 +1676,70 @@ class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
             self.assertIsNone(GW.render_id_of({"messages": []}, GW.DIA.ANTHROPIC))
 
 
-class TestASaveWaitsForTheMachine(GatewayOnTheWire):
-    """The smallest thing that addresses the one-slot race, and deliberately
-    not more: no lock, nobody blocked, no forced path. Two conditions, both
-    checkable in a line — nothing in flight, and the slot still holding this
-    prefix, which is what keeps the write at ~342 ms instead of a 100 s
-    re-prefill."""
+class TestTheSaveHappensBeforeTheAnswer(GatewayOnTheWire):
+    """The ordering that dissolved the whole save policy.
+
+    Measured 29.08.2026: prefilling the prefix ALONE leaves the slot holding
+    exactly the prefix — the state a saved file must contain — so the save is
+    a 314 ms write. Doing it after the answer means the slot holds
+    prefix+question+answer, and getting back costs ~11 s of recomputation and
+    cuts the session's context out of the slot.
+    """
     TUNNEL = False
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        self.saved = {k: getattr(GW, k) for k in
-                      ("SAVE_DELAY_S", "SAVE_OWED", "SERVED_TRAIL", "AUTO_SAVE",
-                       "auto_save")}
-        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
-        GW.SAVE_DELAY_S = 0.0
-        GW.SAVE_OWED = {}
+        self.order = []
         GW.AUTO_SAVE = True
-        self.calls = []
-        async def fake(ident, body, dialect=GW.DIA.ANTHROPIC):
-            self.calls.append(ident)
-        GW.auto_save = fake
+        self.min_backup, GW.AUTO_MIN_CHARS = GW.AUTO_MIN_CHARS, 0
+        async def fake_save(id_, body, dialect=None):
+            self.order.append("save")
+        real_forward = GW.forward
+        async def watched_forward(*a, **kw):
+            self.order.append("forward")
+            return await real_forward(*a, **kw)
+        self.patches = [mock.patch.object(GW, "auto_save", fake_save),
+                        mock.patch.object(GW, "forward", watched_forward)]
+        for pp in self.patches:
+            pp.start()
 
-    async def test_it_saves_when_the_slot_still_holds_this_prefix(self):
-        GW.SERVED_TRAIL = [(1, "abc")]
-        await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
-        self.assertEqual(self.calls, ["abc"])
-        self.assertNotIn("abc", GW.SAVE_OWED)
+    async def asyncTearDown(self):
+        for pp in self.patches:
+            pp.stop()
+        GW.AUTO_MIN_CHARS = self.min_backup
+        await super().asyncTearDown()
 
-    async def test_it_stands_back_when_the_slot_moved_on(self):
-        """Saving would mean prefilling the prefix again — the 101.9 s and
-        153.5 s measured on 28.08. — and evicting whatever is there now."""
-        GW.SERVED_TRAIL = [(1, "abc"), (2, "somebody-else")]
-        await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
-        self.assertEqual(self.calls, [])
-        self.assertEqual(GW.SAVE_OWED.get("abc"), 1, "and it stays owed")
+    async def test_the_save_runs_first(self):
+        await self.fetch("/v1/messages", token=None)
+        self.assertEqual(self.order, ["save", "forward"],
+                         "the prefix has to be on disk before the request "
+                         "fills the slot with a session")
 
-    async def test_it_stands_back_while_a_request_is_in_flight(self):
-        GW.SERVED_TRAIL = [(1, "abc")]
-        await GW.GATE.enter(0)
-        try:
-            await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
-        finally:
-            GW.GATE.leave()
-        self.assertEqual(self.calls, [])
-        self.assertEqual(GW.SAVE_OWED.get("abc"), 1)
+    async def test_a_prefix_already_on_disk_is_not_saved_again(self):
+        GW.SAVED = dict(GW.SAVED)
+        r = await self.fetch("/v1/messages", token=None)
+        self.assertEqual(r.status, 200)
+        ident = self.order and "save" in self.order
+        self.assertTrue(ident)
+        self.order.clear()
+        # second time round the id is in the store
+        GW.SAVED[GW.DIA.prefix_id(self.payload(), GW.DIA.ANTHROPIC)[0]] = "x"
+        await self.fetch("/v1/messages", token=None)
+        self.assertEqual(self.order, ["forward"])
 
-    async def test_the_wait_is_short_by_design(self):
-        """Not a debounce. A quiet window ten seconds out no longer has the
-        prefix in the slot, which turns a 342 ms write into a 100 s
-        re-prefill — the failure this whole mechanism exists to avoid."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
-            encoding="utf-8")
-        self.assertIn('SAVE_DELAY_S = float(env("SAVE_DELAY_S", default="2"))', src)
+    async def test_a_failing_save_never_costs_the_answer(self):
+        """A save that fails must cost a cold prefill, never a reply."""
+        async def boom(id_, body, dialect=None):
+            raise RuntimeError("prewarm exploded")
+        with mock.patch.object(GW, "auto_save", boom), mock.patch.object(GW, "log"):
+            r = await self.fetch("/v1/messages", token=None)
+        self.assertEqual(r.status, 200)
+
+    async def test_a_hanging_save_is_bounded(self):
+        async def hang(id_, body, dialect=None):
+            await asyncio.sleep(30)
+        with mock.patch.object(GW, "auto_save", hang), \
+             mock.patch.object(GW, "SAVE_TIMEOUT_S", 0.05), \
+             mock.patch.object(GW, "log"):
+            r = await self.fetch("/v1/messages", token=None)
+        self.assertEqual(r.status, 200, "a stuck save must not hang the answer")

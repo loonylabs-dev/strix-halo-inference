@@ -1,0 +1,304 @@
+{
+ "batch": {
+  "crashes": [],
+  "default_render": "eb138503",
+  "distinct_renders": 0,
+  "levels": {
+   "high": "fdd5bb27",
+   "low": "fdd5bb27",
+   "max": "fdd5bb27",
+   "medium": "fdd5bb27",
+   "xhigh": "fdd5bb27"
+  },
+  "measurable": false,
+  "probe_render": "fdd5bb27",
+  "reads_effort": false,
+  "reads_enable_thinking": true,
+  "template_sha": "3c75e7bcc5f7",
+  "words": {
+   "high": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "low": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "max": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "medium": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "none": {
+    "render": "eb138503",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "fdd5bb27",
+    "value": "on"
+   }
+  }
+ },
+ "flashnext": {
+  "crashes": [
+   "max"
+  ],
+  "default_render": "1ad7792b",
+  "distinct_renders": 3,
+  "levels": {
+   "high": "546e0307",
+   "low": "938681af",
+   "max": null,
+   "medium": "e3ca72a6",
+   "xhigh": "546e0307"
+  },
+  "measurable": true,
+  "probe_render": "546e0307",
+  "reads_effort": true,
+  "reads_enable_thinking": true,
+  "template_sha": "73f7bcd8d6b6",
+  "words": {
+   "high": {
+    "render": "546e0307",
+    "value": "on+high"
+   },
+   "low": {
+    "render": "938681af",
+    "value": "on+low"
+   },
+   "max": {
+    "render": "546e0307",
+    "value": "on+high"
+   },
+   "medium": {
+    "render": "e3ca72a6",
+    "value": "on+medium"
+   },
+   "none": {
+    "render": "1ad7792b",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "546e0307",
+    "value": "on+high"
+   }
+  }
+ },
+ "gemma26": {
+  "crashes": [],
+  "default_render": "eb138503",
+  "distinct_renders": 0,
+  "levels": {
+   "high": "fdd5bb27",
+   "low": "fdd5bb27",
+   "max": "fdd5bb27",
+   "medium": "fdd5bb27",
+   "xhigh": "fdd5bb27"
+  },
+  "measurable": false,
+  "probe_render": "fdd5bb27",
+  "reads_effort": false,
+  "reads_enable_thinking": true,
+  "template_sha": "3c75e7bcc5f7",
+  "words": {
+   "high": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "low": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "max": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "medium": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "none": {
+    "render": "eb138503",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "fdd5bb27",
+    "value": "on"
+   }
+  }
+ },
+ "gemma31": {
+  "crashes": [],
+  "default_render": "eb138503",
+  "distinct_renders": 0,
+  "levels": {
+   "high": "fdd5bb27",
+   "low": "fdd5bb27",
+   "max": "fdd5bb27",
+   "medium": "fdd5bb27",
+   "xhigh": "fdd5bb27"
+  },
+  "measurable": false,
+  "probe_render": "fdd5bb27",
+  "reads_effort": false,
+  "reads_enable_thinking": true,
+  "template_sha": "3c75e7bcc5f7",
+  "words": {
+   "high": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "low": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "max": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "medium": {
+    "render": "fdd5bb27",
+    "value": "on"
+   },
+   "none": {
+    "render": "eb138503",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "fdd5bb27",
+    "value": "on"
+   }
+  }
+ },
+ "gptoss": {
+  "crashes": [],
+  "default_render": "189ebbae",
+  "distinct_renders": 5,
+  "levels": {
+   "high": "af18fb41",
+   "low": "6865e5d7",
+   "max": "2e44a8b6",
+   "medium": "189ebbae",
+   "xhigh": "69af941f"
+  },
+  "measurable": false,
+  "probe_render": "189ebbae",
+  "reads_effort": true,
+  "reads_enable_thinking": false,
+  "template_sha": "ce9fcc17abf1",
+  "words": {
+   "high": {
+    "render": "af18fb41",
+    "value": "high"
+   },
+   "low": {
+    "render": "6865e5d7",
+    "value": "low"
+   },
+   "max": {
+    "render": "2e44a8b6",
+    "value": "max"
+   },
+   "medium": {
+    "render": "189ebbae",
+    "value": "medium"
+   },
+   "none": null,
+   "xhigh": {
+    "render": "69af941f",
+    "value": "xhigh"
+   }
+  }
+ },
+ "laguna": {
+  "crashes": [],
+  "default_render": "8d44fb28",
+  "distinct_renders": 0,
+  "levels": {
+   "high": "8d44fb28",
+   "low": "8d44fb28",
+   "max": "8d44fb28",
+   "medium": "8d44fb28",
+   "xhigh": "8d44fb28"
+  },
+  "measurable": false,
+  "probe_render": "8d44fb28",
+  "reads_effort": false,
+  "reads_enable_thinking": true,
+  "template_sha": "19db6587123e",
+  "words": {
+   "high": {
+    "render": "8d44fb28",
+    "value": "on"
+   },
+   "low": {
+    "render": "8d44fb28",
+    "value": "on"
+   },
+   "max": {
+    "render": "8d44fb28",
+    "value": "on"
+   },
+   "medium": {
+    "render": "8d44fb28",
+    "value": "on"
+   },
+   "none": {
+    "render": "535fda50",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "8d44fb28",
+    "value": "on"
+   }
+  }
+ },
+ "qwen38": {
+  "crashes": [
+   "max"
+  ],
+  "default_render": "1ad7792b",
+  "distinct_renders": 3,
+  "levels": {
+   "high": "546e0307",
+   "low": "938681af",
+   "max": null,
+   "medium": "e3ca72a6",
+   "xhigh": "546e0307"
+  },
+  "measurable": true,
+  "probe_render": "546e0307",
+  "reads_effort": true,
+  "reads_enable_thinking": true,
+  "template_sha": "73f7bcd8d6b6",
+  "words": {
+   "high": {
+    "render": "546e0307",
+    "value": "on+high"
+   },
+   "low": {
+    "render": "938681af",
+    "value": "on+low"
+   },
+   "max": {
+    "render": "546e0307",
+    "value": "on+high"
+   },
+   "medium": {
+    "render": "e3ca72a6",
+    "value": "on+medium"
+   },
+   "none": {
+    "render": "1ad7792b",
+    "value": "off"
+   },
+   "xhigh": {
+    "render": "546e0307",
+    "value": "on+high"
+   }
+  }
+ }
+}

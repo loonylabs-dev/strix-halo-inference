@@ -1,0 +1,59 @@
+=== batch      3c75e7bcc5f7
+      reasoning_effort is IGNORED by this template
+      enable_thinking: works
+      MODES=low:on  medium:on  high:on  xhigh:on  max:on
+      TEMPLATE_LEVELS=no-levels
+
+=== flashnext  73f7bcd8d6b6
+      low    938681af  own rendering
+      medium e3ca72a6  own rendering
+      high   546e0307  own rendering
+      xhigh  546e0307  own rendering
+      max    —         RAISES — clamp this one away
+      -> 3 distinct renderings
+      enable_thinking: works
+      MODES=low:on+low  medium:on+medium  high:on+high  xhigh:on+high  max:on+high
+      TEMPLATE_LEVELS=low  medium  high  xhigh
+
+=== gemma26    3c75e7bcc5f7   (same template as an earlier profile)
+      reasoning_effort is IGNORED by this template
+      enable_thinking: works
+      MODES=low:on  medium:on  high:on  xhigh:on  max:on
+      TEMPLATE_LEVELS=no-levels
+
+=== gemma31    3c75e7bcc5f7   (same template as an earlier profile)
+      reasoning_effort is IGNORED by this template
+      enable_thinking: works
+      MODES=low:on  medium:on  high:on  xhigh:on  max:on
+      TEMPLATE_LEVELS=no-levels
+
+=== gptoss     ce9fcc17abf1
+      low    6865e5d7  own rendering
+      medium 189ebbae  renders like the default (alias)
+      high   af18fb41  own rendering
+      xhigh  69af941f  own rendering
+      max    2e44a8b6  own rendering
+      -> 5 distinct renderings
+      enable_thinking: IGNORED
+      # MODES=…  DECLARE BY HAND: this template validates nothing, so its levels
+      #   cannot be measured. Take them from the model card and clamp the rest.
+      TEMPLATE_LEVELS=unmeasurable
+
+=== laguna     19db6587123e
+      reasoning_effort is IGNORED by this template
+      enable_thinking: works
+      MODES=none:off
+      TEMPLATE_LEVELS=no-levels
+
+=== qwen38     73f7bcd8d6b6   (same template as an earlier profile)
+      low    938681af  own rendering
+      medium e3ca72a6  own rendering
+      high   546e0307  own rendering
+      xhigh  546e0307  own rendering
+      max    —         RAISES — clamp this one away
+      -> 3 distinct renderings
+      enable_thinking: works
+      MODES=low:on+low  medium:on+medium  high:on+high  xhigh:on+high  max:on+high
+      TEMPLATE_LEVELS=low  medium  high  xhigh
+
+written: bench/reports/2026-08-28_effort-vocabulary/vocabulary.json

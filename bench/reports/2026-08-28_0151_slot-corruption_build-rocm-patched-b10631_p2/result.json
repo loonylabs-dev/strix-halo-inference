@@ -1,0 +1,345 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-patched-b10631/bin/llama-server",
+  "build_from_binary": "b252-6b39dd5",
+  "build_id": "b10631",
+  "stamp": {
+   "build_id": "b10631",
+   "backend": "rocm",
+   "upstream_ref": "origin/master",
+   "upstream_commit": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "patch_commit": "6b39dd5d5b986404c88bfe2370c770ae979bb222",
+   "patch_branch": "gfx1151-patched",
+   "built_at": "2026-08-26T09:10:14+02:00",
+   "version": "version: 0.3.0-dev (build 252, commit 6b39dd5d5)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "shape": {
+   "np": 2,
+   "ctx": 32768,
+   "tools": 10,
+   "spec": true,
+   "cram": true,
+   "mmproj": false,
+   "kv_unified": false
+  },
+  "argv": [
+   "--alias",
+   "sidetest",
+   "-m",
+   "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+   "-ngl",
+   "999",
+   "-fa",
+   "on",
+   "-c",
+   "32768",
+   "-np",
+   "2",
+   "-b",
+   "2048",
+   "-ub",
+   "2048",
+   "-cram",
+   "32768",
+   "--no-kv-unified",
+   "--spec-type",
+   "draft-mtp,ngram-mod",
+   "--spec-draft-n-max",
+   "12",
+   "--spec-ngram-mod-n-min",
+   "24",
+   "--chat-template-kwargs",
+   "{\"enable_thinking\":false}",
+   "--jinja",
+   "--host",
+   "127.0.0.1",
+   "--port",
+   "8081"
+  ],
+  "starts": 10
+ },
+ "runs": [
+  {
+   "case": "par-two-prefixes",
+   "run": 1,
+   "answers": [
+    {
+     "nonce": "B-4704-0",
+     "verdict": "ok",
+     "text": "B-4704-0"
+    },
+    {
+     "nonce": "A-4704-0",
+     "verdict": "empty",
+     "text": ""
+    },
+    {
+     "nonce": "B-4763-1",
+     "verdict": "ok",
+     "text": "B-4763-1"
+    },
+    {
+     "nonce": "A-4764-1",
+     "verdict": "ok",
+     "text": "A-4764-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 1
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 2,
+   "answers": [
+    {
+     "nonce": "B-4842-0",
+     "verdict": "ok",
+     "text": "B-4842-0"
+    },
+    {
+     "nonce": "A-4842-0",
+     "verdict": "ok",
+     "text": "A-4842-0"
+    },
+    {
+     "nonce": "B-4890-1",
+     "verdict": "ok",
+     "text": "B-4890-1"
+    },
+    {
+     "nonce": "A-4922-1",
+     "verdict": "ok",
+     "text": "A-4922-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 3,
+   "answers": [
+    {
+     "nonce": "A-4981-0",
+     "verdict": "ok",
+     "text": "A-4981-0"
+    },
+    {
+     "nonce": "B-4981-0",
+     "verdict": "ok",
+     "text": "B-4981-0"
+    },
+    {
+     "nonce": "A-5030-1",
+     "verdict": "ok",
+     "text": "A-5030-1"
+    },
+    {
+     "nonce": "B-5051-1",
+     "verdict": "ok",
+     "text": "B-5051-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 4,
+   "answers": [
+    {
+     "nonce": "A-5119-0",
+     "verdict": "empty",
+     "text": ""
+    },
+    {
+     "nonce": "B-5119-0",
+     "verdict": "ok",
+     "text": "B-5119-0"
+    },
+    {
+     "nonce": "A-5178-1",
+     "verdict": "ok",
+     "text": "A-5178-1"
+    },
+    {
+     "nonce": "B-5178-1",
+     "verdict": "ok",
+     "text": "B-5178-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 1
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 5,
+   "answers": [
+    {
+     "nonce": "A-5257-0",
+     "verdict": "ok",
+     "text": "A-5257-0"
+    },
+    {
+     "nonce": "B-5257-0",
+     "verdict": "ok",
+     "text": "B-5257-0"
+    },
+    {
+     "nonce": "A-5306-1",
+     "verdict": "ok",
+     "text": "A-5306-1"
+    },
+    {
+     "nonce": "B-5327-1",
+     "verdict": "ok",
+     "text": "B-5327-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 6,
+   "answers": [
+    {
+     "nonce": "B-5396-0",
+     "verdict": "ok",
+     "text": "B-5396-0"
+    },
+    {
+     "nonce": "A-5396-0",
+     "verdict": "ok",
+     "text": "A-5396-0"
+    },
+    {
+     "nonce": "B-5444-1",
+     "verdict": "ok",
+     "text": "B-5444-1"
+    },
+    {
+     "nonce": "A-5476-1",
+     "verdict": "ok",
+     "text": "A-5476-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 7,
+   "answers": [
+    {
+     "nonce": "B-5535-0",
+     "verdict": "ok",
+     "text": "B-5535-0"
+    },
+    {
+     "nonce": "A-5535-0",
+     "verdict": "ok",
+     "text": "A-5535-0"
+    },
+    {
+     "nonce": "B-5594-1",
+     "verdict": "ok",
+     "text": "B-5594-1"
+    },
+    {
+     "nonce": "A-5605-1",
+     "verdict": "empty",
+     "text": ""
+    }
+   ],
+   "corrupt": 0,
+   "other": 1
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 8,
+   "answers": [
+    {
+     "nonce": "B-5675-0",
+     "verdict": "ok",
+     "text": "B-5675-0"
+    },
+    {
+     "nonce": "A-5675-0",
+     "verdict": "ok",
+     "text": "A-5675-0"
+    },
+    {
+     "nonce": "B-5724-1",
+     "verdict": "ok",
+     "text": "B-5724-1"
+    },
+    {
+     "nonce": "A-5755-1",
+     "verdict": "empty",
+     "text": ""
+    }
+   ],
+   "corrupt": 0,
+   "other": 1
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 9,
+   "answers": [
+    {
+     "nonce": "A-5815-0",
+     "verdict": "ok",
+     "text": "A-5815-0"
+    },
+    {
+     "nonce": "B-5815-0",
+     "verdict": "ok",
+     "text": "B-5815-0"
+    },
+    {
+     "nonce": "A-5864-1",
+     "verdict": "ok",
+     "text": "A-5864-1"
+    },
+    {
+     "nonce": "B-5896-1",
+     "verdict": "ok",
+     "text": "B-5896-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 10,
+   "answers": [
+    {
+     "nonce": "A-5954-0",
+     "verdict": "ok",
+     "text": "A-5954-0"
+    },
+    {
+     "nonce": "B-5954-0",
+     "verdict": "ok",
+     "text": "B-5954-0"
+    },
+    {
+     "nonce": "A-6014-1",
+     "verdict": "ok",
+     "text": "A-6014-1"
+    },
+    {
+     "nonce": "B-6024-1",
+     "verdict": "ok",
+     "text": "B-6024-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 0
+  }
+ ]
+}

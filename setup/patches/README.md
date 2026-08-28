@@ -124,31 +124,71 @@ the defect was found in (`np2-orig`: `-np 2 --no-kv-unified -cram 32768
     30 starts · 180 answers · ZERO corrupt · zero failed starts
     bench/reports/2026-08-28_0056_stock-vs-patched_b200-54ee5ee
 
-**So defect 1 does not reproduce on this machine any more**, on the binary it
-was found on, in the recipe it was found in. That is the finding, and it is
-not the same sentence as "the defect is gone": 30 clean starts bound the
-per-start rate at about 10 % with 95 % confidence, which is an upper bound and
-not a bill of health.
+That looked like "defect 1 does not reproduce on this machine any more", and
+**it was written down as such at 00:56 and was WRONG.** The second reading of
+the two below was the right one: the recipe was not the one the 6/6 came from.
 
-Two readings, and nothing here separates them:
+**REPRODUCED 28.08. 01:07, on the first attempt, deterministically.**
+`bench/suites/slot-corruption.py par-two-prefixes --binary rocm --starts 10`,
+stock `54ee5ee`, side server, production up:
 
-* something about the MACHINE changed — the GTT cap has been 96, then 116,
-  then 108 since the original measurement, and ROCm and the kernel have moved;
-* or the recipe still is not the one the 6/6 was found in. The suite's own
-  docstring calls `np2-orig` "the exact shape the defect was found in", which
-  is the best statement available and is not the same as a proof.
+    par-two-prefixes   10 of 10 starts CORRUPT   '////' x70, all four answers
+    seq-two-prefixes    0 of 10 starts CORRUPT
 
-**What follows for this patch: it stays, and the reason is now sharper.** A
-mitigation is not dropped on the strength of a control that will not fire.
-There is currently NO configuration on this machine in which defect 1 can be
-observed, so no build can be compared against another for it — including
-#27311. Running the other two builds for 30 starts each would produce the same
-clean columns and mean exactly as much.
+The ingredient the 30-start control was missing is in that pair. `np2-orig`
+and `np2-candidates` send **sequential** requests with **no tool block**;
+`par-two-prefixes` sends two distinct prefixes **CONCURRENTLY**, each carrying
+ten tools. Sequential is clean 10 of 10 on the same build in the same hour.
 
-**The next step is a hunt, not a run:** find any configuration in which defect
-1 appears at all. `bench/suites/slot-corruption.py` is the instrument for that
-— one variable per case — and it has not been pointed at this question since
-the original finding.
+**And it refines the original finding.** This file's own docstring says *"it
+is the SECOND SLOT, not concurrency — serialising every request in the gateway
+did not help"*. Going directly at the server, with no gateway in the way,
+concurrency is an ingredient: 10/10 against 0/10. Both can be true — the
+gateway serialises ADMISSION, not batching inside llama-server — but the
+cleaner experiment is the one without it.
+
+**So a build comparison for defect 1 was possible after all, and it was run.**
+`par-two-prefixes`, ten fresh starts per build, side server, production up,
+28.08. 01:07-03:20:
+
+| build | patch | upstream | CORRUPT |
+|---|---|---|---|
+| `build-rocm` (stock) | no | `54ee5ee` | **10 of 10** |
+| `build-rocm-unpatched-b10631` | no | `5d5cb4c` | **10 of 10** |
+| `build-rocm-patched-b10631` | **yes** | `5d5cb4c` | 0 of 10 |
+| `build-rocm-unpatched-b10631-18-gc1dcd9825` | no | `5d5cb4c` **+ #27311** | 0 of 10 |
+| `build-rocm-patched-b10631-18-gc1dcd9825` | yes | `5d5cb4c` + #27311 | 0 of 10 |
+
+Two one-variable comparisons on the same upstream commit `5d5cb4c`:
+
+* **this patch fixes defect 1** — 10 of 10 without it, 0 of 10 with it;
+* **llama.cpp PR #27311 fixes defect 1 as well** — 10 of 10 without it, 0 of
+  10 with it, and with no patch on either side.
+
+**And a clean column means something here, which it did not before.** On the
+unpatched builds this is DETERMINISTIC: 20 of 20 starts across two different
+upstream commits, every answer of every start, never a partial. Against a
+deterministic reproducer, ten clean starts is a signal rather than the absence
+that ten clean starts of an intermittent fault would be.
+
+**Defect 1 is still in upstream master.** `5d5cb4c` unpatched corrupts 10 of
+10, and `info.devices[id].integrated = prop.integrated` for HIP is still in
+master's `ggml-cuda.cu` — checked, not assumed.
+
+### So: can this patch be dropped?
+
+**Not yet, and the reason is no longer about evidence.** #27311 is OPEN and
+UNMERGED. Dropping the patch means running either an unmerged pull request in
+production or plain master, which corrupts 10 of 10. What has changed is that
+the wait now has a defined end: **when #27311 lands in master, re-run the two
+suites and this patch can go.** Both of its defects are covered by it, on this
+machine, measured rather than argued:
+
+    defect 1  bench/suites/slot-corruption.py par-two-prefixes  10/10 -> 0/10
+    defect 2  bench/suites/restore-safety.py                    DIRTY -> CLEAN
+
+That is also the whole retirement condition, so it belongs in
+`setup/defects.json` rather than only here.
 
 The open sequence, in order:
 

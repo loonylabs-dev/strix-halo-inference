@@ -36,7 +36,7 @@
       },
       "shows_as": "silent",
       "symptom": "From some point on every answer degenerates to '////' until the server is restarted. No error, no log line.",
-      "measured": "Stock build, two slots, empty prefix store: CORRUPT 6/6. Patched, one slot: clean in every cell. Cost of the patch on identical bodies: prefill -6.0 %, decode unchanged. RE-MEASURED 26.08. on b10631 with the OFFICIAL unpatched binary (bench/suites/stock-vs-patched.py, official-rocm-np2-orig, the exact recipe the defect was found with): 18 of 18 clean over three fresh starts. It does not reproduce any more — and that is NOT a fix. `git log b10577..b10631` shows no commit touching the `integrated` path; the cause is unchanged upstream and the trigger merely moved. A defect whose cause stands and whose trigger we can no longer provoke is epistemically WORSE than a reproducible one.",
+      "measured": "Stock build, two slots, empty prefix store: CORRUPT 6/6. Patched, one slot: clean in every cell. Cost of the patch on identical bodies: prefill -6.0 %, decode unchanged. RE-MEASURED 28.08. and REPRODUCED DETERMINISTICALLY, after two sessions had concluded the opposite from a recipe that cannot show it. bench/suites/slot-corruption.py par-two-prefixes -- two distinct prefixes CONCURRENTLY, each with a tool block -- ten fresh starts per build, side server: stock 54ee5ee 10 of 10 CORRUPT, unpatched master 5d5cb4c 10 of 10 CORRUPT, every answer of every start, never a partial. The same builds under bench/suites/stock-vs-patched.py official-rocm-np2-orig, whose docstring calls itself the exact shape the defect was found in, are clean: 18 of 18 on 26.08. and 30 of 30 on 28.08. That recipe sends SEQUENTIAL requests with NO tools and has never been able to reproduce this defect; it produced the sentence -- it does not reproduce -- twice, two days apart. TWO ONE-VARIABLE COMPARISONS on the same upstream commit 5d5cb4c: with the patch 0 of 10, and with llama.cpp PR #27311 instead of the patch 0 of 10. So the patch fixes it, and #27311 fixes it. Reports: bench/reports/2026-08-28_0*_slot-corruption_*. The superseded sentence follows: It does not reproduce any more — and that is NOT a fix. `git log b10577..b10631` shows no commit touching the `integrated` path; the cause is unchanged upstream and the trigger merely moved. A defect whose cause stands and whose trigger we can no longer provoke is epistemically WORSE than a reproducible one.",
       "mitigation": "setup/patches/hip-integrated-off.patch, carried as a one-commit branch gfx1151-patched. Upstream disabled the same flag for CUDA with the comment 'Temporarily disabled due to issues with corrupted output' and re-enabled it for HIP in PR #24233. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
       "detect": {
         "kind": "build-stamp",
@@ -48,11 +48,12 @@
         "https://github.com/ggml-org/llama.cpp/issues/27579",
         "https://github.com/ggml-org/llama.cpp/issues/27572",
         "https://github.com/ggml-org/llama.cpp/issues/27506",
-        "https://github.com/ggml-org/llama.cpp/pull/24233"
+        "https://github.com/ggml-org/llama.cpp/pull/24233",
+        "https://github.com/ggml-org/llama.cpp/pull/27311"
       ],
       "status": "mitigated",
       "first_seen": "2026-08-24",
-      "last_checked": "2026-08-26",
+      "last_checked": "2026-08-28",
       "upstream_check": {
         "kind": "source-contains",
         "path": "ggml/src/ggml-cuda/ggml-cuda.cu",
@@ -70,7 +71,7 @@
       },
       "shows_as": "silent",
       "symptom": "Same '////' degeneration, but intermittently: a configuration that is clean on one server start is corrupt on the next.",
-      "measured": "Patched, two slots, empty store: clean on one start and CORRUPT 3/6 on the NEXT start, same configuration. Re-measured on b10631 (26.08.): 24 of 24 clean over four fresh starts — so the trigger moved, it did not go away. 26.08., official unpatched b10631, -np 2 with --no-kv-unified and speculation: 18 of 18 clean over three fresh starts. On b10577 the same shape on the stock build was CORRUPT 6/6. Not evidence that -np 2 is safe — evidence that the trigger is gone from this workload.",
+      "measured": "RE-MEASURED 28.08. on the workload that reproduces defect 1 deterministically (slot-corruption.py par-two-prefixes, ten fresh starts): the PATCHED b10631 build is 0 of 10 while the unpatched build of the same commit is 10 of 10, so on that workload the patch holds completely. This entry is NOT retired by that: it is about a DIFFERENT and intermittent trigger, and ten clean starts of an intermittent fault is an absence. Original record: patched, two slots, empty store: clean on one start and CORRUPT 3/6 on the NEXT start, same configuration. Re-measured on b10631 (26.08.): 24 of 24 clean over four fresh starts — so the trigger moved, it did not go away. 26.08., official unpatched b10631, -np 2 with --no-kv-unified and speculation: 18 of 18 clean over three fresh starts. On b10577 the same shape on the stock build was CORRUPT 6/6. Not evidence that -np 2 is safe — evidence that the trigger is gone from this workload.",
       "mitigation": "-np 1 in every profile. The patch removes one of the two failure modes; it does not make two slots safe. -cram keeps an evicted prefix in RAM, which is what makes a single slot affordable. And since 26.08. something WATCHES for it: setup/scripts/probe.py asks the running model one question whose answer is known, every ten minutes via llama-probe.timer, and restarts the unit when the answer is degenerate. That does not prevent the fault — it moves it from `silent` to `loud`, which is the axis this file sorts by, and it bounds how long a consumer talks to a poisoned server.",
       "detect": {
         "kind": "cmdline",
@@ -85,7 +86,7 @@
       ],
       "status": "open",
       "first_seen": "2026-08-24",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "slot-restore-poison",
@@ -107,7 +108,7 @@
       ],
       "status": "open — a candidate fix is measured but unmerged upstream",
       "first_seen": "2026-08-25",
-      "last_checked": "2026-08-27"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "rocwmma-fattn-prefill",
@@ -128,7 +129,7 @@
       "upstream": [],
       "status": "gone upstream",
       "first_seen": "2026-08-17",
-      "last_checked": "2026-08-26",
+      "last_checked": "2026-08-28",
       "upstream_check": {
         "kind": "source-contains",
         "path": "ggml/CMakeLists.txt",
@@ -154,7 +155,7 @@
       "upstream": [],
       "status": "mitigated",
       "first_seen": "2026-08-23",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "gtt-raise-removes-clean-failure",
@@ -173,7 +174,7 @@
       "upstream": [],
       "status": "mitigated",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "spec-decoding-unrepeatable",
@@ -190,7 +191,7 @@
       "upstream": [],
       "status": "open",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "qwen4exp-fit-crash",
@@ -217,7 +218,7 @@
       ],
       "status": "fixed upstream, not in our build",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-27"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "qwen4exp-quantized-kv",
@@ -244,7 +245,7 @@
       ],
       "status": "fixed upstream, not in our build",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-27"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "qwen4exp-slot-restore",
@@ -268,7 +269,7 @@
       ],
       "status": "open",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-26"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "slot-restore-hangs-busy",
@@ -288,7 +289,7 @@
       "upstream": [],
       "status": "withdrawn — not a defect, the measurement bound was shorter than the workload",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-27"
+      "last_checked": "2026-08-28"
     },
     {
       "id": "qwen4exp-multislot-desync",
@@ -315,7 +316,7 @@
       ],
       "status": "fixed upstream, not in our build",
       "first_seen": "2026-08-26",
-      "last_checked": "2026-08-27"
+      "last_checked": "2026-08-28"
     }
   ]
 }

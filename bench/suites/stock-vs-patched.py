@@ -203,6 +203,23 @@ CASES = {                  # name -> (binary key, -np, faithful-to-the-original)
     "official-rocm-np2-orig":   ("official-rocm", 2, True),
     "patched-rocm-np2-orig":    ("patched-rocm", 2, True),
     "official-rocm-np1-orig":   ("official-rocm", 1, True),
+    # ---------------------------------------------------------------------
+    # WARNING, 28.08.2026: `-orig` DOES NOT REPRODUCE DEFECT 1, and the
+    # comment above calling it "the exact shape the defect was found in" is
+    # WRONG. It has produced the sentence "it does not reproduce" twice, two
+    # days apart — 18 of 18 clean on 26.08. and 30 of 30 on 28.08. — on the
+    # very binaries that corrupt 10 of 10 under
+    # `bench/suites/slot-corruption.py par-two-prefixes`.
+    #
+    # What is missing here: these cases send requests SEQUENTIALLY and their
+    # bodies carry NO TOOL BLOCK. The defect needs two distinct prefixes
+    # CONCURRENTLY. `-np 2` is necessary and is not sufficient, and a suite
+    # that only varies the slot count cannot say so.
+    #
+    # Use slot-corruption.py for defect 1. What THIS file is for is rule (a),
+    # the quantity question about the binary that would ship — and a clean
+    # column here is now known to mean "this workload", not "this build".
+    # ---------------------------------------------------------------------
     # Binary-agnostic, for --binary: the shape the defect was found in, with
     # the build named on the command line instead of baked into a key.
     "np2-orig":                 (None, 2, True),

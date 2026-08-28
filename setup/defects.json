@@ -56,10 +56,12 @@
       "last_checked": "2026-08-28",
       "upstream_check": {
         "kind": "source-contains",
-        "path": "ggml/src/ggml-cuda/ggml-cuda.cu",
-        "pattern": "info\\.devices\\[id\\]\\.integrated\\s*=\\s*prop\\.integrated",
-        "while_present": "master still takes the integrated fast path on HIP — the patch is still doing something, keep shipping it",
-        "when_gone": "master no longer takes it. Re-measure once, then retire the patch and use official binaries: this is the condition under which nobody has to build llama.cpp any more"
+        "path": "ggml/src/ggml-backend.cpp",
+        "pattern": "GGML_SCHED_UMA_RING",
+        "present_means": "retire",
+        "while_present": "the graph-input ring buffer has landed in master — this is the fix. Re-measure once and the patch can go: python3 bench/suites/slot-corruption.py par-two-prefixes --binary <a build without the patch> --starts 10, and python3 bench/suites/restore-safety.py --binary <same> --spec both. Both clean means nobody has to build llama.cpp any more",
+        "when_gone": "master does not have the ring buffer yet (llama.cpp PR #27311, commit 3181ed701, open). Keep shipping the patch",
+        "note": "UNTIL 28.08.2026 this watched info.devices[id].integrated = prop.integrated in ggml-cuda.cu, expecting the fix to delete it. It does not. That line is at ggml-cuda.cu:306 in master AND in a build containing #27311 that measures 0 of 10 corrupt where master is 10 of 10 — so the probe could only ever say keep. Measured: bench/reports/2026-08-28_defect1-hunt/HUNT.md"
       }
     },
     {

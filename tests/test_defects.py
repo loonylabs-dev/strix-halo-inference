@@ -243,5 +243,76 @@ class TestAWithdrawnEntryStopsAsking(unittest.TestCase):
         self.assertEqual(verdict, defects.MANUAL)
 
 
+class TestTheRetirementProbeCanReachBothAnswers(unittest.TestCase):
+    """A probe that can only ever say "keep" is not a probe.
+
+    `gfx1151-hip-integrated` watched the line
+    `info.devices[id].integrated = prop.integrated`, on the reasonable
+    assumption that a fix would delete it. llama.cpp PR #27311 does not: it
+    leaves the line and makes the buffer it leads to safe, in a different
+    file. Measured 28.08. — a build containing that PR has the line at
+    ggml-cuda.cu:306 and is 0 of 10 corrupt where master is 10 of 10.
+
+    So on the day the fix lands the old probe would still have said "keep
+    shipping it", for ever, and the only thing standing between this stack and
+    carrying a patch it no longer needs would be somebody remembering. That is
+    the shape this repository keeps finding, in the one check whose whole job
+    is to say when you may stop.
+    """
+
+    CAUSE = "info.devices[id].integrated = prop.integrated;"
+    FIX = 'int n_copies_uma = is_uma ? 2 : 1;\ngetenv("GGML_SCHED_UMA_RING");'
+
+    def probe(self, source, id_="gfx1151-hip-integrated"):
+        d = [x for x in defects.load() if x["id"] == id_]
+        self.assertEqual(len(d), 1, id_)
+        return defects.check_upstream(d, fetch=lambda p: source)[0][1]
+
+    def test_it_says_keep_while_the_fix_is_not_in_master(self):
+        self.assertEqual(self.probe(self.CAUSE), "keep")
+
+    def test_it_says_retire_once_the_fix_lands(self):
+        """The answer the old one could not reach — and note the cause line is
+        STILL in the source here, because that is what actually happens."""
+        self.assertEqual(self.probe(self.CAUSE + "\n" + self.FIX), "RETIRE?")
+
+    def test_the_old_condition_would_have_been_stuck(self):
+        """Why the `present_means` field exists at all. Same source as the
+        test above; a probe watching the CAUSE line still says keep."""
+        old = {"id": "x", "upstream_check": {
+            "kind": "source-contains", "path": "p",
+            "pattern": r"info\.devices\[id\]\.integrated",
+            "while_present": "keep shipping it", "when_gone": "retire"}}
+        state = defects.check_upstream(
+            [old], fetch=lambda p: self.CAUSE + "\n" + self.FIX)[0][1]
+        self.assertEqual(state, "keep",
+                         "if this ever reports RETIRE?, the reason this field "
+                         "exists has gone away and the field can go with it")
+
+    def test_present_means_defaults_to_keep(self):
+        """Every other entry watches a CAUSE and must be untouched by the new
+        field. Asserted on the registry itself, not on a fixture."""
+        checked = 0
+        for d in defects.load():
+            pr = d.get("upstream_check")
+            if not pr or pr.get("present_means") == "retire":
+                continue
+            checked += 1
+            self.assertEqual(
+                defects.check_upstream([d], fetch=lambda p: pr["pattern"]
+                                       .replace("\\", ""))[0][1],
+                "keep", d["id"])
+        self.assertGreater(checked, 0, "no cause-watching probe left to check")
+
+    def test_the_registry_entry_names_the_fix_and_not_the_cause(self):
+        """The narrow thing, pinned so a future edit cannot quietly put it
+        back: the probe must not be watching ggml-cuda.cu any more."""
+        d = [x for x in defects.load()
+             if x["id"] == "gfx1151-hip-integrated"][0]["upstream_check"]
+        self.assertEqual(d["present_means"], "retire")
+        self.assertIn("ggml-backend", d["path"])
+        self.assertIn("UMA_RING", d["pattern"])
+
+
 if __name__ == "__main__":
     unittest.main()

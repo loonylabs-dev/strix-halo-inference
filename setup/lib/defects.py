@@ -198,8 +198,24 @@ def report(defects, cmdline=None, stamp=None, gpu=None):
 def check_upstream(defects, fetch=None):
     """[(defect, state, detail)] for every defect that names a retirement probe.
 
-    `state` is "keep" while the cause is still in master, "RETIRE?" when it has
-    gone, "unknown" when master could not be read.
+    `state` is "keep" while the mitigation is still needed, "RETIRE?" when the
+    condition for dropping it is met, "unknown" when master could not be read.
+
+    WHAT THE PATTERN IS matters, and `present_means` says which:
+
+        "keep"    (default) the pattern names the CAUSE. Present -> keep.
+        "retire"  the pattern names the FIX. Present -> RETIRE?
+
+    The second exists because of gfx1151-hip-integrated, 28.08.2026. That
+    probe watched the line `info.devices[id].integrated = prop.integrated`,
+    on the reasonable assumption that the fix would delete it. llama.cpp PR
+    #27311 does not: it leaves the line and makes the buffer it leads to safe,
+    in a different file. Measured — a build containing that PR has the line at
+    ggml-cuda.cu:306 and is 0 of 10 corrupt where master is 10 of 10.
+
+    So the probe could only ever say "keep". A check that cannot reach its
+    other answer is the shape this repository keeps finding, here in the one
+    thing whose job is to tell you when you may stop carrying a patch.
 
     It reads the SOURCE, deliberately, and not an issue's state. This project
     learned that the expensive way on 26.08.: a watch that followed pull-request
@@ -232,10 +248,16 @@ def check_upstream(defects, fetch=None):
         text = cache[path]
         if isinstance(text, Exception):
             out.append((d, UNKNOWN, "could not read %s: %s" % (path, text)))
-        elif re.search(probe.get("pattern", ""), text):
-            out.append((d, "keep", probe.get("while_present", "still present")))
         else:
-            out.append((d, "RETIRE?", probe.get("when_gone", "gone from master")))
+            present = bool(re.search(probe.get("pattern", ""), text))
+            retire_on_present = probe.get("present_means", "keep") == "retire"
+            if present:
+                state = "RETIRE?" if retire_on_present else "keep"
+                detail = probe.get("while_present", "still present")
+            else:
+                state = "keep" if retire_on_present else "RETIRE?"
+                detail = probe.get("when_gone", "gone from master")
+            out.append((d, state, detail))
     return out
 
 

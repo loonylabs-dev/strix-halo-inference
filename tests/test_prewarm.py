@@ -88,6 +88,53 @@ class TestSave(WithStore):
         with open(os.path.join(self.dir, "ziel.json"), encoding="utf-8") as f:
             return json.load(f)
 
+    def _saving(self, n_saved):
+        """The same fake server, but the save reports a different count than
+        the prefix has — which is what a request taking the slot mid-save
+        leaves behind."""
+        inner = self._fake_req()
+        def req(path, nutzlast=None, method=None, t=1800):
+            if path.startswith("/slots/0?action=save"):
+                return {"n_saved": n_saved, "n_written": 628_000_000,
+                        "timings": {"save_ms": 247}}
+            return inner(path, nutzlast, method, t)
+        return req
+
+    def do_save_with(self, req, **kw):
+        body = os.path.join(self.dir, "body.json")
+        with open(body, "w") as f:
+            json.dump(SYN.body(), f)
+        open(os.path.join(self.dir, "ziel.bin"), "w").write("x")  # the server wrote it
+        a = types.SimpleNamespace(body=body, name="ziel", **kw)
+        with mock.patch.object(VW, "req", req), \
+             mock.patch.object(VW, "wait_until_ready", lambda t=900: True), \
+             mock.patch("builtins.print"):
+            VW.save(a)
+
+    def test_a_file_that_is_not_the_prefix_is_not_published(self):
+        """Measured 29.08.2026: a restored state is reused only where it is a
+        PREFIX of the request. A state carrying anything beyond it is
+        discarded WHOLE — restoring 14998 tokens whose first 14967 WERE the
+        prompt still recomputed all 14969. So a wrong count is not "a bit
+        off", it is a guaranteed full prefill on every request that ever hits
+        the file."""
+        for n in (34, 22000 + 500):
+            with self.subTest(n_saved=n):
+                with self.assertRaises(SystemExit) as cm:
+                    self.do_save_with(self._saving(n), gateway_id="gw", dialect="anthropic")
+                self.assertIn("refusing to publish", str(cm.exception))
+                self.assertFalse(os.path.exists(os.path.join(self.dir, "ziel.json")),
+                                 "no sidecar may be left behind")
+                self.assertFalse(os.path.exists(os.path.join(self.dir, "ziel.bin")),
+                                 "and the unusable .bin goes with it")
+
+    def test_a_count_off_by_the_tolerance_still_passes(self):
+        """The existing checks allow +-2 tokens around the prefix; the same
+        slack applies here, or a template that adds a stop token would fail
+        every save."""
+        self.do_save_with(self._saving(22001), gateway_id="gw", dialect="anthropic")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "ziel.json")))
+
     def test_passed_in_id_is_taken_over(self):
         """The heart of the bug: the gateway hands over an already corrected
         body. Recomputing the id from it puts a key into the store that no

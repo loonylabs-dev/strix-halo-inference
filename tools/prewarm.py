@@ -182,6 +182,37 @@ def save(a):
     print("saved: %s — %d tokens, %.0f MB, %.0f ms"
           % (filename, r["n_saved"], r["n_written"] / 1e6, r["timings"]["save_ms"]))
 
+    # WHAT WAS WRITTEN HAS TO BE THE PREFIX, and this is the only moment it
+    # can be checked cheaply. The slot was inspected BEFORE the save; the
+    # checks above cannot see a request that took it in between, and on
+    # 28.08.2026 two files in this store were written by exactly that race —
+    # one holding 34 tokens, one holding 14957 tokens of something else.
+    #
+    # A wrong count is not "a bit off", it is WORTHLESS, and that is measured
+    # rather than assumed: bench/reports/2026-08-29_restore-semantics. A
+    # restored state is reused only where it is a PREFIX of the incoming
+    # prompt — a state carrying anything beyond it is discarded WHOLE, not
+    # trimmed back to the common part. Restoring a 14998-token state whose
+    # first 14967 tokens were the prompt exactly still recomputed all 14969.
+    #
+    # So a file that does not carry exactly the prefix costs a full prefill on
+    # every request that ever hits it, and buys nothing. It is deleted here
+    # rather than published — the caller can save again, which costs seconds.
+    n_saved = r.get("n_saved")
+    if not isinstance(n_saved, int) or abs(n_saved - n_tok) > 2:
+        try:
+            os.remove(os.path.join(SLOT_PATH, filename))
+        except OSError:
+            pass
+        raise SystemExit(
+            "\nrefusing to publish %s: %s tokens were written where the prefix "
+            "is %d.\n  Something took the slot during the save. Such a file is "
+            "not slightly wrong,\n  it is unusable — a restored state is only "
+            "reused where it is a PREFIX of\n  the request (measured: "
+            "bench/reports/2026-08-29_restore-semantics).\n  The .bin has been "
+            "deleted; nothing was written to the store."
+            % (filename, n_saved, n_tok))
+
     os.makedirs(SLOT_PATH, exist_ok=True)
     passed_in = getattr(a, "gateway_id", None)
     gk = passed_in or gateway_id(body, dialect)

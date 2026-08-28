@@ -125,7 +125,8 @@ class TestCheck(WithStore):
 
 class TestCleanup(WithStore):
     def clean(self, **kw):
-        values = {"max_gb": None, "max_count": None, "ttl_days": None, "dry_run": False}
+        values = {"max_gb": None, "max_count": None, "ttl_days": None,
+                  "dry_run": False, "purge": False}
         values.update(kw)
         with mock.patch("builtins.print"):
             VW.cleanup(types.SimpleNamespace(**values))
@@ -157,6 +158,65 @@ class TestCleanup(WithStore):
         self.put("old", last=days_ago(90))
         self.clean(ttl_days=1, dry_run=True)
         self.assertTrue(self.present("old"))
+
+    def test_zero_is_refused_rather_than_guessed(self):
+        """`--max-gb 0` in a tool whose job is deleting reads as "keep
+        nothing". The code read it as "no limit", because `if a.max_gb:` is
+        false at zero — so the command ran, printed "nothing to delete", and
+        did exactly nothing. Twice, on 28.08.2026, before anyone looked at the
+        source.
+
+        Both readings are defensible, which is the whole problem: a number
+        that can mean either must not be interpreted silently. Same rule as
+        budget._num, which refuses a typo rather than falling back — "silently
+        falling back would hide a mistake in the one place where a number is
+        being trusted".
+        """
+        self.put("a", last=days_ago(1))
+        for flag, kw in (("--max-gb", {"max_gb": 0}),
+                         ("--max-count", {"max_count": 0}),
+                         ("--ttl-days", {"ttl_days": 0})):
+            with self.subTest(flag=flag):
+                with self.assertRaises(SystemExit) as cm:
+                    self.clean(**kw)
+                msg = str(cm.exception)
+                self.assertIn(flag, msg)
+                self.assertIn("--purge", msg, "the message must name the way "
+                              "to say 'keep nothing'")
+                self.assertIn("omit", msg, "and the way to say 'no limit'")
+        self.assertTrue(self.present("a"), "nothing may be deleted on refusal")
+
+    def test_a_negative_limit_is_refused_too(self):
+        self.put("a", last=days_ago(1))
+        with self.assertRaises(SystemExit):
+            self.clean(max_gb=-1)
+        self.assertTrue(self.present("a"))
+
+    def test_purge_deletes_everything(self):
+        self.put("a", last=days_ago(1))
+        self.put("b", last=days_ago(90))
+        self.clean(purge=True)
+        self.assertFalse(self.present("a"))
+        self.assertFalse(self.present("b"))
+
+    def test_purge_honours_dry_run(self):
+        """The one flag that deletes without a rule has to be previewable."""
+        self.put("a", last=days_ago(1))
+        self.clean(purge=True, dry_run=True)
+        self.assertTrue(self.present("a"))
+
+    def test_purge_together_with_a_limit_is_refused(self):
+        """"Keep nothing" and "keep this much" cannot both be meant."""
+        self.put("a", last=days_ago(1))
+        with self.assertRaises(SystemExit):
+            self.clean(purge=True, max_gb=20)
+        self.assertTrue(self.present("a"))
+
+    def test_the_cli_offers_purge(self):
+        """A rule reachable only by constructing a namespace is not a rule a
+        user can reach."""
+        src = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        self.assertIn('"--purge"', src)
 
     def test_without_a_rule_everything_stays(self):
         self.put("a"); self.put("b")

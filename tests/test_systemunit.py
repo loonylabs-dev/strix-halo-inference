@@ -88,6 +88,82 @@ class TestTheDerivationIsComplete(Base):
         self.assertIn("install.sh --system-unit", self.text)
 
 
+class TestTheStoreLimitLivesInOnePlace(unittest.TestCase):
+    """Two consumers govern the saved-prefix store and they must agree.
+
+    cc-gateway STOPS SAVING at AUTO_MAX_GB; prefix-cleanup.timer PRUNES DOWN
+    TO its --max-gb. A pruning limit below the saving limit makes the two
+    fight over every prefix; above it, the timer never fires at all. Both were
+    `20`, typed separately, and agreed by coincidence — the shape
+    bench/sideserver.py names in one line: "this file said 12.0 and
+    bench/run.py said 10.0 about the same machine, which is what one number in
+    two places always becomes".
+
+    So the unit reads the gateway's env file instead of carrying a copy. This
+    test exists because the obvious edit — typing a number back into the
+    ExecStart — would restore the coincidence and nothing would complain.
+    """
+
+    UNIT = REPO / "setup" / "systemd" / "prefix-cleanup.service"
+
+    def setUp(self):
+        self.src = self.UNIT.read_text(encoding="utf-8")
+
+    def test_the_unit_reads_the_gateway_env_file(self):
+        self.assertIn("EnvironmentFile=-%h/.config/cc-gateway.env", self.src)
+
+    def test_it_uses_the_variable_and_not_a_number(self):
+        self.assertIn("AUTO_MAX_GB", self.src)
+        exec_line = [l for l in self.src.splitlines() if l.startswith("ExecStart=")]
+        self.assertEqual(len(exec_line), 1, self.src)
+        toks = exec_line[0].split()
+        i = toks.index("--max-gb")
+        value = toks[i + 1]
+        self.assertIn("$", value,
+                      "the limit is typed into the unit again: %s" % value)
+
+    def test_the_translation_actually_produces_purge(self):
+        """Behavioural, not a grep: the unit's own ExecStart shell is run with
+        the python invocation replaced by `echo`, so what is asserted is the
+        ARGUMENTS it would hand prewarm — for 0 and for a real limit."""
+        import re, subprocess
+        line = [l for l in self.src.splitlines() if l.startswith("ExecStart=")][0]
+        sh = line.split("/bin/sh -c ", 1)[1].strip().strip("'")
+        sh = re.sub(r"exec /usr/bin/python3 \S+", "echo", sh)
+        for value, expected in (("0", "--purge"), ("50", "--max-gb 50")):
+            out = subprocess.run(["/bin/sh", "-c", sh], capture_output=True,
+                                 text=True, env={"AUTO_MAX_GB": value,
+                                                 "PATH": "/usr/bin:/bin"}).stdout
+            with self.subTest(AUTO_MAX_GB=value):
+                self.assertIn(expected, out)
+                if value == "0":
+                    self.assertNotIn("--max-gb", out,
+                                     "0 must not reach prewarm as a limit — "
+                                     "it refuses one, and the timer would fail "
+                                     "on every fire")
+
+    def test_zero_is_translated_rather_than_passed_through(self):
+        """AUTO_MAX_GB=0 is a legitimate setting — cc-gateway.py:345 reads it
+        as "the store may use no disk" and stops saving. prewarm REFUSES a
+        limit of 0, on purpose, because in a deleting tool 0 is ambiguous. Two
+        changes made on the same day would therefore have disagreed on the one
+        value that is easiest to type, and the timer would have failed on every
+        fire: "a cleanup that refuses is a store that grows silently", which is
+        this unit's own comment."""
+        self.assertIn("--purge", self.src)
+        self.assertIn('= "0" ]', self.src,
+                      "nothing translates the zero case")
+
+    def test_a_missing_variable_still_gives_a_usable_command(self):
+        """systemd expands ${VAR} but has no ${VAR:-default}, so an unset
+        variable would make this `--max-gb ` with nothing after it. prewarm
+        would refuse the arguments, and a cleanup that refuses is a store that
+        grows in silence."""
+        self.assertIn("${AUTO_MAX_GB:-", self.src)
+        self.assertIn("/bin/sh -c", self.src,
+                      "the default needs a shell; systemd cannot expand it")
+
+
 class TestItCannotDisagreeWithTheUnitThatRuns(Base):
     """Each of these is one of the three ways the hand-written file drifted."""
 

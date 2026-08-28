@@ -275,6 +275,52 @@ def _days_ago(stamp):
     except Exception:
         return 1e9
 
+# The three limits, with the name a user types. Kept as data because the
+# refusal below has to name the flag, not the attribute.
+LIMITS = (("--max-gb", "max_gb"), ("--max-count", "max_count"),
+          ("--ttl-days", "ttl_days"))
+
+
+def check_limits(a):
+    """Refuse a limit that could mean two things, rather than picking one.
+
+    `--max-gb 0` in a tool whose job is deleting reads as "keep nothing". This
+    code read it as "no limit", because `if a.max_gb:` is false at zero — so
+    the command ran, printed "nothing to delete", and did nothing at all. That
+    happened on 28.08.2026: the instruction was given, executed twice, and the
+    9 GB it was supposed to free were still there. Nothing failed. Nothing
+    said anything.
+
+    Both readings are defensible, which is exactly why neither may be chosen
+    silently. Same rule as budget._num, one directory over: a number that
+    cannot be trusted is refused rather than fallen back from, "because
+    silently falling back would hide a mistake in the one place where a number
+    is being trusted instead of measured".
+
+    So: omit the flag for no limit, pass --purge to keep nothing, and 0 is an
+    error that says both.
+    """
+    if getattr(a, "purge", False):
+        named = [flag for flag, attr in LIMITS if getattr(a, attr, None) is not None]
+        if named:
+            raise SystemExit(
+                "\n--purge means keep NOTHING, %s means keep that much.\n"
+                "  Both cannot be meant. Drop one." % ", ".join(named))
+    for flag, attr in LIMITS:
+        v = getattr(a, attr, None)
+        if v is None:
+            continue
+        if v < 0:
+            raise SystemExit("\n%s cannot be negative (%s given)." % (flag, v))
+        if v == 0:
+            raise SystemExit(
+                "\n%s 0 is ambiguous and will not be guessed at.\n"
+                "  It could mean KEEP NOTHING     -> use --purge\n"
+                "  or it could mean NO LIMIT      -> omit %s\n"
+                "  Until 28.08.2026 this was read as 'no limit' and deleted "
+                "nothing, silently." % (flag, flag))
+
+
 def cleanup(a):
     """Delete by rules — the longest UNUSED first.
 
@@ -282,10 +328,14 @@ def cleanup(a):
     only says when it was saved. A project used daily would carry the same
     date as a forgotten one.
     """
+    check_limits(a)
     inv = _inventory()
     if not inv:
         print("nothing under %s" % SLOT_PATH); return
     doomed = []
+
+    if getattr(a, "purge", False):
+        doomed = [(d, "purge") for d in inv]
 
     if a.ttl_days:
         for d in inv:
@@ -410,6 +460,10 @@ def parse_args(argv=None):
     s2 = sub.add_parser("restore");  s2.set_defaults(fn=restore)
     s3 = sub.add_parser("list");    s3.set_defaults(fn=list_saved)
     s4 = sub.add_parser("cleanup", help="delete by size, count or age")
+    s4.add_argument("--purge", action="store_true", dest="purge",
+                    help="delete every saved prefix. The explicit way to say "
+                         "'keep nothing' — a limit of 0 is refused instead of "
+                         "guessed at. Works with --dry-run.")
     s4.add_argument("--max-gb",     type=float, default=None, dest="max_gb")
     s4.add_argument("--max-count", type=int,   default=None, dest="max_count")
     s4.add_argument("--ttl-days",  type=int,   default=None, dest="ttl_days")

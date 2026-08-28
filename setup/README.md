@@ -1043,21 +1043,21 @@ prefix, so the disk does not work needlessly.
 
 | Rule | For what | Call |
 |---|---|---|
-| **size limit** | the actual constraint is the disk | `--max-gb 20` |
+| **size limit** | the actual constraint is the disk | `AUTO_MAX_GB`, default 20, set to 100 here |
 | **count** | when a fixed number is easier to keep track of | `--max-count 30` |
 | **age since last use** | leftovers after configuration changes | `--ttl-days 180` |
 
 All three delete **the longest unused first**, not the oldest files.
 
-    python3 tools/prewarm.py cleanup --max-gb 20 --ttl-days 180 --dry-run
-    python3 tools/prewarm.py cleanup --max-gb 20 --ttl-days 180
+    python3 tools/prewarm.py cleanup --max-gb 100 --ttl-days 180 --dry-run
+    python3 tools/prewarm.py cleanup --max-gb 100 --ttl-days 180
 
 `--dry-run` only shows what would go.
 
 #### Recommendation
 
 **Size limit as the main rule, a generous TTL as a supplement.** At 628 MB per
-prefix, 20 GB is about 32 projects — more than anyone realistically maintains in
+prefix, 100 GB is about 150 projects — more than anyone realistically maintains in
 parallel, and a fraction of the 386 GB of free disk.
 
 The TTL should be measured in **months**, not days: persistence is meant exactly
@@ -1087,7 +1087,7 @@ slot is already warm, that costs fractions of a second:
     saved automatically afterwards     0.4 s
     after a server restart            99.6 % cache
 
-Switches: `AUTO_SAVE=0` turns it off, `AUTO_MAX_GB` (default 20) keeps the disk
+Switches: `AUTO_SAVE=0` turns it off, `AUTO_MAX_GB` (default 20, 100 here) keeps the disk
 from filling up, and `AUTO_MIN_CHARS` (default 4000) keeps trivially small
 prefixes out of the store. It runs in the background after the answer — the
 caller never waits for it.

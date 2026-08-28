@@ -283,6 +283,53 @@ def wait_for_gtt_release(before_gib, timeout=120):
     return False
 
 
+def wait_for_gtt_to_settle(timeout=180, quiet_s=6.0, tol=0.3):
+    """Wait until GTT STOPS FALLING — not until it reaches a number.
+
+    wait_for_gtt_release() above answers "is it back to what it was before I
+    started something", and that needs a baseline the caller measured itself.
+    After stopping a server SOMEBODY ELSE started there is no such baseline,
+    and bench/sideserver.py passed 0.0 for it — which with the +1.0 GiB
+    tolerance means "wait until GTT is below 1 GiB".
+
+    On this machine the DESKTOP holds 1.5 GiB and never gives it back, so that
+    condition cannot be met while anyone is logged in. Measured 28.08.2026:
+    production stopped, GTT already down to 1.5, and the wait still ran its
+    full 180 s and refused the start. The guard was not wrong about the
+    memory; it was asking a question with no answer on this machine, and the
+    answer it defaulted to was "refuse".
+
+    The question that CAN be answered without a baseline is whether the
+    teardown has finished: GTT falls while amdgpu unmaps and then stops. So
+    this waits for the reading to hold still — within `tol` for `quiet_s` —
+    and returns the settled value, or None if it was still moving when the
+    timeout ran out.
+
+    It deliberately does not judge whether that value is SMALL ENOUGH.
+    check_room_for() does, against the profile and the machine, and refuses
+    with the arithmetic in hand. Two questions, two functions: one asks
+    whether the teardown is over, the other whether the next model fits.
+    """
+    end = time.time() + timeout
+    last, stable_since = None, None
+    while time.time() < end:
+        now = _gtt("used")
+        if now is None:
+            # No GTT to read — a machine without amdgpu, or the file gone.
+            # Same answer as wait_for_gtt_release gives there: do not block a
+            # measurement over a question this machine cannot be asked.
+            return 0.0
+        if last is not None and abs(now - last) <= tol:
+            stable_since = stable_since or time.time()
+            if time.time() - stable_since >= quiet_s:
+                return now
+        else:
+            stable_since = None
+        last = now
+        time.sleep(2)
+    return None
+
+
 def start_server(argv, logfile, binary, env=None):
     # LLAMA_SERVER_SLOTS_DEBUG stand hier fest auf "1". Damit gibt /slots den
     # LLAMA_SERVER_SLOTS_DEBUG used to be hard-wired to "1" here. That makes

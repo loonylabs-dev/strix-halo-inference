@@ -164,9 +164,18 @@ class TestTheGuardIsReachable(unittest.TestCase):
 
     def test_it_waits_for_gtt_before_starting_AND_after_stopping(self):
         """Twice, and both matter. Before: the unit it stopped may still hold
-        GTT. After: the next thing to run must not land on ours."""
+        GTT. After: the next thing to run must not land on ours.
+
+        The two waits ask DIFFERENT questions and are two functions since
+        28.08.2026 — before, there is no baseline to fall back to, so the
+        question is whether the teardown has finished; after, this process
+        measured the baseline itself. Counted together, because what has to
+        hold is that both moments are waited for, not which name does it.
+        """
         src = (common.REPO / "bench" / "sideserver.py").read_text(encoding="utf-8")
-        self.assertGreaterEqual(src.count("wait_for_gtt_release"), 2)
+        waits = (src.count("runlib.wait_for_gtt_release")
+                 + src.count("runlib.wait_for_gtt_to_settle"))
+        self.assertGreaterEqual(waits, 2)
 
     def test_the_teardown_is_in_a_finally(self):
         """Production has to come back even when the measurement crashes —
@@ -175,6 +184,65 @@ class TestTheGuardIsReachable(unittest.TestCase):
         self.assertIn("finally:", src)
         i = src.index("finally:")
         self.assertIn("systemctl", src[i:], "the unit is not restarted in the finally")
+
+
+class TestWaitingForGttAsksAnAnswerableQuestion(unittest.TestCase):
+    """A guard that cannot be satisfied refuses everything, silently.
+
+    sideserver waited for GTT to fall below 1 GiB before starting a side
+    server — wait_for_gtt_release(0.0), whose tolerance is +1.0. The desktop
+    on this machine holds 1.5 GiB and never gives it back, so the condition
+    was unmeetable while anyone was logged in. Measured 28.08.2026: three
+    starts, production already stopped, GTT already at 1.5, all three refused
+    after the full 180 s. Nothing was wrong with the memory and nothing was
+    wrong with the refusal path — the question had no answer on this machine
+    and the default answer was no.
+    """
+
+    def setUp(self):
+        self.saved = runlib._gtt
+        self.addCleanup(lambda: setattr(runlib, "_gtt", self.saved))
+        self.slept = []
+        p = mock.patch("time.sleep", self.slept.append)
+        p.start(); self.addCleanup(p.stop)
+
+    def readings(self, values):
+        """Hand out `values` one per call, then repeat the last forever."""
+        seq = list(values)
+        def _gtt(which):
+            if which != "used":
+                return 108.0
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+        runlib._gtt = _gtt
+
+    def test_a_desktop_that_keeps_its_gtt_no_longer_blocks_a_start(self):
+        """The regression itself: falls to the desktop floor and stays."""
+        self.readings([35.0, 12.0, 1.5])
+        self.assertEqual(runlib.wait_for_gtt_to_settle(timeout=60, quiet_s=0.0),
+                         1.5)
+
+    def test_it_waits_while_the_teardown_is_still_running(self):
+        """Still falling is exactly the case the wait exists for — the one
+        that took the machine down on 26.08."""
+        falling = [80.0 - i for i in range(400)]
+        self.readings(falling)
+        with mock.patch("time.time", side_effect=[0.0] + [float(i) for i in range(1, 400)]):
+            self.assertIsNone(runlib.wait_for_gtt_to_settle(timeout=60))
+
+    def test_an_unreadable_gtt_does_not_block_a_measurement(self):
+        """A machine without amdgpu cannot answer this, and refusing there
+        would make the guard a portability bug. Same answer
+        wait_for_gtt_release gives."""
+        runlib._gtt = lambda which: None
+        self.assertEqual(runlib.wait_for_gtt_to_settle(timeout=60), 0.0)
+
+    def test_the_settled_value_is_not_judged_here(self):
+        """It returns a large steady reading rather than refusing: whether
+        there is ROOM is check_room_for's question, and it has the profile and
+        the machine to answer it with. Two questions, two functions."""
+        self.readings([40.0, 40.0, 40.0])
+        self.assertEqual(runlib.wait_for_gtt_to_settle(timeout=60, quiet_s=0.0),
+                         40.0)
 
 
 class TestTheMeasuredOverride(unittest.TestCase):

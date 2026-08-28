@@ -280,11 +280,20 @@ def main():
             # model then loads on top of it.
             before = gtt_used()
             say("waiting for GTT to fall (now %.1f GiB) ..." % (before or -1))
-            if not runlib.wait_for_gtt_release(0.0, timeout=180):
-                say("GTT did not fall within 180 s — refusing to stack a "
-                    "second model on top of it")
+            # Wait for the teardown to be OVER, not for a number. This asked
+            # wait_for_gtt_release(0.0) until 28.08.2026, which means "under 1
+            # GiB" — and the desktop on this machine holds 1.5 and keeps it.
+            # So the wait could never succeed with anyone logged in: three
+            # runs that evening, production already stopped, GTT already at
+            # 1.5, all three refused after the full 180 s. Whether the
+            # remaining GTT leaves ROOM is check_room_for's question, three
+            # lines down, and it answers with the arithmetic in hand.
+            settled = runlib.wait_for_gtt_to_settle(timeout=180)
+            if settled is None:
+                say("GTT was still moving after 180 s — refusing to stack a "
+                    "second model on a teardown that has not finished")
                 return 2
-            say("GTT now %.1f GiB" % (gtt_used() or -1))
+            say("GTT settled at %.1f GiB" % settled)
 
         # Refuses rather than swaps. GTT is pinned; an over-large start does
         # not page, it hangs the machine.

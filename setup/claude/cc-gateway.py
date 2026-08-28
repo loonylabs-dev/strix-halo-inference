@@ -300,8 +300,13 @@ def refresh_saved(force=False):
 
 def disk_used_gb():
     try:
+        # `.bin.unusable` counts too. quarantine() renames rather than
+        # deletes, and a file this budget cannot see is a file AUTO_MAX_GB
+        # cannot govern — 1.1 GB of it per quarantined prefix, invisible.
+        # Found in review the same evening the quarantine shipped.
         return sum(os.path.getsize(os.path.join(SLOT_PATH, f))
-                   for f in os.listdir(SLOT_PATH) if f.endswith(".bin")) / 1e9
+                   for f in os.listdir(SLOT_PATH)
+                   if f.endswith(".bin") or f.endswith(".bin.unusable")) / 1e9
     except FileNotFoundError:
         return 0.0
 

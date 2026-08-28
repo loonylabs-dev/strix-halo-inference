@@ -52,11 +52,28 @@ the whole week — the gaps are long enough that writes fit inside them. At
 debounce 0 the cost appears (23 s of waiting in total, never more than 2 s at
 once), which is the price of writing the instant an answer is out.
 
-**2. `min_sightings=2` is a bad deal ON THIS WORKLOAD.** It saves one write in
-a week — 1 GB — and costs three to four warm starts, at every restart rate
-tested. The idea was sound and the data says it does not pay here, because
-this machine has almost no one-off prefixes. It stays in the module as a knob,
-with 1 as the default.
+**2. `min_sightings` — WITHDRAWN 28.08., the same evening, in review.** This
+report first said the parameter "saves one write in a week and costs three to
+four warm starts, at every restart rate tested". That is wrong, and wrong in a
+way worth keeping visible: the three-to-four figure is the TODAY-vs-policy gap
+(20/17, 16/13, 9/6), not the min=1-vs-min=2 gap. Read off the same sweep, the
+actual difference is:
+
+    all 86 restarts    min=1 23 writes / 17 warm    min=2 21 / 16    min=3 19 / 15
+    every 5th          min=1 23 / 13               min=2 21 / 12    min=3 19 / 11
+    every 20th         min=1 23 /  6               min=2 21 /  6    min=3 19 /  6
+
+Two writes and one warm start at the full restart rate, and at the most
+defensible rate — every twentieth, i.e. closest to a machine that is not being
+benchmarked — min=1, 2 and 3 are IDENTICAL on the warm column. And the model
+has an infinite disk: it knows nothing of AUTO_MAX_GB or of prefix-cleanup's
+LRU pruning, so the one cost `min_sightings` exists to avoid (a marginal write
+evicting an older prefix) is not modelled at all.
+
+The honest conclusion is therefore NOT "min=2 is a bad deal" but "this
+simulation cannot tell min=1 from min=2, and the untested direction favours
+2". The default stays 1 because it is what runs today, not because the
+simulation chose it.
 
 **3. `max_defers` is inert.** Every value from 1 to 5 produces identical rows:
 on this traffic a quiet stretch always arrives before the deferrals run out.

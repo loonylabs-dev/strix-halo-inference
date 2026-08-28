@@ -300,3 +300,56 @@ class TestRestore(WithStore):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestQuarantinedFilesAreAccountedFor(WithStore):
+    """cc-gateway sets a prefix aside by RENAMING `X.bin` to `X.bin.unusable`.
+    Everything that counts or deletes disk has to know that name, and on the
+    evening the quarantine shipped, nothing did: the gateway's AUTO_MAX_GB sum
+    skipped it, this tool scored it at zero bytes, and `cleanup` deleted the
+    sidecar while leaving 1.1 GB of `.bin.unusable` behind — with the recorded
+    reason gone.
+    """
+
+    def clean(self, **kw):
+        values = {"max_gb": None, "max_count": None, "ttl_days": None,
+                  "dry_run": False, "purge": False}
+        values.update(kw)
+        with mock.patch("builtins.print"):
+            VW.cleanup(types.SimpleNamespace(**values))
+
+    def quarantine(self, name):
+        p = os.path.join(self.dir, "%s.bin" % name)
+        os.rename(p, p + ".unusable")
+
+    def test_its_bytes_are_still_counted(self):
+        self.put("a", last=days_ago(1))
+        self.quarantine("a")
+        inv = {d["name"]: d for d in VW._inventory()}
+        self.assertGreater(inv["a"]["_bytes_disk"], 0,
+                           "a file that occupies the disk must be weighed")
+        self.assertFalse(inv["a"]["_present"], "but it cannot be restored")
+        self.assertTrue(inv["a"]["_unusable"])
+
+    def test_cleanup_removes_it_without_being_asked(self):
+        """No rule, no limit: it cannot become useful again, so keeping it
+        until an LRU limit happens to reach it would be keeping rubbish by
+        seniority."""
+        self.put("a", last=days_ago(1))
+        self.quarantine("a")
+        self.clean()                       # no --max-gb, no --ttl-days
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "a.bin.unusable")))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "a.json")))
+
+    def test_a_healthy_prefix_is_untouched_by_that(self):
+        self.put("a", last=days_ago(1))
+        self.put("b", last=days_ago(1))
+        self.quarantine("a")
+        self.clean()
+        self.assertTrue(self.present("b"))
+
+    def test_dry_run_still_only_shows(self):
+        self.put("a", last=days_ago(1))
+        self.quarantine("a")
+        self.clean(dry_run=True)
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "a.bin.unusable")))

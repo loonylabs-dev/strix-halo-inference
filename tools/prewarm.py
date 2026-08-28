@@ -255,7 +255,14 @@ def _inventory():
                   % (f, str(e)[:60]))
             continue
         b = os.path.join(SLOT_PATH, name + ".bin")
-        d["_bytes_disk"] = os.path.getsize(b) if os.path.exists(b) else 0
+        # A quarantined prefix keeps its bytes under another name. It is NOT
+        # `_present` — it cannot be restored — but it very much occupies the
+        # disk this tool prunes, and the cleanup that could not see it left a
+        # gigabyte behind while deleting the sidecar that said why.
+        q = b + ".unusable"
+        d["_unusable"] = os.path.exists(q)
+        d["_bytes_disk"] = (os.path.getsize(b) if os.path.exists(b)
+                            else os.path.getsize(q) if d["_unusable"] else 0)
         d["_present"] = os.path.exists(b)
         # Without a recorded use, fall back to the time it was saved.
         # Read the pre-rename German keys too — sidecar files written before
@@ -334,6 +341,16 @@ def cleanup(a):
         print("nothing under %s" % SLOT_PATH); return
     doomed = []
 
+    # QUARANTINED FIRST, and under no rule at all. cc-gateway sets a prefix
+    # aside when a restore of it demonstrably carried nothing (see
+    # saved-prefix-holds-a-foreign-state): the file cannot be restored, cannot
+    # become useful again, and is about a gigabyte. Keeping it until an LRU
+    # limit happens to reach it would be keeping rubbish by seniority. The
+    # sidecar goes with it — its reason has been read by then or never will be.
+    for d in inv:
+        if d.get("_unusable"):
+            doomed.append((d, "quarantined — the restore carried nothing"))
+
     if getattr(a, "purge", False):
         doomed = [(d, "purge") for d in inv]
 
@@ -371,7 +388,7 @@ def cleanup(a):
               % ("deleting " if not a.dry_run else "would go:", d["name"],
                  d["_bytes_disk"] / 1e6, reason))
         if not a.dry_run:
-            for e in (".bin", ".json"):
+            for e in (".bin", ".bin.unusable", ".json"):
                 try: os.remove(os.path.join(SLOT_PATH, d["name"] + e))
                 except FileNotFoundError: pass
     print("  %s %.1f GB, %d prefixes remain"

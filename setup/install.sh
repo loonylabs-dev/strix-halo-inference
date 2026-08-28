@@ -75,7 +75,13 @@ link_ "$SRC/claude/hybrid.json"       "$HOME/.claude/profiles/hybrid.json"
 link_ "$SRC/claude/PROFILE.md"        "$HOME/.claude/profiles/README.md"
 # dialects.py must sit NEXT TO both cc-gateway.py and prewarm.py: they import
 # it by directory, and it is the shared truth about how a request body is read.
+# modes.py is the second such module and was missed when it was added on
+# 28.08.2026 — the gateway kept starting, because Python 3.11+ puts the
+# RESOLVED script directory on sys.path[0] and that is the repo, so the import
+# found it there instead. It worked for a reason the code does not state, which
+# is not the same as working. tests/test_install.py now walks these links.
 link_ "$SRC/claude/dialects.py"       "$HOME/.claude/bin/dialects.py"
+link_ "$SRC/claude/modes.py"          "$HOME/.claude/bin/modes.py"
 link_ "$SRC/claude/cc-gateway.py"     "$HOME/.claude/bin/cc-gateway.py"
 link_ "$SRC/claude/cc-router.py"      "$HOME/.claude/bin/cc-router.py"
 # cc-cachefix.py and cc-cachefix2.py are NOT installed. Both were superseded by

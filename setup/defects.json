@@ -204,7 +204,7 @@
       "when_cmdline_matches": "(?i)flash-?next",
       "shows_as": "loud",
       "symptom": "GGML_ASSERT(obj_new) in ggml.c, inside common_params_fit_impl, before the server ever starts. The memory breakdown prints 'unaccounted -47656 MiB' first, which is the estimator failing to model the architecture.",
-      "measured": "Reported on PR #27742 (26.08., RTX 3090, UD-IQ1_S). Generic fit machinery, not a CUDA path — other hardware is no protection. Not reproduced here yet: nothing can load the model. CONFIRMED by two more reports on 26.08. (RTX 5090, RTX 3090), same GGML_ASSERT(obj_new), and -fit off fixes it for both. Cause identified in-thread by ServeurpersoCom: LLM_ARCH_QWEN4EXP is missing from the graph_max_nodes list in llama-context.cpp, so the fit probe overflows when it tries the MoE-to-system-memory path. Note the shape of it: a 96 GB card never crashes because the model FITS and the probe is never run — which is why our quant is exactly the case that would trigger it: 87.4 GiB measured against a 108 GiB cap leaves the fit probe a reason to try the offload path. FIXED UPSTREAM 27.08. at c52ed2a0b — @ServeurpersoCom's graph_max_nodes diagnosis; reverting that one line brings the assert back at -np 2. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "measured": "Reported on PR #27742 (26.08., RTX 3090, UD-IQ1_S). Generic fit machinery, not a CUDA path — other hardware is no protection. Not reproduced here yet: nothing can load the model. CONFIRMED by two more reports on 26.08. (RTX 5090, RTX 3090), same GGML_ASSERT(obj_new), and -fit off fixes it for both. Cause identified in-thread by ServeurpersoCom: LLM_ARCH_QWEN4EXP is missing from the graph_max_nodes list in llama-context.cpp, so the fit probe overflows when it tries the MoE-to-system-memory path. Note the shape of it: a 96 GB card never crashes because the model FITS and the probe is never run — which is why our quant is exactly the case that would trigger it: 87.4 GiB measured against a 108 GiB cap leaves the fit probe a reason to try the offload path. FIXED UPSTREAM 27.08. at c52ed2a0b — @ServeurpersoCom's graph_max_nodes diagnosis; reverting that one line brings the assert back at -np 2. MERGED 27.08.2026 as ONE SQUASH COMMIT, 6c84c7d5d — so c52ed2a0b is not a sha in master and cannot be looked for as one; the squash is what carries it. IN THE BINARY WE RUN since the pin moved on 28.08.: `git merge-base --is-ancestor 6c84c7d5d build-rocm-patched-b10665-3-gc93d460b6` passes, and the fix is readable in the line the diagnosis named — LLM_ARCH_QWEN4EXP now stands in the graph_max_nodes list at llama-context.cpp:2312. NOT VERIFIED BY A RUN HERE, which is the half that is left: `-fit on` has never been started on this machine with this model. The mitigation stays until it has, because a source reading says what the code does and not what this GPU does with it.",
       "mitigation": "-fit off. It defaults to ON (common/common.h, fit_params = true) and has nothing to do here anyway: every memory parameter in these profiles is set by hand.",
       "detect": {
         "kind": "cmdline",
@@ -216,9 +216,9 @@
       "suite": null,
       "upstream": [
         "https://github.com/ggml-org/llama.cpp/pull/27742",
-        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-c52ed2a0b"
+        "https://github.com/ggml-org/llama.cpp/commit/6c84c7d5d8833c6e0df69628f75a0f599797934e"
       ],
-      "status": "fixed upstream, not in our build",
+      "status": "fixed upstream, in the build we pin, unverified here",
       "first_seen": "2026-08-26",
       "last_checked": "2026-08-28"
     },
@@ -231,7 +231,7 @@
       "when_cmdline_matches": "(?i)flash-?next",
       "shows_as": "loud",
       "symptom": "GGML_ASSERT(inp->self_k_rot == nullptr && inp->self_v_rot == nullptr) at qwen4exp.cpp:544, for both q8_0 and q4_0.",
-      "measured": "Reported on PR #27742 (26.08.). Workaround offered there: LLAMA_ATTN_ROT_DISABLE=1, or f16. Root cause established in-thread 26.08.: a quantised KV cache is stored Hadamard-rotated to spread outliers before block quantisation, and qwen4exp's graph does not apply or undo that rotation. A fix exists as a separate commit (ServeurpersoCom, 7044fe16) and is NOT in the PR head. f16 remains the answer here either way. FIXED UPSTREAM 27.08. at 0ac4b1802 — q8_0 KV now matches f16: PPL 2.7673 against 2.7507 on UD-IQ1_S. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "measured": "Reported on PR #27742 (26.08.). Workaround offered there: LLAMA_ATTN_ROT_DISABLE=1, or f16. Root cause established in-thread 26.08.: a quantised KV cache is stored Hadamard-rotated to spread outliers before block quantisation, and qwen4exp's graph does not apply or undo that rotation. A fix exists as a separate commit (ServeurpersoCom, 7044fe16) and is NOT in the PR head. f16 remains the answer here either way. FIXED UPSTREAM 27.08. at 0ac4b1802 — q8_0 KV now matches f16: PPL 2.7673 against 2.7507 on UD-IQ1_S. MERGED 27.08.2026 as the squash 6c84c7d5d, so 0ac4b1802 is not a sha in master either, and the pinned build contains the squash (ancestry checked 28.08.). Nothing in the source settles THIS one the way graph_max_nodes settles the fit crash: the rotation inputs are wired generically in llama-graph.cpp and reading them proves nothing about qwen4exp's own graph. What would settle it is a run with -ctk q8_0 on this build. f16 stays whatever that run says — it was chosen here for output quality, not for this defect.",
       "mitigation": "f16 KV — which was already the choice here for a quality reason: the one q8_0-KV cell measured on 24.08. dropped a long-context task that f16 solved.",
       "detect": {
         "kind": "cmdline",
@@ -243,9 +243,9 @@
       "suite": null,
       "upstream": [
         "https://github.com/ggml-org/llama.cpp/pull/27742",
-        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-0ac4b1802"
+        "https://github.com/ggml-org/llama.cpp/commit/6c84c7d5d8833c6e0df69628f75a0f599797934e"
       ],
-      "status": "fixed upstream, not in our build",
+      "status": "fixed upstream, in the build we pin, unverified here",
       "first_seen": "2026-08-26",
       "last_checked": "2026-08-28"
     },
@@ -258,7 +258,7 @@
       "when_cmdline_matches": "(?i)flash-?next",
       "shows_as": "silent",
       "symptom": "Unknown in detail, and that is the point. A restored KV cache with an indexer that disagrees with it degrades the output rather than failing.",
-      "measured": "Not measured — flagged by two reviewers on PR #27742 (26.08.). ggerganov: 'missing state save/load for the indexer'. ngxson: 'otherwise a context save/load will corrupt it'.",
+      "measured": "Not measured — flagged by two reviewers on PR #27742 (26.08.). ggerganov: 'missing state save/load for the indexer'. ngxson: 'otherwise a context save/load will corrupt it'. 28.08., after the merge: THE GAP THEY NAMED IS CLOSED in what landed — llama_memory_hybrid_idx declares state_write/state_read (src/llama-memory-hybrid-idx.h:69-70), and #27755 now runs test-save-load-state across all architectures rather than one. What took its place is a different report on the merged PR (28.08., lviobio): the restore is ACCEPTED and then not used — the next request re-prefills the whole prompt. So the failure reported now is slow where the reviewers feared silent, and neither shape has been measured here. The entry stays open on the silent one: an unmeasured indexer is not made safe by a report about a different symptom.",
       "mitigation": "setup/env/flashnext.env carries no --slot-save-path, and AUTO_SAVE=0 belongs in the gateway config while it serves. setup/env/flashnext.env section 4b is the experiment, with idle-nospec as the floor.",
       "detect": {
         "kind": "cmdline",
@@ -267,9 +267,10 @@
       },
       "suite": "bench/suites/restore-safety.py",
       "upstream": [
-        "https://github.com/ggml-org/llama.cpp/pull/27742"
+        "https://github.com/ggml-org/llama.cpp/pull/27742",
+        "https://github.com/ggml-org/llama.cpp/commit/6c84c7d5d8833c6e0df69628f75a0f599797934e"
       ],
-      "status": "open",
+      "status": "open — the corruption the reviewers named is addressed in what merged, a reuse failure is reported in its place, neither measured here",
       "first_seen": "2026-08-26",
       "last_checked": "2026-08-28"
     },
@@ -302,7 +303,7 @@
       "when_cmdline_matches": "(?i)flash-?next",
       "shows_as": "loud",
       "symptom": "GGML_ASSERT(mctx_idx->get_n_kv() == inp->mctx->get_attn()->get_n_kv() && \"the indexer cache must track the attention cache cell for cell\") at qwen4exp.cpp:285, during prompt processing, the first time a request lands on a DIFFERENT slot than the previous one.",
-      "measured": "Reported 26.08. on PR #27742 (Windows, RTX 5090, UD-Q4_K_XL, this branch at 035e227). Not reproduced here. The detail that matters: it was hit WITHOUT passing --parallel, because llama-server defaults to n_slots = 4 — so anyone who simply does not set -np gets four slots and this defect. FIXED UPSTREAM 27.08. at cfbdc0a50 — and the cause was NOT the scheduler but the SERVER PROMPT CACHE: on the old build --cache-ram 0 completes where the default asserts on the third request. Announced by the PR author, NOT verified here: setup/env/flashnext.env pins 035e22731, which predates it (he names our commit in that comment). A rebuild on the PR head clears this; until then the mitigation stands.",
+      "measured": "Reported 26.08. on PR #27742 (Windows, RTX 5090, UD-Q4_K_XL, this branch at 035e227). Not reproduced here. The detail that matters: it was hit WITHOUT passing --parallel, because llama-server defaults to n_slots = 4 — so anyone who simply does not set -np gets four slots and this defect. FIXED UPSTREAM 27.08. at cfbdc0a50 — and the cause was NOT the scheduler but the SERVER PROMPT CACHE: on the old build --cache-ram 0 completes where the default asserts on the third request. MERGED 27.08.2026 as the squash 6c84c7d5d, and the pinned build contains it (ancestry checked 28.08.). The SOURCE DOES NOT CONFIRM IT and is not expected to: the assert still stands, at qwen4exp.cpp:309 in master — the announced cause was the server prompt cache, not the assert, so a grep for the assert would say 'still broken' about a fix that works. Only a run with -np 2 on this build can answer. -np 1 stays regardless, for the two reasons above it, which are properties of this GPU and untouched by anything upstream merged.",
       "mitigation": "-np 1, explicitly. This is the third independent reason for it on this stack, after the gfx1151 HIP race and the restore hang — and the first that is a property of the ARCHITECTURE rather than of the GPU, so it would apply on any hardware.",
       "detect": {
         "kind": "cmdline",
@@ -314,9 +315,9 @@
       "suite": null,
       "upstream": [
         "https://github.com/ggml-org/llama.cpp/pull/27742",
-        "https://github.com/ggml-org/llama.cpp/pull/27742#issuecomment-fix-cfbdc0a50"
+        "https://github.com/ggml-org/llama.cpp/commit/6c84c7d5d8833c6e0df69628f75a0f599797934e"
       ],
-      "status": "fixed upstream, not in our build",
+      "status": "fixed upstream, in the build we pin, unverified here",
       "first_seen": "2026-08-26",
       "last_checked": "2026-08-28"
     },

@@ -46,11 +46,19 @@ And the same with the restarts thinned to a fifth and a twentieth — because
 
 Three findings, and the second one refutes what I proposed.
 
-**1. Exclusivity is free here.** Every variant with the gate held reaches zero
-collisions, and at a debounce of 5 s or more the added waiting is 0.0 s across
-the whole week — the gaps are long enough that writes fit inside them. At
-debounce 0 the cost appears (23 s of waiting in total, never more than 2 s at
-once), which is the price of writing the instant an answer is out.
+**1. "Exclusivity is free" — NOT SUPPORTED by this model, corrected in review.**
+The zero in the collision column is DEFINITIONAL: `simulate_policy` contains no
+statement that can increment it. And the waiting column is clairvoyant — the
+model decides whether to start a write from `gap = t0 - prev_end`, the arrival
+time of a request that has not happened yet, where a real gateway must commit
+at `prev_end + debounce` and cannot know. Under a causal model the exposed
+window is the gaps in [debounce, debounce + write cost): 3 of 226 at a 2 s
+write, and 48 of 86 eligible gaps if the write costs ~100 s because the prefix
+was no longer resident.
+
+What the trace DOES support is narrower and still useful: gaps long enough to
+hold a 2 s write are plentiful, and writing the instant an answer is out (a
+debounce of 0) is the one setting that visibly collides with the next turn.
 
 **2. `min_sightings` — WITHDRAWN 28.08., the same evening, in review.** This
 report first said the parameter "saves one write in a week and costs three to
@@ -88,8 +96,8 @@ first answer is out, the policy waits for a gap. Whether that gap costs
 anything in real life depends on how often the server restarts — and this
 trace's restart count is dominated by measurement runs, so the column is
 inflated in the direction that flatters writing early. The ranking survives
-thinning (the gap stays at 3–4 warm starts), but the magnitude should not be
-quoted as a user-visible number.
+thinning, but neither the magnitude nor the ranking should be quoted as a
+user-visible number — see finding 2 for what happened when this report tried.
 
 Against it stands what the same column does not show: today's 5 collisions
 cost 4 evictions — each a turn that went from 0.7 s to 13.6 s, measured — and
@@ -99,9 +107,20 @@ prefill on every request until somebody notices, and until 28.08. nobody could.
 
 ## The numbers that go into the build
 
-    min_sightings   1     (the data refuted 2; the knob stays)
-    debounce_s      10    (5 already costs nothing; 10 for margin)
-    max_defers      3     (untested by this workload — insurance)
+    min_sightings   1     (unchanged from today; the model cannot tell 1 from
+                           2, so nothing here justifies moving it)
+    debounce_s      ?     (a debounce is what breaks the one property that
+                           makes a write cheap — that the prefix is still in
+                           the slot. See the review's first finding. This
+                           number is NOT settled and must not be shipped.)
+    max_defers      ?     (inert on this workload, and it latches: once
+                           deferred enough, a prefix is due at quiet == 0
+                           forever, which re-arms the very defect this is
+                           meant to remove.)
+
+None of these is ready to become a default. What this exercise produced is a
+better question, not an answer: see the review findings recorded with the
+commit that follows this report.
 
 ## Files
 

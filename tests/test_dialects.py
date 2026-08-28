@@ -88,6 +88,52 @@ class TestPrefixId(unittest.TestCase):
                                               D.OPENAI))
         self.assertNotEqual(base, D.prefix_id(oai_body(tools=[]), D.OPENAI))
 
+    def test_the_thinking_mode_changes_the_id(self):
+        """MEASURED 28.08.2026 against the running qwen38 server: the three
+        modes the gateway offers under one loaded model render three different
+        prompts, and they diverge at CHARACTER 19 — the template puts
+        `Reasoning effort is set to low.` at the very front, before the tools.
+
+            off (server default)  sha fe8d7ee8   1108 chars
+            think  (low)          sha 677f3ace   1235 chars
+            deep   (medium)       sha aa6c7b7d   1097 chars
+
+        The id ignored chat_template_kwargs, so all three shared one key. What
+        that costs is not theoretical: prewarm renders and saves ONE of them,
+        `ANTHROPIC_MODEL=qwen38-think` asks for another, the slot is restored
+        from a state that diverges at token ~5, almost everything is
+        re-prefilled — and the gateway logs RESTORED and counts it warm. The
+        warm percentages this repo reasons from were measuring the wrong
+        thing, and setup/env/qwen38.env's "a mode switch keeps the prompt
+        cache 100 % warm" can only have been measured between the two modes
+        that happen to render almost identically.
+        """
+        base = oai_body()
+        off = dict(base, chat_template_kwargs={"enable_thinking": False})
+        low = dict(base, chat_template_kwargs={"enable_thinking": True,
+                                               "reasoning_effort": "low"})
+        med = dict(base, chat_template_kwargs={"enable_thinking": True,
+                                               "reasoning_effort": "medium"})
+        ids = {D.prefix_id(b, D.OPENAI)[0] for b in (base, off, low, med)}
+        self.assertEqual(len(ids), 4,
+                         "modes that render differently must not share a slot")
+
+    def test_the_kwargs_are_read_in_a_stable_order(self):
+        """Two dicts with the same pairs in a different order are the same
+        request. A key that depends on dict order would run cold at random."""
+        a = dict(oai_body(), chat_template_kwargs={"enable_thinking": True,
+                                                   "reasoning_effort": "low"})
+        b = dict(oai_body(), chat_template_kwargs={"reasoning_effort": "low",
+                                                   "enable_thinking": True})
+        self.assertEqual(D.prefix_id(a, D.OPENAI), D.prefix_id(b, D.OPENAI))
+
+    def test_a_body_without_kwargs_is_not_the_same_as_an_empty_map(self):
+        """Absent means "the server's command line decides"; {} means the
+        same thing. They must not be two keys for one rendering."""
+        a = oai_body()
+        b = dict(oai_body(), chat_template_kwargs={})
+        self.assertEqual(D.prefix_id(a, D.OPENAI), D.prefix_id(b, D.OPENAI))
+
     def test_the_two_dialects_do_not_share_an_id(self):
         """Same logical prompt, different rendering — they must not land in
         the same slot, or they would evict each other every turn."""
@@ -174,6 +220,23 @@ class TestMidSystemToUser(unittest.TestCase):
                 before = D.prefix_id(b, dialect)
                 out, _ = D.mid_system_to_user(b, dialect)
                 self.assertEqual(D.prefix_id(out, dialect), before)
+
+
+class TestTemplatePayloadCarriesTheMode(unittest.TestCase):
+    """prewarm renders through this to decide what to save. If it renders
+    without the mode, it saves the server-default prompt whatever mode the
+    session that triggered the save was in — and the file can then never match
+    the request that caused it."""
+
+    def test_the_kwargs_reach_the_render(self):
+        body = dict(oai_body(), chat_template_kwargs={"reasoning_effort": "low"})
+        pay = D.template_payload(body, D.OPENAI)
+        self.assertEqual(pay.get("chat_template_kwargs"),
+                         {"reasoning_effort": "low"})
+
+    def test_a_body_without_them_stays_as_it_was(self):
+        self.assertNotIn("chat_template_kwargs",
+                         D.template_payload(oai_body(), D.OPENAI))
 
 
 class TestTemplatePayload(unittest.TestCase):

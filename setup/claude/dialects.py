@@ -111,12 +111,41 @@ def tools_signature(body):
     return json.dumps(body.get("tools") or [], sort_keys=True)
 
 
-def prefix_text(body, dialect):
-    """The stable start of a request: system head plus tools.
+def template_kwargs_signature(body):
+    """The chat template kwargs, canonically — or "" when there are none.
 
-    Exactly what decides whether llama.cpp can reuse a slot.
+    Sorted, because two dicts with the same pairs in a different order are the
+    same request and must not be two keys. Absent and `{}` both render as ""
+    for the same reason: both mean "whatever the server was started with".
     """
-    return system_head(body, dialect) + "\x00" + tools_signature(body)
+    kw = body.get("chat_template_kwargs")
+    if not isinstance(kw, dict) or not kw:
+        return ""
+    return json.dumps(kw, sort_keys=True, separators=(",", ":"))
+
+
+def prefix_text(body, dialect):
+    """The stable start of a request: system head, tools, and the mode.
+
+    Exactly what decides whether llama.cpp can reuse a slot — and until
+    28.08.2026 this function got that wrong by leaving out the third term.
+
+    chat_template_kwargs are not metadata. The served Qwen template puts
+    `Reasoning effort is set to …` at the FRONT of the first system block,
+    before the tools, so the gateway's three model names for one loaded model
+    render three different prompts diverging at character 19. Measured against
+    the running server:
+
+        off (server default)  sha fe8d7ee8   1108 chars
+        think  (low)          sha 677f3ace   1235 chars
+        deep   (medium)       sha aa6c7b7d   1097 chars
+
+    They shared one id. So prewarm saved one rendering, the daily driver asked
+    for another, the restore diverged at token ~5, and the gateway logged
+    RESTORED and counted it warm — a prefill wearing a cache hit's clothes.
+    """
+    return (system_head(body, dialect) + "\x00" + tools_signature(body)
+            + "\x00" + template_kwargs_signature(body))
 
 
 def prefix_id(body, dialect, head_bytes=HEAD_BYTES):
@@ -235,7 +264,14 @@ def model_listing_arrays(listing):
 def template_payload(body, dialect, probe="X"):
     """The body for llama-server's /apply-template: system head, tools, and
     one throwaway user turn whose marker says where the prefix ends."""
-    return {"messages": [{"role": "system",
-                          "content": system_head(body, dialect)},
-                         {"role": "user", "content": probe}],
-            "tools": to_openai_tools(body, dialect)}
+    payload = {"messages": [{"role": "system",
+                             "content": system_head(body, dialect)},
+                            {"role": "user", "content": probe}],
+               "tools": to_openai_tools(body, dialect)}
+    # The mode travels with it, or prewarm renders the server default whatever
+    # mode the request that triggered the save was in — and saves a state that
+    # the request can never match. See prefix_text.
+    kw = body.get("chat_template_kwargs")
+    if isinstance(kw, dict) and kw:
+        payload["chat_template_kwargs"] = kw
+    return payload

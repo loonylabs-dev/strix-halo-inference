@@ -51,32 +51,71 @@ something close enough. Cold is a statement about what the GATEWAY knows, and
 it is allowed to be pessimistic; warm is a promise, and it is the one that must
 not lie.
 
-## Run 1 — the same measurement on a store with history
+## Run 1 — and the defect it walked into
 
 The first run used the suite's hard-wired project name, which earlier work
-that day had also used. Two of its seven steps were answered from `.bin` files
-on disk, and one of those two is the finding:
+that day had also used, so two of its seven steps were answered from `.bin`
+files on disk. One of them is the finding:
 
     RESTORED prefix 8774f83a80be from 8774f83a80be.bin -> slot 0, 14957 tokens, 285 ms
     START ... prefix=8774f83a80be warm
     DONE  ... took=75.3s
 
-A disk restore, reported warm, followed by what looks like a full prefill. The
-other restore in the same run behaved: `b4124abc721a`, 14838 tokens, 1.3 s.
-Both `.bin` files were written at 14:56 and 14:58 that day — before the id
-definition and the injection order changed — so a name that still matches a
-state that no longer does is the obvious suspect, and it is a suspect rather
-than a finding: one observation, not isolated, and the honest reading is that
-the file, the id and the request need to be compared before anything is
-claimed. To settle it: clear the store (`prewarm.py cleanup --purge`) or move
-it aside, then repeat run 1's project name.
+llama-server's own log says what happened: `selected slot by LRU` and
+`prompt eval time = 73523 ms / 14960 tokens`. The restored state was not used
+at all. The gateway said warm.
 
-The suite hard-wired that project name, which is why the two runs could differ
-at all. It takes `--project` now, and the flag's help says what it is for: a
-value an earlier run used can be answered from disk instead of prefilled, and a
-measurement that inherits what is lying around is not repeatable.
+**Two wrong explanations, both refuted by measurement, both worth keeping**
+because each looked sufficient:
+
+1. *The file is stale — saved before the id definition changed today.* No. The
+   ids recompute exactly: `b4124abc721a` is this body with no kwargs,
+   `8774f83a80be` is this body in `low`. And the sidecar's `render_id`
+   (`8b698a91deb2`, 70892 chars) is byte-for-byte what `low` renders now.
+2. *The gateway sends something else than prewarm saved — MID_SYSTEM_TO_USER
+   rewrites the body after the id is taken.* No. Rendered both ways through
+   `/apply-template`: same 70892 chars, same hash.
+
+**What it actually is**, measured in a controlled run — fill the slot with a
+foreign prefix, restore the file the way cc-gateway does, then send the body
+the file is named for:
+
+    8774f83a80be (saved for qwen38-low)   restored 14957 tokens in 174 ms
+      -> the request it was saved for      87.0 s   full prefill
+    b4124abc721a (saved for the bare alias) restored 14838 tokens in 179 ms
+      -> the request it was saved for       1.9 s   the restore carried it
+
+The mechanism works. One file does not. And the file holds none of the four
+renderings its name could stand for — restored again before each probe:
+
+    qwen38-low     74.9 s        qwen38        73.7 s
+    qwen38-high    74.5 s        qwen38-medium 75.4 s
+
+So `8774f83a80be.bin` contains 14957 tokens of SOMETHING ELSE, under a correct
+name, with a sidecar that describes the state that was meant to be saved.
+
+The likely writer is the defect already in the register: `auto_save` runs
+asynchronously and takes ~102 s on this machine, and there is ONE slot. A
+request arriving during the save puts its own prefix into the slot being
+written out. The file then carries that prefix under our name — the mirror
+image of `autosave-evicts-the-working-slot`, which is the same collision seen
+from the serving side.
+
+**Nothing notices, and that is the part worth fixing.** The sidecar already
+carries `render_id`, written by prewarm at save time — and no line of code
+reads it back. The gateway matches on the name alone, reports warm, and pays a
+full prefill. Worse, the truth arrives in every upstream response and is
+thrown away: llama-server returns `timings.cache_n` and `prompt_n`, which say
+exactly how many tokens were reused and how many were computed. A warm/cold
+label could be a measurement instead of a claim, at no cost.
+
+Registered as `saved-prefix-holds-a-foreign-state`.
 
 ## Files
 
     run.log / after.json    run 1, hard-wired project, two disk restores
     clean.log / clean.json  run 2, fresh project, no disk involved
+    restore-probe.py        fill the slot, restore, ask — does the file carry?
+    whats-in-it.py          restore, then ask each candidate: what IS in it?
+    restore-probe.log       ] not in git (*.log), the numbers are quoted above
+    whats-in-it.log         ]

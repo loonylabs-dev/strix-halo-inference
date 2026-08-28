@@ -110,6 +110,46 @@ practice. Truncating the slot back to the prefix costs ~11 s of recomputation
 (~1949 tokens), for reasons this measurement does not explain — the first
 12940 tokens are reused and the tail is not. Worth a look, not tonight.
 
+## The prefix computed FIRST — the whole problem dissolves
+
+The idea is the operator's, and it turns the question around. Today the save
+happens after the answer, when the slot holds prefix+question+answer, and
+getting back to a prefix-only state costs a recomputation and cuts the session
+out of the slot. But the prefix-only state DOES exist at one moment — right
+before the first real message, if the prefix is prefilled on its own.
+
+Measured end to end, one prefix, nothing else on the machine:
+
+    prefix                                14866 tokens
+    A  prefill the prefix ALONE   12.0 s  slot now holds 14866 = the prefix
+    B  save it                     314 ms n_saved 14866, matches exactly
+    C  the first real request       1.6 s reused 14866  computed 99
+    D  displace the slot           22.8 s reused 0      computed 4730
+    E  restore the file                   14866 tokens back
+    F  a question it has NEVER seen  1.7 s reused 14866  computed 106
+
+F is the one that matters: a file written this way serves a LATER session, not
+just the request that created it.
+
+WHAT IT COSTS. Step A is not extra work — it is the prefill the first request
+had to do anyway, moved in front of it. (12.0 s rather than ~75 s here only
+because the RAM cache still held most of this prefix from the evening's other
+runs; on a cold machine A is the full prefill and C is still ~1.6 s.) The
+genuine addition is B: 314 ms, once per prefix, ever.
+
+WHAT IT REMOVES:
+
+    the ~11 s truncation before every save          gone: nothing to truncate
+    the session context cut out of the slot         gone: nothing is cut
+    the background task racing the next turn        gone: it is not a task
+    the deferral, the strikes, the owed retries     unnecessary
+    the debounce and every parameter around it      unnecessary
+
+The save becomes a half-step inside the first cold request for a prefix, while
+that request holds the admission gate — so nothing else can take the slot, by
+construction rather than by policy. That is the freeze the operator asked for,
+and it is free because the state it freezes is the one we wanted anyway.
+
 ## Files
 
     postanswer.py / postanswer.log   the seven steps

@@ -378,7 +378,17 @@ def provenance(binary):
     # reports were written with the raw path before tests/test_localenv.py
     # said so — the same rule bench/sweep.py learned earlier the same day.
     meta = {"binary": systemdfile.unexpand(binary),
-            "build_from_binary": reported, "build_id": reported}
+            "build_from_binary": reported, "build_id": reported,
+            # The ENVIRONMENT is part of the configuration. llama.cpp reads
+            # GGML_SCHED_UMA_RING, LLAMA_SET_ROWS and friends at runtime, so
+            # two runs of the same binary with the same argv can be two
+            # different experiments. Added to one suite on 28.08. while
+            # exactly that variable WAS the independent variable — and not
+            # carried across, so the restore-safety run that carries the
+            # single-cause finding recorded nothing. It lives in the shared
+            # reader now, where a suite cannot forget it.
+            "env": {k: v for k, v in sorted(os.environ.items())
+                    if k.startswith(("GGML_", "LLAMA_")) and k != "LLAMA_SRC"}}
     stamp = os.path.join(os.path.dirname(os.path.dirname(binary)),
                          ".build-stamp")
     if not os.path.exists(stamp):

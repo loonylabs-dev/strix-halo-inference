@@ -18,7 +18,9 @@
   },
   "stamp_matches_binary": true,
   "restore_timeout": 900.0,
-  "label": "rocm-unpatched"
+  "label": "rocm-unpatched",
+  "env": null,
+  "env_not_captured": "This run WAS started with GGML_SCHED_UMA_RING=1 — that is the whole point of it — but the suite did not record the environment yet, so this field is the session ASSERTING it and not the run CAPTURING it. Treat it as weaker than every other field here. bench/run.py:provenance() records it from 28.08. onwards; a re-run would settle it."
  },
  "save-spec": {
   "phase": "done",

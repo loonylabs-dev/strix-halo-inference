@@ -257,14 +257,8 @@ def main():
     meta["shape"] = dict(ARGS)
     meta["argv"] = server_argv()
     meta["starts"] = a.starts
-    # The ENVIRONMENT is part of the configuration and was missing from the
-    # record. llama.cpp reads GGML_SCHED_UMA_RING, LLAMA_SET_ROWS and friends
-    # at runtime, so two runs of the same binary with the same argv can be two
-    # different experiments and the report could not tell them apart. Found
-    # 28.08. while using GGML_SCHED_UMA_RING to switch the candidate fix off
-    # on a binary that contains it.
-    meta["env"] = {k: v for k, v in sorted(os.environ.items())
-                   if k.startswith(("GGML_", "LLAMA_")) and k != "LLAMA_SRC"}
+    # meta["env"] comes from runlib.provenance() — see there for why it is in
+    # the shared reader rather than here.
 
     stamp = time.strftime("%Y-%m-%d_%H%M")
     # The BUILD DIRECTORY names the report, not the build id. `git describe`

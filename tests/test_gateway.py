@@ -1333,13 +1333,22 @@ class TestSaveThreshold(GatewayOnTheWire):
 
     async def _watch_saving(self, payload, path="/v1/messages"):
         GW.AUTO_SAVE = True
+        # Through the REAL deferral path, with its wait set to zero: since
+        # 29.08. a save is scheduled and then only happens if the machine is
+        # free and the slot still holds this prefix. Stubbing that away would
+        # leave these tests asserting a decision the gateway no longer makes.
+        self.delay, GW.SAVE_DELAY_S = GW.SAVE_DELAY_S, 0.0
+        self.addCleanup(lambda: setattr(GW, "SAVE_DELAY_S", self.delay))
         saved_ids = []
         async def fake(ident, body, dialect=GW.DIA.ANTHROPIC):
             saved_ids.append((ident, dialect))
         GW.auto_save = fake
         r = await self.fetch(path, token=None, payload=payload)
         self.assertEqual(r.status, 200)
-        await asyncio.sleep(0.05)          # the save runs as a task
+        for _ in range(50):                # the save runs as a task
+            if saved_ids:
+                break
+            await asyncio.sleep(0.02)
         return saved_ids
 
     async def test_minimal_body_is_not_saved(self):
@@ -1678,3 +1687,58 @@ class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
         GW.LLAMA = "http://127.0.0.1:1"          # nothing listens there
         with mock.patch.object(GW, "log"):
             self.assertIsNone(GW.render_id_of({"messages": []}, GW.DIA.ANTHROPIC))
+
+
+class TestASaveWaitsForTheMachine(GatewayOnTheWire):
+    """The smallest thing that addresses the one-slot race, and deliberately
+    not more: no lock, nobody blocked, no forced path. Two conditions, both
+    checkable in a line — nothing in flight, and the slot still holding this
+    prefix, which is what keeps the write at ~342 ms instead of a 100 s
+    re-prefill."""
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in
+                      ("SAVE_DELAY_S", "SAVE_OWED", "SERVED_TRAIL", "AUTO_SAVE",
+                       "auto_save")}
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+        GW.SAVE_DELAY_S = 0.0
+        GW.SAVE_OWED = {}
+        GW.AUTO_SAVE = True
+        self.calls = []
+        async def fake(ident, body, dialect=GW.DIA.ANTHROPIC):
+            self.calls.append(ident)
+        GW.auto_save = fake
+
+    async def test_it_saves_when_the_slot_still_holds_this_prefix(self):
+        GW.SERVED_TRAIL = [(1, "abc")]
+        await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
+        self.assertEqual(self.calls, ["abc"])
+        self.assertNotIn("abc", GW.SAVE_OWED)
+
+    async def test_it_stands_back_when_the_slot_moved_on(self):
+        """Saving would mean prefilling the prefix again — the 101.9 s and
+        153.5 s measured on 28.08. — and evicting whatever is there now."""
+        GW.SERVED_TRAIL = [(1, "abc"), (2, "somebody-else")]
+        await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(GW.SAVE_OWED.get("abc"), 1, "and it stays owed")
+
+    async def test_it_stands_back_while_a_request_is_in_flight(self):
+        GW.SERVED_TRAIL = [(1, "abc")]
+        await GW.GATE.enter(0)
+        try:
+            await GW.auto_save_when_free("abc", {}, GW.DIA.ANTHROPIC)
+        finally:
+            GW.GATE.leave()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(GW.SAVE_OWED.get("abc"), 1)
+
+    async def test_the_wait_is_short_by_design(self):
+        """Not a debounce. A quiet window ten seconds out no longer has the
+        prefix in the slot, which turns a 342 ms write into a 100 s
+        re-prefill — the failure this whole mechanism exists to avoid."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('SAVE_DELAY_S = float(env("SAVE_DELAY_S", default="2"))', src)

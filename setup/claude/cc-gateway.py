@@ -224,6 +224,20 @@ SERVED_TRAIL = []
 # race says so instead of looping at 1.1 GB a turn.
 SAVE_OWED = {}
 SAVE_STRIKES_MAX = 3
+# How long a save waits after the answer before it even looks at the machine.
+#
+# NOT a debounce that waits for quiet — that idea was tried and dropped: a
+# quiet window ten seconds out no longer has the prefix in the slot, and then
+# saving means PREFILLING it again, which is the 101.9 s and 153.5 s this
+# stack measured on 28.08. and the very thing being avoided.
+#
+# This is the opposite: short enough that the prefix is certainly still
+# resident, long enough to let the next turn go first. The median gap between
+# an answer and the next request is 1.0 s for this consumer's desktop and
+# 13.0 s for the phone (bench/reports/2026-08-28_save-policy), so two seconds
+# covers the burst that a tool loop produces without waiting for a pause that
+# may never come.
+SAVE_DELAY_S = float(env("SAVE_DELAY_S", default="2"))
 
 # Save automatically once a prefix has warmed up for the first time. 0 turns
 # it off. The upper limit keeps the disk from filling up; cleanup goes by
@@ -330,6 +344,49 @@ def disk_used_gb():
 # log line instead of silently.
 SAVE_QUEUE_MAX = int(env("SAVE_QUEUE_MAX", "SICHERN_WARTEN_MAX", 4))
 _save_pending = set()
+
+async def auto_save_when_free(id_, body, dialect=DIA.ANTHROPIC):
+    """Wait a moment, then save only if the machine is actually free.
+
+    THE SMALLEST THING THAT ADDRESSES THE RACE, and deliberately not more. It
+    holds no lock, blocks nobody and has no forced path — the gate-holding,
+    debounced, deferral-counting design was dropped because the simulation
+    behind its numbers could not support them
+    (bench/reports/2026-08-28_save-policy).
+
+    Two conditions, and each is checkable in one line:
+
+      1. NOTHING IS IN FLIGHT. Saving means putting the prefix into the one
+         slot; doing that beside a request is the collision itself.
+      2. THE LAST REQUEST SERVED WAS THIS PREFIX. Then the slot still holds
+         it, and the save is a write of about 342 ms (measured 29.08.) rather
+         than a re-prefill of 100 s. This is what makes the exposure short
+         enough to stop worrying about: the window shrinks from the length of
+         a full prewarm run to the length of the write.
+
+    Neither condition can be met by waiting, so failing them counts as a
+    deferral and the prefix stays owed — the next answer for it tries again,
+    up to SAVE_STRIKES_MAX.
+    """
+    try:
+        await asyncio.sleep(SAVE_DELAY_S)
+        busy = GATE.free < MAX_INFLIGHT
+        mine = bool(SERVED_TRAIL) and SERVED_TRAIL[-1][1] == id_
+        if busy or not mine:
+            strikes = SAVE_OWED.get(id_, 0) + 1
+            SAVE_OWED[id_] = strikes
+            log("NOTE        %s not saved yet: %s (strike %d of %d) — it stays "
+                "owed and the next answer for it tries again"
+                % (id_, "requests in flight" if busy
+                   else "the slot has moved on to another prefix",
+                   strikes, SAVE_STRIKES_MAX))
+            return
+        await auto_save(id_, body, dialect)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log("NOTE        deferred save of %s: %r" % (id_, e))
+
 
 async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
     """Save the PREFIX of a request once it has warmed up.
@@ -1271,7 +1328,8 @@ async def handler(req):
                 try:
                     # An independent task: it must outlive this handler, which
                     # may be in the middle of being cancelled right now.
-                    asyncio.create_task(auto_save(ident, json.loads(out), dialect))
+                    asyncio.create_task(
+                        auto_save_when_free(ident, json.loads(out), dialect))
                 except Exception as e:
                     log("NOTE        save not scheduled: %r" % (e,))
             # WHAT THE SERVER ACTUALLY DID, before anything is claimed about

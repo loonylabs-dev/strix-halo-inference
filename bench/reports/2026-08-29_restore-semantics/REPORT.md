@@ -75,6 +75,41 @@ cover the prompt (the 34-token file found on 28.08.). prewarm can therefore
 refuse to publish such a file at the moment it writes it, which is the local,
 cheap guard the review asked for and which no policy is needed for.
 
+## The follow-up turn, and what a save really costs
+
+Same night, after the gateway learned to defer a save (nothing in flight, and
+the slot still holding this prefix):
+
+    turn 1  cold, a fresh prefix          13.0 s   reused 12919  computed 2066
+            NOTE  not saved yet: requests in flight (strike 1 of 3)
+    turn 2  one second later              12.4 s   reused 12937  computed 2048
+    turn 3  eight seconds later            7.7 s   reused 14886  computed 99
+            SAVED  automatically, 87.3 s
+
+The follow-up turn is no longer evicted — that is the 0.7 s -> 13.6 s defect
+not happening, and it is why the deferral exists.
+
+THE 87 SECONDS ARE NOT WHAT THEY LOOK LIKE, and the first explanation written
+here was wrong. It said prewarm always erases the slot after a turn (because
+it then holds prefix+Q+A, i.e. more than the prefix) and pays a full prefill.
+Measured directly:
+
+    slot holds prefix+Q+A                14995 tokens
+    /completion with the prefix, NO erase 11.0 s   cache_n 12940  prompt_n 1949
+    slot now holds                       14889 tokens = the prefix exactly
+
+So llama.cpp truncates the slot back to the prefix on its own, prewarm's erase
+branch does not fire in this case, and the preparation costs 11 s rather than
+75. The 87 s save had a different cause: it started between turn 2 and turn 3
+and turn 3 arrived while it ran. Its file was still correct — the request was
+for the SAME prefix, which both the gateway's window check and prewarm's
+token-count check treat as harmless, and both were right to.
+
+What remains true after that correction: a save is not a 342 ms write in
+practice. Truncating the slot back to the prefix costs ~11 s of recomputation
+(~1949 tokens), for reasons this measurement does not explain — the first
+12940 tokens are reused and the tail is not. Worth a look, not tonight.
+
 ## Files
 
     postanswer.py / postanswer.log   the seven steps

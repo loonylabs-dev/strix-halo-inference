@@ -354,6 +354,26 @@
       "status": "open upstream, mitigated by a cherry-pick in our build",
       "first_seen": "2026-08-28",
       "last_checked": "2026-08-28"
+    },
+    {
+      "id": "autosave-evicts-the-working-slot",
+      "title": "The automatic prefix save throws the current prefix out of the slot",
+      "applies_to": {
+        "component": "cc-gateway"
+      },
+      "shows_as": "slow",
+      "symptom": "A request the gateway reports as `warm` takes cold time. Nothing errors and nothing in the log disagrees with itself: the gateway's warm/cold verdict means 'I have seen this prefix', not 'llama.cpp still holds it', and only the second question is what the clock measures. Seen as a 19x slowdown on a prefix that was warm seconds earlier.",
+      "measured": "28.08.2026, qwen38, a 24-tool synthetic prefix, AUTO_SAVE off so the saves were the only ones. A warm: 0.7 s / 4 tokens evaluated. Save of a DIFFERENT prefix B: 12.7 s. A again: 13.6 s / 1950 tokens -- 19x, and 1950 tokens the server already had. Save of the SAME prefix A: 12.8 s. A again: 1.5 s, unaffected. CAUSE: saving a prefix means putting it INTO the slot, and with -np 1 there is one slot. The save straight after a cold request is harmless because the slot already holds that prefix -- which is why the first attempt to measure this concluded the save was innocent: it tested only the same-prefix case. What bites is that auto_save is asynchronous (asyncio.create_task in cc-gateway.py) and slow: 101.9 s measured for one automatic save on this machine. So the user moves on to prefix B while the save of A is still running, the save then puts A back into the slot, and B -- correctly reported warm -- is prefilled from scratch.",
+      "mitigation": "None in place. AUTO_SAVE=0 in ~/.config/cc-gateway.env removes it and gives up disk restore with it, which on this machine is the difference between a 0.7 s and an 85 s cold start -- so it is a trade, not a fix. A real fix would have the save not disturb the serving slot: run it while the slot is idle, or put the evicted prefix back after saving, or give the save its own slot (-np 2, which this hardware has its own defect against -- see gfx1151-two-slots).",
+      "detect": {
+        "kind": "manual",
+        "how": "bench/suites/save-eviction.py. It measures both cases -- saving a different prefix and saving the same one -- because only the pair distinguishes this defect from a save that is merely slow."
+      },
+      "suite": "bench/suites/save-eviction.py",
+      "upstream": [],
+      "status": "open, found 28.08.2026, not yet fixed",
+      "first_seen": "2026-08-28",
+      "last_checked": "2026-08-28"
     }
   ]
 }

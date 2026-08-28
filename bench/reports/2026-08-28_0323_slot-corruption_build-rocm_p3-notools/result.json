@@ -1,0 +1,193 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm/bin/llama-server",
+  "build_from_binary": "b200-54ee5ee",
+  "build_id": "b200-54ee5ee",
+  "shape": {
+   "np": 2,
+   "ctx": 32768,
+   "tools": 0,
+   "spec": true,
+   "cram": true,
+   "mmproj": false,
+   "kv_unified": false
+  },
+  "argv": [
+   "--alias",
+   "sidetest",
+   "-m",
+   "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+   "-ngl",
+   "999",
+   "-fa",
+   "on",
+   "-c",
+   "32768",
+   "-np",
+   "2",
+   "-b",
+   "2048",
+   "-ub",
+   "2048",
+   "-cram",
+   "32768",
+   "--no-kv-unified",
+   "--spec-type",
+   "draft-mtp,ngram-mod",
+   "--spec-draft-n-max",
+   "12",
+   "--spec-ngram-mod-n-min",
+   "24",
+   "--chat-template-kwargs",
+   "{\"enable_thinking\":false}",
+   "--jinja",
+   "--host",
+   "127.0.0.1",
+   "--port",
+   "8081"
+  ],
+  "starts": 5
+ },
+ "runs": [
+  {
+   "case": "par-two-prefixes",
+   "run": 1,
+   "answers": [
+    {
+     "nonce": "B-217-0",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-217-0",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-263-1",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-272-1",
+     "verdict": "ok",
+     "text": "A-272-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 3
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 2,
+   "answers": [
+    {
+     "nonce": "B-338-0",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-338-0",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-383-1",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-392-1",
+     "verdict": "ok",
+     "text": "A-392-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 3
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 3,
+   "answers": [
+    {
+     "nonce": "A-457-0",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-457-0",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-502-1",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-512-1",
+     "verdict": "ok",
+     "text": "B-512-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 3
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 4,
+   "answers": [
+    {
+     "nonce": "A-577-0",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-577-0",
+     "verdict": "other",
+     "text": "B"
+    },
+    {
+     "nonce": "A-622-1",
+     "verdict": "other",
+     "text": "A"
+    },
+    {
+     "nonce": "B-632-1",
+     "verdict": "ok",
+     "text": "B-632-1"
+    }
+   ],
+   "corrupt": 0,
+   "other": 3
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 5,
+   "answers": [
+    {
+     "nonce": "A-697-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-697-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "A-750-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-750-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    }
+   ],
+   "corrupt": 4,
+   "other": 0
+  }
+ ]
+}

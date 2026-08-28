@@ -267,6 +267,32 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("patched=no", r.stdout + r.stderr)
 
+    def test_it_puts_the_source_tree_back(self):
+        """An unpatched checkout LEFT BEHIND is a trap.
+
+        setup/check.sh reads the SOURCE, not the running binary, so a tree
+        parked on an unpatched commit makes it say "THE PATCH IS GONE" — true
+        of the tree, false of the server. That happened on 28.08. after a
+        night of --no-patch builds, and check.sh was right to shout.
+        """
+        before = git(self.src, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.assertEqual(before, "master")
+        r = self.build("--ref", "master", "--no-patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = git(self.src, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.assertEqual(after, before,
+                         "the source tree was left on the unpatched commit")
+        self.assertIn("source tree back on", r.stdout)
+
+    def test_a_patched_build_still_leaves_the_patch_branch_checked_out(self):
+        """The positive control: putting the tree back must not become
+        unconditional. After a PATCHED build the tree should carry the patch,
+        which is what the next build rebases from."""
+        r = self.build("--ref", "master", PATCH_BRANCH="patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        after = git(self.src, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.assertEqual(after, "patch")
+
     def test_list_shows_both_families(self):
         """A build that is not listed is a build nobody knows they have —
         950 MB at a time, which is why --prune exists at all."""

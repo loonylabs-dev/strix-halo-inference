@@ -175,20 +175,75 @@ that ten clean starts of an intermittent fault would be.
 10, and `info.devices[id].integrated = prop.integrated` for HIP is still in
 master's `ggml-cuda.cu` — checked, not assumed.
 
+### It is ONE defect, not two, and it is one commit of #27311
+
+Four of the PR's 18 commits touch `integrated` in `ggml-cuda.cu`. One is named
+like the PR itself and its message describes this defect exactly:
+
+> `3181ed701` — *ggml-backend: ring buffer graph inputs when a backend
+> computes on host memory*
+>
+> "Graph inputs are pinned to the last (CPU) backend, and llama.cpp hands the
+> scheduler a device host buffer type for that slot. On an integrated GPU the
+> device also accepts that buffer type … no split input copy is made, and the
+> device reads the very memory the host thread writes. Nothing then stops the
+> host from writing the next ubatch's inputs while the device is still reading
+> the previous one."
+
+Two builds rather than a blind bisect, ten fresh starts each:
+
+    b10631-5-gd3488aebe   the commit BEFORE it    10 of 10 CORRUPT
+    b10631-6-g3181ed701   the commit WITH it       0 of 10
+
+**And the same binary both ways.** That commit ships an escape hatch,
+`GGML_SCHED_UMA_RING`. On the FULL PR build, which is 0 of 10 clean:
+
+    GGML_SCHED_UMA_RING=1   (ring off)   10 of 10 CORRUPT
+
+**The same switch brings the RESTORE corruption back too**, on the same
+binary — `bench/suites/restore-safety.py --cells prefill`:
+
+    ring ON    prefill-spec CLEAN   prefill-nospec CLEAN
+    ring OFF   prefill-spec DIRTY   prefill-nospec DIRTY
+
+**So defect 1 and defect 2 are the same bug.** A slot restore was never a
+separate mechanism: `llama_state_seq_set_data`'s tensor writes are simply
+another concurrent writer into the shared graph-input buffer, which is exactly
+why a restore during another slot's PROMPT PROCESSING poisons it while a
+restore into an idle server does not.
+
+That mechanism accounts for every ingredient measured: it needs two sequences
+in flight (two slots AND concurrency), it worsens with more and larger graph
+inputs (the tool block: 10 of 10 with, 1 of 5 without), it is indifferent to
+speculation, KV layout and `-cram`, it cannot happen on Vulkan, and **this
+patch removes it by making the shared buffer never exist** — `integrated =
+false` means the device does not accept the host buffer type, so a split input
+copy IS made.
+
+Full evidence, every run and every caveat:
+`bench/reports/2026-08-28_defect1-hunt/HUNT.md`.
+
 ### So: can this patch be dropped?
 
 **Not yet, and the reason is no longer about evidence.** #27311 is OPEN and
 UNMERGED. Dropping the patch means running either an unmerged pull request in
 production or plain master, which corrupts 10 of 10. What has changed is that
-the wait now has a defined end: **when #27311 lands in master, re-run the two
-suites and this patch can go.** Both of its defects are covered by it, on this
-machine, measured rather than argued:
+the wait now has a defined end and a defined test:
 
-    defect 1  bench/suites/slot-corruption.py par-two-prefixes  10/10 -> 0/10
-    defect 2  bench/suites/restore-safety.py                    DIRTY -> CLEAN
+    when 3181ed701 reaches master, rebuild WITHOUT the patch and re-run
+      python3 bench/suites/slot-corruption.py par-two-prefixes --binary <id> --starts 10
+      python3 bench/suites/restore-safety.py --binary <id> --spec both
+    both clean -> this patch can go.
 
-That is also the whole retirement condition, so it belongs in
-`setup/defects.json` rather than only here.
+The `upstream_check` probe in `setup/defects.json` still watches for the
+`integrated` assignment disappearing, and that is now the WRONG condition:
+#27311 does not remove that line, it makes the buffer it leads to safe. The
+probe to watch for is the ring buffer arriving — `n_copies_uma`, or the
+`GGML_SCHED_UMA_RING` environment variable, in `ggml/src/ggml-backend.cpp`.
+
+**And there is a second mitigation now, which is upstream's own.** On any
+build that contains `3181ed701`, `GGML_SCHED_UMA_RING=2` turns the ring on
+explicitly. That is worth knowing for anyone who cannot carry a patch.
 
 The open sequence, in order:
 

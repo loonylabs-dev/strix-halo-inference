@@ -521,6 +521,13 @@ PIDS="$(in_use_by "$BUILD_DIR")"
 if [ "$NOPATCH" = 1 ]; then
   step "2/6 check out $BUILD_ID WITHOUT the patch"
   if [ "$DRY" = 0 ]; then
+    # Remembered so the tree can be put back. An unpatched checkout LEFT
+    # BEHIND is a trap: setup/check.sh reads the source, not the running
+    # binary, and says "THE PATCH IS GONE" — which is true of the tree and
+    # false of the server. Found 28.08. after a night of --no-patch builds,
+    # by check.sh, which was right.
+    BEFORE="$(git_ rev-parse --abbrev-ref HEAD)"
+    [ "$BEFORE" = "HEAD" ] && BEFORE="$(git_ rev-parse HEAD)"
     git_ checkout -q --detach "$TARGET"
     # The MIRROR of the patched check, and it has to be here rather than
     # assumed. "I passed --no-patch" is an intention; "the marker is not in
@@ -691,6 +698,18 @@ fi
 
 # --------------------------------------------------------------------------
 step "6/6 activate"
+if [ "$NOPATCH" = 1 ] && [ "$DRY" = 0 ] && [ -n "${BEFORE:-}" ]; then
+  # Put the tree back where it was found. The build directory keeps the
+  # unpatched build; the SOURCE goes back to carrying the patch, so the next
+  # reader — human or check.sh — is not told the patch was lost.
+  if git_ checkout -q "$BEFORE" 2>/dev/null; then
+    ok "source tree back on $BEFORE (the build keeps its own copy)"
+  else
+    warn "could not put the source tree back on $BEFORE — it is left on"
+    warn "$BUILD_ID, which has NO patch. check.sh will say so."
+  fi
+fi
+
 if [ "$NOPATCH" = 1 ]; then
   say "  NOT activatable, by design. This build has no gfx1151 patch; it is a"
   say "  subject to measure, not a binary to serve:"

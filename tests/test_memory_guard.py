@@ -16,13 +16,16 @@ Two things made it possible and both are worth pinning:
     is written down here.
 """
 import os, sys, tempfile, unittest
+from unittest import mock
 
 import common
 
 sys.path.insert(0, str(common.REPO / "bench"))
 sys.path.insert(0, str(common.REPO / "tools"))
+sys.path.insert(0, str(common.REPO / "setup" / "lib"))
 import run as runlib                                          # noqa: E402
 import sideserver as SIDE                                     # noqa: E402
+import budget                                                 # noqa: E402
 
 
 class TestModelSize(unittest.TestCase):
@@ -136,10 +139,6 @@ class TestStartServerIsGuarded(unittest.TestCase):
         body = src[src.index("def start_server("):]
         self.assertLess(body.index("check_room_for"), body.index("subprocess.Popen"),
                         "start_server must check BEFORE it spawns")
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestTheGuardIsReachable(unittest.TestCase):
@@ -458,3 +457,230 @@ class TestTheHostOverrideHasAFloor(unittest.TestCase):
     def test_the_crude_default_still_governs_when_nobody_measured(self):
         with self.assertRaises(SystemExit):
             self.run.check_room_for(["-m", "/x.gguf"], "test")
+
+
+class TestDemandPagedTensors(unittest.TestCase):
+    """Every number in budget.py rested on one sentence: all of a model's bytes
+    have to be resident somewhere. verdict() says it out loud, the LLM_HOST_GIB
+    floor enforces it, and it was simply TRUE for every model this repo has
+    served.
+
+    llama.cpp #27794 (master, 27.08.2026) ended that. `--tensor-read-lazy`
+    reads the rows of a tagged tensor from the mapping on demand, so for
+    Qwen3.8-Flash-Next 26.82 of 103.7 GiB need never be resident at all.
+
+    What is tested here is not the relief. It is the three locks on it — the
+    dangerous direction is granting relief a build cannot deliver, which is the
+    26.08. claim wearing a new name.
+    """
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.d, ignore_errors=True)
+
+    def profile(self, **fields):
+        path = os.path.join(self.d, "p.env")
+        with open(path, "w") as f:
+            for k, v in fields.items():
+                f.write("%s=%s\n" % (k, v))
+        return path
+
+    def binary(self, name="llama-server"):
+        path = os.path.join(self.d, name)
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_a_profile_that_says_nothing_gets_nothing(self):
+        b = self.binary()
+        env = self.profile(MODEL_GTT_BASE_GIB=78.1, LLAMA_BIN=b)
+        self.assertEqual(budget.lazy_relief(env, [], b), 0.0)
+
+    def test_a_different_build_gets_nothing(self):
+        """The dangerous one, and the reason it is not "does the binary know
+        the flag": on 28.08. three builds all knew it and only one delivered.
+        b10665-1 read the table into 27.13 GiB of anonymous memory while
+        answering --help exactly like the build that did not."""
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=self.binary("measured-on"))
+        self.assertEqual(budget.lazy_relief(env, [], self.binary("something-else")), 0.0)
+
+    def test_a_profile_that_pins_no_build_gets_nothing(self):
+        """A figure with no build attached is an assertion about nothing."""
+        env = self.profile(MODEL_LAZY_GIB=26.82)
+        self.assertEqual(budget.lazy_relief(env, [], self.binary()), 0.0)
+
+    def test_turning_it_off_in_the_ENVIRONMENT_gets_nothing_either(self):
+        """llama.cpp registers this option with
+        .set_env("LLAMA_ARG_TENSOR_READ_LAZY") — common/arg.cpp:2743 — so a
+        systemd Environment= line switches it off exactly as an argument does.
+        Checking argv alone made the guard asymmetric where llama.cpp is not."""
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=self.binary())
+        os.environ["LLAMA_ARG_TENSOR_READ_LAZY"] = "off"
+        self.addCleanup(os.environ.pop, "LLAMA_ARG_TENSOR_READ_LAZY", None)
+        self.assertEqual(budget.lazy_relief(env, [], self.binary()), 0.0)
+
+    def test_turning_it_off_on_the_command_line_gets_nothing(self):
+        """--tensor-read-lazy off restores the old behaviour, so it has to
+        restore the old arithmetic with it."""
+        b = self.binary()
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=b)
+        argv = ["-m", "x.gguf", "--tensor-read-lazy", "off"]
+        self.assertEqual(budget.lazy_relief(env, argv, b), 0.0)
+
+    def test_no_binary_named_gets_nothing(self):
+        """A caller that cannot say which build will run cannot be told yes.
+        Unknown must not read as granted."""
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=self.binary())
+        self.assertEqual(budget.lazy_relief(env, [], None), 0.0)
+
+    def test_the_observed_build_grants_it(self):
+        b = self.binary()
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=b)
+        self.assertAlmostEqual(budget.lazy_relief(env, ["-m", "x.gguf"], b), 26.82, 2)
+
+    def test_a_symlink_does_not_pass_as_the_build_behind_it(self):
+        """Paths are compared resolved. A symlink that has been repointed
+        since the measurement is a different build wearing the same name —
+        which is what the profile's pin was written against in the first
+        place."""
+        real = self.binary("real-build")
+        link = os.path.join(self.d, "stable")
+        os.symlink(real, link)
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=link)
+        self.assertAlmostEqual(budget.lazy_relief(env, [], real), 26.82, 2)
+        os.remove(link)
+        os.symlink(self.binary("other-build"), link)
+        self.assertEqual(budget.lazy_relief(env, [], real), 0.0)
+
+    def test_auto_is_not_off(self):
+        """Only the literal 'off' withdraws it; 'auto' and 'on' both read
+        lazily. Matching the flag NAME rather than its value would have made
+        the profile's own default look like a refusal."""
+        b = self.binary()
+        env = self.profile(MODEL_LAZY_GIB=26.82, LLAMA_BIN=b)
+        for mode in ("auto", "on"):
+            self.assertAlmostEqual(
+                budget.lazy_relief(env, ["--tensor-read-lazy", mode], b), 26.82, 2, mode)
+
+    def test_the_plan_subtracts_it_and_shows_it(self):
+        """Shown as its own line, because the two figures have different
+        provenance: host_anon was MEASURED on a build that loaded the table,
+        and what moved it is a property of the new build, not of the model."""
+        p = budget.plan([], 103.7, gtt_base=78.1, host_anon=27.1, declared=37.3,
+                        lazy=26.82)
+        lines = [i for i in p.items if "demand" in i[0]]
+        self.assertEqual(len(lines), 1, [i[0] for i in p.items])
+        self.assertAlmostEqual(lines[0][1], -26.82, 2)
+        self.assertAlmostEqual(p.host_gib, 78.1 + 27.1 - 26.82, 1)
+
+    def test_it_can_never_subtract_more_than_is_there(self):
+        """A profile declaring more lazy bytes than the model holds outside GTT
+        must not push the host figure below what is left of it."""
+        p = budget.plan([], 103.7, gtt_base=78.1, host_anon=5.0, lazy=99.0)
+        self.assertGreaterEqual(p.host_gib, 78.1)
+
+    def test_the_host_floor_moves_by_the_relief_and_no_further(self):
+        """LLM_HOST_GIB may not claim a model is smaller than its bytes. With
+        demand paging the floor is the RESIDENT bytes instead — which is lower,
+        but by exactly what lazy_relief() vouched for."""
+        os.environ["LLM_HOST_GIB"] = "80"
+        self.addCleanup(os.environ.pop, "LLM_HOST_GIB", None)
+        budget.plan([], 103.7, gtt_base=78.1, lazy=26.82)     # 76.9 floor: fine
+        with self.assertRaises(SystemExit) as cm:
+            budget.plan([], 103.7, gtt_base=78.1, lazy=0.0)   # 103.7 floor: not
+        self.assertIn("26.08", str(cm.exception))
+
+
+class TestTheProfileReachesTheGuard(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.d, ignore_errors=True)
+        self.saved = {k: getattr(runlib, k) for k in ("_gtt", "_mem_available_gib")}
+        self.addCleanup(lambda: [setattr(runlib, k, v) for k, v in self.saved.items()])
+
+    def model(self, gib):
+        path = os.path.join(self.d, "m.gguf")
+        with open(path, "wb") as f:
+            f.truncate(int(gib * 1024 ** 3))
+        return ["-m", path]
+
+    def fake(self, total, used, avail):
+        runlib._gtt = lambda which: {"total": total, "used": used}[which]
+        runlib._mem_available_gib = lambda: avail
+
+    """The measurements existed, were documented, and never arrived.
+
+    budget.plan() takes `declared`, `gtt_base` and `host_anon`, and its
+    docstring names Qwen3.8-Flash-Next as the reason all three exist.
+    check_room_for() passed none of them. So on 28.08. the one model they were
+    written for was refused on the estimate they were meant to replace: 122.9
+    GiB of GTT and 126.9 resident, against 80.7 and 111.8 from its own profile.
+
+    A signature can be widened again by accident, so this is pinned at the call
+    sites rather than only in the arithmetic.
+    """
+
+    def test_the_guard_receives_the_profile_s_measurements(self):
+        """A SPY, not a grep. The version before this asserted that the string
+        "declared_kv" appeared in check_room_for's source — which would pass if
+        the name occurred only in a comment, and would fail on a rename that
+        changed nothing. What matters is the arguments budget.plan() actually
+        gets."""
+        env = os.path.join(self.d, "p.env")
+        with open(env, "w") as f:
+            f.write("MODEL_KV_KIB_PER_TOKEN=37.3\nMODEL_GTT_BASE_GIB=78.1\n"
+                    "MODEL_HOST_ANON_GIB=27.1\n")
+        seen = {}
+        real = budget.plan
+
+        def spy(argv, weights, **kw):
+            seen.update(kw)
+            return real(argv, weights, **kw)
+
+        self.fake(total=116.0, used=0.0, avail=100.0)
+        with mock.patch.object(budget, "plan", spy):
+            try:
+                runlib.check_room_for(self.model(1.0), "x", env=env)
+            except SystemExit:
+                pass
+        self.assertAlmostEqual(seen.get("declared"), 37.3)
+        self.assertAlmostEqual(seen.get("gtt_base"), 78.1)
+        self.assertAlmostEqual(seen.get("host_anon"), 27.1)
+
+    def test_without_a_profile_it_falls_back_to_the_file_size(self):
+        """The old behaviour has to survive: most callers have no profile."""
+        seen = {}
+        real = budget.plan
+
+        def spy(argv, weights, **kw):
+            seen.update(kw)
+            return real(argv, weights, **kw)
+
+        self.fake(total=116.0, used=0.0, avail=100.0)
+        with mock.patch.object(budget, "plan", spy):
+            runlib.check_room_for(self.model(1.0), "x")
+        self.assertIsNone(seen.get("gtt_base"))
+
+    def test_both_call_sites_hand_over_the_profile(self):
+        """start_server and sideserver are the only two ways in, and a guard
+        that is merely ABLE to read the profile is not one that does."""
+        for f in ("run.py", "sideserver.py"):
+            src = (common.REPO / "bench" / f).read_text(encoding="utf-8")
+            i = src.index("check_room_for(argv")
+            call = src[i:i + 200]
+            self.assertIn("env=", call, "%s calls the guard without the profile" % f)
+            self.assertIn("binary=", call, "%s cannot say which build runs" % f)
+
+    def test_the_ceiling_reads_it_too(self):
+        """The same blindness, failing the other way: from the file size the
+        derived MemoryMax for Flash-Next is 8G — under the clamp — for a server
+        whose host side is 31 GiB. The cgroup would have killed it on start."""
+        src = (common.REPO / "bench" / "sideserver.py").read_text(encoding="utf-8")
+        body = src[src.index("def expected_gtt_gib("):src.index("def ceiling(")]
+        self.assertIn("declared_gtt", body)
+        self.assertIn("declared_kv", body)
+
+
+if __name__ == "__main__":
+    unittest.main()

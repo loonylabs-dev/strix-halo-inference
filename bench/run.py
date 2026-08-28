@@ -224,7 +224,7 @@ def _who_holds_gtt():
     return out
 
 
-def check_room_for(argv, what="this server"):
+def check_room_for(argv, what="this server", env=None, binary=None):
     """Refuse to start a server that does not fit in what is left.
 
     Checked against BOTH limits, because either one alone lets the machine
@@ -233,11 +233,25 @@ def check_room_for(argv, what="this server"):
 
     The readers are looked up as module globals at call time, so the tests can
     substitute a machine. Everything else is budget.py's.
+
+    `env` is the profile whose numbers this server was measured with, and
+    leaving it out is not a smaller check — it is a DIFFERENT and wronger one.
+    budget.plan() takes three measurements a profile may carry, and its
+    docstring names Qwen3.8-Flash-Next as the reason they exist; this call site
+    passed none of them, so the one model they were written for was judged on
+    the estimate they were meant to replace. Measured 28.08.: 122.9 GiB of GTT
+    and 126.9 resident against the profile's 80.7 and 111.8, an overstatement
+    of 42 GiB, and the KV charged at an estimated 8.0 GiB where the profile
+    declares 2.3.
     """
     if budget.guard_disabled():
         return
     on_disk = _model_size_gib(argv)
-    plan = budget.plan(argv, on_disk, what=what)
+    plan = budget.plan(argv, on_disk, what=what,
+                       declared=budget.declared_kv(env),
+                       gtt_base=budget.declared_gtt(env),
+                       host_anon=budget.declared_anon(env),
+                       lazy=budget.lazy_relief(env, argv, binary))
     machine = budget.Machine(mem_total=budget._meminfo_gib("MemTotal"),
                              mem_available=_mem_available_gib(),
                              gtt_total=_gtt("total"), gtt_used=_gtt("used"))
@@ -269,7 +283,7 @@ def wait_for_gtt_release(before_gib, timeout=120):
     return False
 
 
-def start_server(argv, logfile, binary):
+def start_server(argv, logfile, binary, env=None):
     # LLAMA_SERVER_SLOTS_DEBUG stand hier fest auf "1". Damit gibt /slots den
     # LLAMA_SERVER_SLOTS_DEBUG used to be hard-wired to "1" here. That makes
     # /slots hand out the complete rendered prompt of every slot — per
@@ -280,7 +294,7 @@ def start_server(argv, logfile, binary):
     # an exposure that was no regression at all.
     # env_ was referenced here without ever being defined — every --env run
     # died with a NameError before the server came up; only --running worked.
-    check_room_for(argv, os.path.basename(binary))
+    check_room_for(argv, os.path.basename(binary), env=env, binary=binary)
     env_ = dict(os.environ)
     if os.environ.get("SLOTS_DEBUG") == "1":
         env_["LLAMA_SERVER_SLOTS_DEBUG"] = "1"
@@ -475,7 +489,8 @@ def main():
 
     try:
         if not a.running:
-            proc = start_server(argv, os.path.join(dest, "server.log"), a.binary)
+            proc = start_server(argv, os.path.join(dest, "server.log"),
+                                a.binary, env=a.env)
         props = {}
         try:
             props = {"slots": len(get("/slots"))}

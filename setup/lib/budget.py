@@ -99,7 +99,8 @@ from systemdfile import llama_args, variable, flag, expand   # noqa: E402
 
 __all__ = ["Machine", "Plan", "Verdict", "Comparison", "compare",
            "plan", "verdict", "render", "brief", "cache_windows",
-           "declared_kv", "declared_gtt", "declared_anon",
+           "declared_kv", "declared_gtt", "declared_anon", "declared_lazy",
+           "lazy_relief",
            "read_machine", "weights_gib", "kv_kib_per_token", "cram_gib",
            "running_argv", "observe", "HOST_RESERVE_GIB", "SLACK"]
 
@@ -404,6 +405,108 @@ def declared_anon(env_path):
     return _declared_number(env_path, "MODEL_HOST_ANON_GIB")
 
 
+def declared_lazy(env_path):
+    """MODEL_LAZY_GIB from a profile, or None. See plan().
+
+    The bytes llama.cpp reads ROW BY ROW from the mapped file instead of
+    holding resident — `TENSOR_READ_LAZY`, upstream #27794, merged 27.08.2026.
+    Until then every byte of a GGUF had to be resident somewhere, and this
+    file's whole model rests on that. It stopped being true.
+
+    IT IS AN OBSERVATION OF RssAnon, like MODEL_GTT_BASE_GIB is an observation
+    of GTT, and that wording is the whole lesson of 28.08. This field was first
+    written to hold the SIZE OF THE TENSOR, read out of the GGUF — a fact about
+    the file, checkable, hard to get wrong. For Qwen3.8-Flash-Next that is
+    `per_layer_token_embd.weight`, IQ4_NL, 26.82 GiB, against 0.83 for the next
+    largest tensor in the model.
+
+    The guard then granted 26.82 GiB of relief and the run measured `RssAnon
+    26.83 GiB` with not one page of the GGUF mapped: the table was copied into
+    anonymous memory exactly as before. The machine ended that run at 7.1 GiB
+    available with 140 MiB of swap left.
+
+    A tensor's size says what COULD be demand-paged. Only a measurement says
+    what is. So this field takes the second, and a profile that has not run the
+    measurement leaves it out and is refused instead — which is the correct
+    answer for a model that genuinely does not fit.
+    """
+    return _declared_number(env_path, "MODEL_LAZY_GIB")
+
+
+def lazy_relief(env_path, argv=None, binary=None):
+    """The GiB plan() may subtract as demand-paged, after checking it is real.
+
+    THREE conditions, and each one is a way this could take the machine down
+    rather than protect it:
+
+      1. the profile declares an OBSERVED figure  — nothing is inferred
+      2. the binary is the one it was observed on — see below
+      3. argv does not turn it off               — `--tensor-read-lazy off`
+                                                    restores the old
+                                                    behaviour, so the old
+                                                    arithmetic applies
+
+    Condition 2 was first written as "the binary knows --tensor-read-lazy",
+    asked of `--help`, and the measurements of 28.08. refuted it in one
+    afternoon. Three builds, all of which know the flag:
+
+      master b10665-1, load_mode auto -> none   RssAnon 27.13 GiB   no relief
+      master b10665-1, --load-mode mmap         lazy read enabled, but the
+                                                whole model loads through the
+                                                mapping and the server had not
+                                                served /slots after 7 minutes
+      + PR #27837, load_mode none               RssAnon  0.31 GiB   it works
+
+    Knowing the flag says nothing, because on this machine `auto` resolves to
+    `none`: ggml-cuda.cu reports `mmap_support = props->type != IGPU`, the
+    type comes from `prop.integrated`, and the 8060S is integrated — so mmap
+    is off for the whole model and TENSOR_READ_LAZY, which requires it, never
+    fires. #27837 is what separates the two: it mmaps the lazy tensor alone
+    and leaves the rest on the fast path.
+
+    None of that is visible in `--help`. What IS knowable before starting is
+    WHICH BUILD will run, and the profile already pins it and says why. So the
+    figure and the binary travel together: an observation made on one build is
+    not evidence about another, and a rebuild that changes LLAMA_BIN withdraws
+    the relief until somebody measures again.
+
+    Returns 0.0 rather than None when a condition fails, so a caller cannot
+    accidentally read "unknown" as "granted".
+    """
+    lazy = declared_lazy(env_path)
+    if not lazy:
+        return 0.0
+    # BOTH channels. llama.cpp registers this option with
+    # .set_env("LLAMA_ARG_TENSOR_READ_LAZY") (common/arg.cpp:2743), so a
+    # systemd Environment= line or a shell export turns it off just as an
+    # argument does. Checking only argv would grant 26.82 GiB of relief the
+    # server will not deliver — and the profile records what that costs:
+    # "the machine finished that run at 7.1 GiB available with 140 MiB of swap".
+    if os.environ.get("LLAMA_ARG_TENSOR_READ_LAZY") == "off":
+        return 0.0
+    for i, tok in enumerate(argv or []):
+        if tok == "--tensor-read-lazy" and i + 1 < len(argv) and argv[i + 1] == "off":
+            return 0.0
+    if not binary or not _is_the_observed_binary(env_path, binary):
+        return 0.0
+    return lazy
+
+
+def _is_the_observed_binary(env_path, binary):
+    """Is `binary` the LLAMA_BIN this profile was measured with?
+
+    Compared by resolved path, so a symlink that has been repointed since the
+    measurement does not pass as the build behind it — which is the whole
+    failure mode the profile's own pin was written against.
+    """
+    declared = variable(env_path, "LLAMA_BIN") if env_path else None
+    if not declared:
+        return False
+    want = os.path.realpath(os.path.expanduser(
+        declared if os.path.isabs(declared) else os.path.join("~", declared)))
+    return os.path.realpath(binary) == want
+
+
 # --- the escape hatches ------------------------------------------------------
 #
 # There has to be a way past a WRONG estimate that is not a way past the guard.
@@ -457,7 +560,7 @@ def host_reserve_gib(env=None):
 # --- the plan (pure) ---------------------------------------------------------
 
 def plan(argv, weights, declared=None, what="this server",
-         gtt_base=None, host_anon=None):
+         gtt_base=None, host_anon=None, lazy=0.0):
     """What starting `argv` will cost. PURE: the machine is not consulted.
 
     `weights` is passed in rather than read so that the arithmetic can be
@@ -484,6 +587,14 @@ def plan(argv, weights, declared=None, what="this server",
     a model this size, which is the difference between "tight" and "refused".
     The KV is slacked in both cases: it is derived from a per-token figure, not
     observed as part of a total.
+
+    `lazy` is the third, and it is younger than the other two: the GiB that
+    are DEMAND-PAGED and therefore need not be resident at all. Everything
+    else here assumes the opposite — "ALL of it has to be resident somewhere"
+    is what verdict() says and what the LLM_HOST_GIB floor enforces — and that
+    assumption was simply true until llama.cpp #27794 landed on 27.08.2026.
+    Pass it only through lazy_relief(), which checks that the binary can
+    actually do it; plan() stays PURE and asks nothing.
     """
     items, estimated = [], False
 
@@ -529,14 +640,25 @@ def plan(argv, weights, declared=None, what="this server",
     if host_anon is not None:
         outside = host_anon
         items.append(Item("resident outside GTT", outside, "measured"))
+        if lazy:
+            # A host_anon measured on a build that loaded the table is not
+            # wrong, it is STALE — it recorded bytes that this build reads
+            # from the file instead. Shown as its own line rather than folded
+            # into the one above, because the two have different provenance
+            # and a reader has to be able to see which one moved.
+            take = min(lazy, outside)
+            items.append(Item("of that, read on demand (not resident)",
+                              -take, "lazy"))
+            outside -= take
     elif weights is not None and gtt_base is not None:
         # A LOWER bound, and it is worth saying why: gtt_base contains the
         # compute buffers, so the weights actually in GTT are less than it and
         # the part outside is more than this difference. Measured for
         # Flash-Next: this subtraction gives 16.3 GiB and RssAnon was 27.1.
         # Declare MODEL_HOST_ANON_GIB rather than relying on it.
-        outside = max(0.0, weights - gtt_base)
-        items.append(Item("resident outside GTT (lower bound)", outside, "derived"))
+        outside = max(0.0, weights - gtt_base - lazy)
+        items.append(Item("resident outside GTT (lower bound)", outside,
+                          "derived, less demand-paged" if lazy else "derived"))
     elif weights is not None and stated_gtt is not None:
         outside = max(0.0, weights - stated_gtt)
         if outside:
@@ -559,12 +681,21 @@ def plan(argv, weights, declared=None, what="this server",
     # measurement can say where the bytes land. Nothing makes a file smaller.
     stated_host = _num("HOST_GIB")
     if stated_host is not None and weights is not None:
-        if stated_host < weights:
+        # The floor is the bytes that must be RESIDENT, which used to be the
+        # same thing as the bytes on disk. With demand-paged tensors it is not,
+        # so the floor moves down by exactly what lazy_relief() has already
+        # vouched for — and by nothing else. A caller who wants to claim more
+        # than that still hits the same refusal that took this machine down on
+        # 26.08.
+        floor = weights - lazy
+        if stated_host < floor:
             raise SystemExit(
-                "\nLLM_HOST_GIB=%.1f is below the %.1f GiB the model occupies on "
-                "disk.\n  All of it has to be resident somewhere — GTT or "
-                "anonymous memory.\n  That exact claim took this machine down on "
-                "26.08." % (stated_host, weights))
+                "\nLLM_HOST_GIB=%.1f is below the %.1f GiB the model must keep "
+                "resident\n  (%.1f GiB on disk%s).\n  All of it has to be "
+                "resident somewhere — GTT or anonymous memory.\n  That exact "
+                "claim took this machine down on 26.08."
+                % (stated_host, floor, weights,
+                   ", less %.1f read on demand" % lazy if lazy else ""))
         host_need = stated_host + cram
         items.append(Item("host footprint", stated_host, "stated"))
 

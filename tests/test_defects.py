@@ -93,10 +93,23 @@ class TestTheRegistryItself(unittest.TestCase):
         for d in self.defects:
             if str(d.get("status", "")).startswith("withdrawn"):
                 continue
-            if d["detect"].get("kind") == "manual":
-                checked += 1
-                self.assertEqual(defects.evaluate(d, QWEN38, STAMP_GOOD)[0],
-                                 defects.MANUAL, d["id"])
+            if d["detect"].get("kind") != "manual":
+                continue
+            checked += 1
+            # Against a cmdline the defect APPLIES to. Judging every entry by
+            # qwen38 alone conflated two different answers: on 28.08. the
+            # first manual defect scoped to one model — the PLE table not
+            # being demand-paged, which is a qwen4exp defect — answered "n/a"
+            # here and failed a test whose subject is guessing. Staying quiet
+            # about a model that is not running is the behaviour this file's
+            # own docstring asks for, so the fixture has to match the entry.
+            verdicts = [defects.evaluate(d, cmd, STAMP_GOOD)[0]
+                        for cmd in (QWEN38, FLASHNEXT)]
+            self.assertIn(defects.MANUAL, verdicts,
+                          "%s never says 'only a measurement answers this', "
+                          "for either model: %s" % (d["id"], verdicts))
+            self.assertNotIn(defects.GUARDED, verdicts,
+                             "%s claims to be guarded without a measurement" % d["id"])
         self.assertGreater(checked, 0, "no manual defect left to check")
 
 

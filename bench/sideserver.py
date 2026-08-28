@@ -117,7 +117,7 @@ def machine_gib():
     return _memtotal_gib(), budget._gtt_gib("used")
 
 
-def expected_gtt_gib(argv):
+def expected_gtt_gib(argv, env=None):
     """What the model ABOUT to start will pin, not what is pinned now.
 
     The ceiling has to be computed before the server exists, and at that moment
@@ -130,14 +130,29 @@ def expected_gtt_gib(argv):
     No slack is added here on purpose — this figure is subtracted to find what
     is LEFT for the host, so overestimating it would strangle the process the
     ceiling is meant to protect.
+
+    `env` since 28.08., and it is that last sentence coming true. A profile
+    that has MEASURED what it pins says so, and reading the file size instead
+    strangles exactly the model the measurement was taken on: for Flash-Next
+    the file gives 103.7 + an estimated 8.0 of KV against a measured 78.1 +
+    2.3, and `room` then falls under the 8 GiB clamp — MemoryMax=8G for a
+    server whose host side is 31 GiB. The cgroup would have killed it on
+    start, and the ceiling meant to protect the machine would have been the
+    thing that broke the measurement.
     """
     override = budget._num("MODEL_GIB")
+    gtt_base = budget.declared_gtt(env)
+    kv, _ = budget.kv_gib(argv, budget.declared_kv(env))
+    if override is None and gtt_base is not None:
+        # An observation of GTT already contains the compute buffers; see
+        # budget.plan(). Adding the KV to it is the same sum plan() makes.
+        return gtt_base + kv
     weights = override if override is not None else (budget.weights_gib(argv) or 0.0)
-    kv, _ = budget.kv_gib(argv)
     return weights + kv
 
 
-def ceiling(want_max=None, want_high=None, argv=None, total_gib=None):
+def ceiling(want_max=None, want_high=None, argv=None, total_gib=None,
+            env=None):
     """The transient unit's MemoryMax, derived rather than assumed.
 
     The default was a flat `100G`, and on 27.08. a measurement showed what that
@@ -173,7 +188,7 @@ def ceiling(want_max=None, want_high=None, argv=None, total_gib=None):
         total = total_gib
     if total is None:
         return "64G", "58G", "could not read MemTotal — falling back low"
-    gtt = expected_gtt_gib(argv or [])
+    gtt = expected_gtt_gib(argv or [], env)
     if not gtt:
         gtt = live_gtt or 0.0
     room = total - gtt - HOST_RESERVE_GIB
@@ -198,6 +213,15 @@ def main():
                          "a fixed number is meaningless here, see ceiling()")
     ap.add_argument("--memory-high", default=None,
                     help="MemoryHigh; default 90 %% of the derived MemoryMax")
+    ap.add_argument("--slots-timeout", type=int, default=420,
+                    help="seconds to wait for the server to answer /slots. "
+                         "420 was hard-wired and on 28.08. it decided a "
+                         "measurement: forcing --load-mode mmap on this iGPU "
+                         "made Flash-Next load through the mapping, which got "
+                         "as far as allocating its buffers in 33 s and was "
+                         "still reading at 7 min. The run was torn down as a "
+                         "failure when the only thing that had failed was a "
+                         "constant nobody chose for that case")
     ap.add_argument("--deadline", type=int, default=45,
                     help="minutes after which production is restarted no "
                          "matter what happens to this process")
@@ -264,14 +288,16 @@ def main():
 
         # Refuses rather than swaps. GTT is pinned; an over-large start does
         # not page, it hangs the machine.
-        runlib.check_room_for(argv, os.path.basename(binary))
+        runlib.check_room_for(argv, os.path.basename(binary),
+                              env=a.env, binary=binary)
 
         # A TRANSIENT UNIT, not a bare child process. A child inherits the
         # caller's cgroup, so the limits on llama-user@.service never touched
         # it and a global OOM was the only thing left to stop it. This gets
         # its own cgroup and its own ceiling — and a name, so it can be
         # stopped even by somebody who did not start it.
-        mem_max, mem_high, why = ceiling(a.memory_max, a.memory_high, argv)
+        mem_max, mem_high, why = ceiling(a.memory_max, a.memory_high, argv,
+                                         env=a.env)
         say("starting %s on port %d as %s (MemoryMax=%s — %s)"
             % (os.path.basename(a.env), a.port, unit, mem_max, why))
         subprocess.run(["systemctl", "--user", "stop", unit],
@@ -289,7 +315,7 @@ def main():
             say("systemd-run refused: %s" % (r.stderr or r.stdout)[:200])
             return 1
         proc = unit
-        if not wait_for_slots(url):
+        if not wait_for_slots(url, a.slots_timeout):
             say("the server never served /slots")
             return 1
         say("up · GTT %.1f GiB" % (gtt_used() or -1))

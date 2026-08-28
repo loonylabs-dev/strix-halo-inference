@@ -1,0 +1,48 @@
+{
+ "label": "fresh project, no disk hits, AUTO_SAVE=0",
+ "url": "http://127.0.0.1:8090",
+ "steps": [
+  {
+   "step": "same-mode  1st  qwen38-low",
+   "model": "qwen38-low",
+   "seconds": 13.03,
+   "ok": true
+  },
+  {
+   "step": "same-mode  2nd  qwen38-low",
+   "model": "qwen38-low",
+   "seconds": 1.42,
+   "ok": true
+  },
+  {
+   "step": "mode-switch     qwen38-medium",
+   "model": "qwen38-medium",
+   "seconds": 75.69,
+   "ok": true
+  },
+  {
+   "step": "mode-switch 2nd qwen38-medium",
+   "model": "qwen38-medium",
+   "seconds": 1.42,
+   "ok": true
+  },
+  {
+   "step": "stale-name      qwen38-think",
+   "model": "qwen38-think",
+   "seconds": 0.74,
+   "ok": true
+  },
+  {
+   "step": "bare            qwen38",
+   "model": "qwen38",
+   "seconds": 0.57,
+   "ok": true
+  },
+  {
+   "step": "back-again      qwen38-low",
+   "model": "qwen38-low",
+   "seconds": 2.42,
+   "ok": true
+  }
+ ]
+}

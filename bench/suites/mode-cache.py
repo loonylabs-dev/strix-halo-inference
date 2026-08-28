@@ -96,11 +96,20 @@ def main():
     ap.add_argument("--mode-b", default="medium")
     ap.add_argument("--tools", type=int, default=24,
                     help="a big prefix, so cold and warm are far apart")
+    ap.add_argument("--project", default="/tmp/mode-cache",
+                    help="what the synthetic body calls itself. It decides the "
+                         "prefix ids, so a value used by an EARLIER run can be "
+                         "answered from the saved-prefix store on disk instead "
+                         "of being prefilled — measured 28.08.2026: the first "
+                         "step restored 14957 tokens from a .bin written eight "
+                         "hours before, was reported warm, and took 75.3 s "
+                         "anyway. Pass a fresh value for a run that owes "
+                         "nothing to what is lying around.")
     ap.add_argument("--label", default="unlabelled")
     ap.add_argument("--out")
     a = ap.parse_args()
 
-    body = SYN.body(project="/tmp/mode-cache", n_tools=a.tools,
+    body = SYN.body(project=a.project, n_tools=a.tools,
                     question="Say alpha.")
     A = "%s-%s" % (a.alias, a.mode_a)
     B = "%s-%s" % (a.alias, a.mode_b)

@@ -399,6 +399,16 @@ $(printf '%s' "$ERR" | sed 's/^/      /')
   fi
   [ "$DRY" = 0 ] && ok "runs through the symlink: $("$STABLE/bin/llama-server" --version 2>&1 | head -1)"
   say
+  say "VERIFY IT, do not trust it. Since 28.08. the gfx1151 corruption has a"
+  say "deterministic reproducer, so a build is checkable in about a minute"
+  say "instead of being hoped about — 10 of 10 corrupt without the patch, 0 of"
+  say "10 with it, on the same upstream commit:"
+  say
+  say "    python3 bench/suites/slot-corruption.py par-two-prefixes \\"
+  say "        --binary $BUILD_ID --starts 3"
+  say
+  say "  It runs on a side server (port 8081) and leaves production alone."
+  say
   say "The RUNNING server keeps the libraries it already mapped — it does not"
   say "change until it is restarted:"
   say

@@ -175,6 +175,21 @@ that ten clean starts of an intermittent fault would be.
 10, and `info.devices[id].integrated = prop.integrated` for HIP is still in
 master's `ggml-cuda.cu` — checked, not assumed.
 
+### Verify a build instead of trusting it
+
+`setup/env/qwen38.env` has said *"rebuild the patched binary after every
+llama.cpp update, or defect 1 returns silently"* since the patch existed, and
+until 28.08. there was no way to check the result — the defect was believed to
+be an intermittent per-start gamble. It is not. It is deterministic in the
+right shape, so a build is now checkable in about a minute:
+
+    python3 bench/suites/slot-corruption.py par-two-prefixes \
+        --binary <the build id> --starts 3
+
+Side server, production untouched. Ten of ten corrupt without the patch and
+zero of ten with it, on the same upstream commit — three starts is already a
+decisive signal against that.
+
 ### It is ONE defect, not two, and it is one commit of #27311
 
 Four of the PR's 18 commits touch `integrated` in `ggml-cuda.cu`. One is named

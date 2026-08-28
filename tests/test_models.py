@@ -906,9 +906,17 @@ class TestNoModelNamesInCode(unittest.TestCase):
 
 
 class TestLocalJsonMatchesAModel(unittest.TestCase):
-    """setup/claude/local.json points Claude Code at a model name. It has to
-    be one that exists — the gateway maps thinking modes by that name
-    (KWARGS_BY_MODEL), and an unknown one silently gets the server default."""
+    """setup/claude/local.json points Claude Code at a model name, and nothing
+    reconciles that file with the profile that declares the modes.
+
+    Two files, one agreement, no derivation possible — the shape TestConflicts
+    exists for. Checking only the STEM was not enough: `qwen38-nonsense`
+    starts with a real profile and resolves to nothing, and the gateway then
+    serves it as the bare alias. Since 28.08. that is at least a log line, but
+    the user's only other signal is that thinking silently stopped.
+    """
+
+    MODES = common.load("setup/claude/modes.py", "modes")
 
     def test_the_configured_model_names_resolve_to_a_profile(self):
         env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]
@@ -920,6 +928,32 @@ class TestLocalJsonMatchesAModel(unittest.TestCase):
                 self.assertIn(base, known,
                               "%s=%r does not begin with any model in "
                               "setup/env/" % (key, value))
+
+    def test_the_suffix_is_a_mode_that_profile_declares(self):
+        """The stem is not the agreement. What has to hold is that the gateway
+        would RESOLVE this exact name against that profile's MODES."""
+        import sys
+        sys.path.insert(0, str(REPO / "setup" / "lib"))
+        import systemdfile as SDF
+        env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]
+        checked = 0
+        for key in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
+            value = env.get(key, "")
+            if not value:
+                continue
+            alias = value.split("-")[0]
+            path = REPO / "setup" / "env" / ("%s.env" % alias)
+            if not path.exists():
+                continue
+            modes = self.MODES.parse_modes(SDF.variable(str(path), "MODES"))
+            checked += 1
+            with self.subTest(key=key, value=value):
+                _, hit = self.MODES.resolve(value, alias, modes)
+                self.assertTrue(hit,
+                                "%s=%r is not a mode %s declares. It offers: %s"
+                                % (key, value, alias,
+                                   "  ".join(self.MODES.names(alias, modes))))
+        self.assertGreater(checked, 0, "nothing was checked")
 
 
 if __name__ == "__main__":

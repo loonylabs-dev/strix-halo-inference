@@ -2,7 +2,7 @@
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8090",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "qwen38-think",
+    "ANTHROPIC_MODEL": "qwen38-low",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen38",
     "API_TIMEOUT_MS": "1800000",
     "API_FORCE_IDLE_TIMEOUT": "0",

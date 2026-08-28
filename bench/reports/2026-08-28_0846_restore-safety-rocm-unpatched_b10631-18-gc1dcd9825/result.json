@@ -1,0 +1,68 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-unpatched-b10631-18-gc1dcd9825/bin/llama-server",
+  "build_from_binary": "b269-c1dcd98",
+  "build_id": "b10631-18-gc1dcd9825",
+  "env": {
+   "GGML_SCHED_UMA_RING": "1"
+  },
+  "stamp": {
+   "build_id": "b10631-18-gc1dcd9825",
+   "backend": "rocm",
+   "family": "rocm-unpatched",
+   "patched": "no",
+   "upstream_ref": "pr-27311-on-master",
+   "upstream_commit": "c1dcd98252a44f1712b1a887ed8085e87a1ae435",
+   "patch_commit": "none",
+   "patch_branch": "none",
+   "built_at": "2026-08-27T23:08:24+02:00",
+   "version": "version: 0.3.0-dev (build 269, commit c1dcd9825)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "restore_timeout": 900.0,
+  "label": "rocm-unpatched"
+ },
+ "save-spec": {
+  "phase": "done",
+  "clean": true
+ },
+ "prefill-spec": {
+  "phase": "done",
+  "restore_timeout": 900.0,
+  "restore_returned": true,
+  "restore_seconds": 5.4,
+  "prefill_still_running": 0,
+  "clean": false,
+  "probes": [
+   "```markdown #!@! !",
+   "2",
+   "121\n</think>\n\n242"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null,
+  "prefill_seconds": 72.5,
+  "blocking_seconds": 72.5
+ },
+ "save-nospec": {
+  "phase": "done",
+  "clean": true
+ },
+ "prefill-nospec": {
+  "phase": "done",
+  "restore_timeout": 900.0,
+  "restore_returned": true,
+  "restore_seconds": 13.3,
+  "prefill_still_running": 0,
+  "clean": false,
+  "probes": [
+   "<tool_call>\nfunction：",
+   "17000000",
+   "100"
+  ],
+  "prefill_survived": true,
+  "prefill_error": null,
+  "prefill_seconds": 66.6,
+  "blocking_seconds": 66.6
+ }
+}

@@ -233,6 +233,10 @@ layout and `-cram`, it cannot happen on Vulkan, and **this patch removes it by
 making the shared buffer never exist** — `integrated = false` means the device
 does not accept the host buffer type, so a split input copy IS made.
 
+**It also corrupts at production's own window.** `-c 204800`, 5 of 5, measured
+with production stopped. The window is not what keeps this stack safe; `-np 1`
+is — 0 of 5 on the same build.
+
 **And it is a RATE, not a switch.** Prompt size dominates: ~6,800 tokens is 10
 of 10, ~1,000 tokens is 0 of 5 with the same ten tools. A prediction that the
 ubatch boundary was the mechanism — raise `-ub` so the whole prompt is one

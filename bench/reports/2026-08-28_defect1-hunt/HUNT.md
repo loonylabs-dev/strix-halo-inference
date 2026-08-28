@@ -57,6 +57,7 @@ All on stock `54ee5ee`, five starts each unless noted.
 | `--no-cram` | 5 of 5 | irrelevant |
 | `--np 4` | 5 of 5 | more slots, same |
 | **Vulkan backend** | **0 of 5** | negative control holds |
+| `--ctx 204800` (production's own window) | **5 of 5** | with production stopped |
 
 This corrects the original finding, which reads *"it is the SECOND SLOT, not
 concurrency — serialising every request in the gateway did not help"*. Direct
@@ -64,9 +65,11 @@ at the server, with no gateway in the way, sequential is 0 of 15 and
 concurrent is 10 of 10. Both statements can stand: the gateway serialises
 ADMISSION, not batching inside llama-server.
 
-`--ctx 204800`, production's own window, was REFUSED by the memory guard five
-times out of five (79.7 GiB needed, 77.2 available beside production) and is
-recorded as an error rather than as a clean cell. Unmeasured.
+`--ctx 204800`, production's own window, was first REFUSED by the memory guard
+five times out of five (79.7 GiB needed, 77.2 available beside a serving
+qwen38) and recorded as an error rather than as a clean cell. **Measured 28.08.
+09:00 with production stopped: 5 of 5 CORRUPT.** So the window production
+actually runs is not a shelter — `-np 1` is.
 
 ## 3 · The build matrix, ten fresh starts each
 
@@ -143,7 +146,17 @@ during another slot's PROMPT PROCESSING poisons it and a restore into an idle
 server does not. Everything this stack has recorded as "defect 1" and "defect
 2" since 25.08. collapses into the race `3181ed701` describes.
 
-Report: `bench/reports/2026-08-28_0603_restore-safety-rocm-unpatched_b10631-18-gc1dcd9825`.
+**Re-run as a pair on 28.08. 08:46 and 08:50**, four minutes apart, because
+the first version of this measurement did not record its own environment —
+the suite could not yet, and the value was the session asserting it rather
+than the run capturing it. Both sides record it now:
+
+    env {"GGML_SCHED_UMA_RING": "1"}   prefill-spec DIRTY   prefill-nospec DIRTY
+    env {}                             prefill-spec CLEAN   prefill-nospec CLEAN
+
+Reports: `2026-08-28_0846_…` and `2026-08-28_0850_…` (the pair), and
+`2026-08-28_0603_…` (the first, which carries a field saying what it could
+not capture).
 
 ## 6 · How small it gets — and a prediction that failed
 
@@ -193,7 +206,6 @@ above is a low rate rather than an immunity.
   as having shown that the original observations of 25./26.08., on other
   builds, had that cause.
 * One machine, one model, one quant.
-* `--ctx 204800` is unmeasured (see above).
 * Production is unaffected either way: it runs `-np 1`, which is 0 of 5 here.
 
 ## Reproducer

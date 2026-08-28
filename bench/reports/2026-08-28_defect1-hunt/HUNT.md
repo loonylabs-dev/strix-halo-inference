@@ -51,7 +51,7 @@ All on stock `54ee5ee`, five starts each unless noted.
 | `--np 1` | 0 of 5 | **necessary: two slots** |
 | `seq-two-prefixes` | 0 of 10 | **necessary: concurrency** |
 | `seq-no-tools` | 0 of 5 | |
-| `--tools 0` | 1 of 5 | amplifier, not a requirement |
+| `--tools 0` | 1 of 5 | amplifier, not a requirement — but see §6: the amplifier is mostly SIZE |
 | `--no-spec` | 5 of 5 | irrelevant |
 | `--kv-unified` | 5 of 5 | irrelevant |
 | `--no-cram` | 5 of 5 | irrelevant |
@@ -144,6 +144,45 @@ server does not. Everything this stack has recorded as "defect 1" and "defect
 2" since 25.08. collapses into the race `3181ed701` describes.
 
 Report: `bench/reports/2026-08-28_0603_restore-safety-rocm-unpatched_b10631-18-gc1dcd9825`.
+
+## 6 · How small it gets — and a prediction that failed
+
+All on stock `54ee5ee`, five starts each, `par-two-prefixes`.
+
+| tools | bulk | sys | body | CORRUPT |
+|---|---|---|---|---|
+| 10 | 700 | 300 | ~6,800 tok | **10 of 10** |
+| 3 | 700 | 300 | ~6,600 | 5 of 5 |
+| 1 | 700 | 300 | ~6,300 | 3 of 5 |
+| 0 | 700 | 300 | ~6,200 | 1 of 5 |
+| 10 | 50 | 20 | ~1,000 | **0 of 5** |
+| 3 | 50 | 20 | ~900 | **0 of 5** |
+
+**The dominant factor is PROMPT SIZE, not the tool block.** A short prompt is
+clean with ten tools; a long one corrupts with none. Tools raise the rate
+sharply at a given length — 20 % to 100 % for about 600 extra tokens — so they
+do something beyond their own length, and what that is was not established.
+
+### The prediction, and why it was wrong
+
+The fixing commit speaks of the host writing *"the NEXT UBATCH's inputs while
+the device is still reading the previous one"*. With `-ub 2048`, a
+6,800-token prompt is four ubatches and a 1,000-token one is a single ubatch —
+which would explain the table exactly. **Prediction: raise `-ub` to 8192 so
+the whole prompt is one ubatch, hold everything else, and it should go clean.**
+
+    -ub 8192, same ~6,800-token prompt    2 of 5 CORRUPT
+
+**It did not.** The rate falls — 10 of 10 to 2 of 5 — and the defect does not
+disappear. So the overlap is not between consecutive ubatches of one request.
+With two requests in flight, the *other* request's inputs are the ones being
+written while these are read, and that happens at any ubatch count.
+
+Which fits the commit message better than the reading that produced the
+prediction, and re-reads the size effect: a longer prompt means longer in
+prompt processing, so a WIDER WINDOW for two sequences to overlap — not a
+discrete ubatch threshold. It is a rate, not a switch, and every clean cell
+above is a low rate rather than an immunity.
 
 ## What this does not say
 

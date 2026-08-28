@@ -228,12 +228,19 @@ why a restore during another slot's PROMPT PROCESSING poisons it while a
 restore into an idle server does not.
 
 That mechanism accounts for every ingredient measured: it needs two sequences
-in flight (two slots AND concurrency), it worsens with more and larger graph
-inputs (the tool block: 10 of 10 with, 1 of 5 without), it is indifferent to
-speculation, KV layout and `-cram`, it cannot happen on Vulkan, and **this
-patch removes it by making the shared buffer never exist** — `integrated =
-false` means the device does not accept the host buffer type, so a split input
-copy IS made.
+in flight (two slots AND concurrency), it is indifferent to speculation, KV
+layout and `-cram`, it cannot happen on Vulkan, and **this patch removes it by
+making the shared buffer never exist** — `integrated = false` means the device
+does not accept the host buffer type, so a split input copy IS made.
+
+**And it is a RATE, not a switch.** Prompt size dominates: ~6,800 tokens is 10
+of 10, ~1,000 tokens is 0 of 5 with the same ten tools. A prediction that the
+ubatch boundary was the mechanism — raise `-ub` so the whole prompt is one
+ubatch and it should go clean — was tested and FAILED: 2 of 5, down from 10 of
+10 but not gone. With two requests in flight the other request's inputs are
+the ones being written while these are read, at any ubatch count. So a longer
+prompt is a wider window for overlap, and every clean cell in the hunt is a
+low rate rather than an immunity. Details in `HUNT.md` § 6.
 
 Full evidence, every run and every caveat:
 `bench/reports/2026-08-28_defect1-hunt/HUNT.md`.

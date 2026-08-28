@@ -68,7 +68,8 @@ URL = "http://127.0.0.1:%d" % PORT
 # Set by main(): the binary under test, and the shape of the server.
 BINARY = None
 ARGS = {"np": 2, "ctx": 32768, "tools": 10, "spec": True, "cram": True,
-        "mmproj": False, "kv_unified": False}
+        "mmproj": False, "kv_unified": False, "bulk": 700, "sys": 300,
+        "ub": 2048}
 
 
 def server_argv():
@@ -81,7 +82,7 @@ def server_argv():
     a = ["--alias", "sidetest", "-m", MODEL,
          "-ngl", "999", "-fa", "on",
          "-c", str(ARGS["ctx"]), "-np", str(ARGS["np"]),
-         "-b", "2048", "-ub", "2048"]
+         "-b", str(max(ARGS["ub"], 2048)), "-ub", str(ARGS["ub"])]
     if ARGS["cram"]:
         a += ["-cram", "32768"]
     if not ARGS["kv_unified"] and ARGS["np"] > 1:
@@ -95,8 +96,12 @@ def server_argv():
                 "--jinja", "--host", "127.0.0.1", "--port", str(PORT)]
 
 
-def make_body(which, nonce, n_tools=None, bulk_reps=700, sys_reps=300):
+def make_body(which, nonce, n_tools=None, bulk_reps=None, sys_reps=None):
+    # Sizes are variables too. A reproducer somebody else can run is a small
+    # one, and how small this gets is a measurement rather than a guess.
     n_tools = ARGS["tools"] if n_tools is None else n_tools
+    bulk_reps = ARGS["bulk"] if bulk_reps is None else bulk_reps
+    sys_reps = ARGS["sys"] if sys_reps is None else sys_reps
     system = ("You are assistant %s. " % which) + ("Directive %s. " % which) * sys_reps
     bulk = ("Handbook for workspace %s.\n" % which) + \
            ("Rule %s about this repository. " % which) * bulk_reps
@@ -226,6 +231,15 @@ def main():
     ap.add_argument("--np", type=int, default=2)
     ap.add_argument("--ctx", type=int, default=32768)
     ap.add_argument("--tools", type=int, default=10)
+    ap.add_argument("--bulk", type=int, default=700,
+                    help="repetitions in the bulk user message")
+    ap.add_argument("--sys", type=int, default=300,
+                    help="repetitions in the system message")
+    ap.add_argument("--ub", type=int, default=2048,
+                    help="-ub. The commit that fixes this speaks of the host "
+                         "writing the NEXT UBATCH's inputs while the device "
+                         "still reads the previous one, so a prompt that fits "
+                         "in ONE ubatch should not be able to trigger it")
     ap.add_argument("--no-spec", action="store_true")
     ap.add_argument("--no-cram", action="store_true")
     ap.add_argument("--mmproj", action="store_true")
@@ -237,7 +251,8 @@ def main():
     global BINARY
     BINARY = runlib.resolve_binary(a.binary)
     ARGS.update(np=a.np, ctx=a.ctx, tools=a.tools, spec=not a.no_spec,
-                cram=not a.no_cram, mmproj=a.mmproj, kv_unified=a.kv_unified)
+                cram=not a.no_cram, mmproj=a.mmproj, kv_unified=a.kv_unified,
+                bulk=a.bulk, sys=a.sys, ub=a.ub)
     meta = runlib.provenance(BINARY)
     meta["shape"] = dict(ARGS)
     meta["argv"] = server_argv()

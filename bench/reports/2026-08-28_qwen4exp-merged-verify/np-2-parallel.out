@@ -1,0 +1,26 @@
+  dead man's switch armed: llama-user@qwen38 restarts in 25 min whatever happens here
+  stopping llama-user@qwen38 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 1.5 GiB) ...
+  GTT settled at 1.5 GiB
+  starting flashnext.env on port 8081 as sideserver-8081 (MemoryMax=32G — 125 GiB RAM - 80 the model will pin in GTT - 12 for the host)
+  up · GTT 81.5 GiB
+  running: bash /tmp/claude-1000/-mnt-shared-Development-inference-stack/30cd4eda-efd6-4df2-bdab-b6d27f974d38/scratchpad/probe_par.sh
+--- slots before
+slots: [(0, None, False), (1, None, False)]
+--- two requests IN PARALLEL
+[A] http=200 {"choices":[{"finish_reason":"length","index":0,"message":{"role":"assistant","content":"eins\nzwei\ndrei\nvier\nfünf\nsechs\nsieben\nacht\nneun"}}],"created":1787946882,"model":"flashnext","system_fingerprint":"b288-c9
+[B] http=200 {"choices":[{"finish_reason":"length","index":0,"message":{"role":"assistant","content":"Berlin, Paris, London, Madrid, Rom, Lissabon, Amsterdam, Brüssel, Wien, Bern,"}}],"created":1787946882,"model":"flashnext","system
+--- slots after the pair
+slots: [(0, 58, False), (1, 55, False)]
+--- a third request, sequential
+[C] http=200 {"choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"42"}}],"created":1787946883,"model":"flashnext","system_fingerprint":"b288-c93d460b6","object":"chat.completion","usage":{"completion
+--- slots after the third
+slots: [(0, 26, False), (1, 55, False)]
+--- is the server still alive?
+health=200
+probe rc=0
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.5 GiB
+  restarting llama-user@qwen38 and llama-probe.timer
+  done · dead man's switch disarmed

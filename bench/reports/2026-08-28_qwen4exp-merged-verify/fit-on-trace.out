@@ -1,0 +1,19 @@
+  dead man's switch armed: llama-user@qwen38 restarts in 25 min whatever happens here
+  stopping llama-user@qwen38 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 1.5 GiB) ...
+  GTT settled at 1.5 GiB
+  starting flashnext.env on port 8081 as sideserver-8081 (MemoryMax=32G — 125 GiB RAM - 80 the model will pin in GTT - 12 for the host)
+  up · GTT 82.3 GiB
+  running: bash /tmp/claude-1000/-mnt-shared-Development-inference-stack/30cd4eda-efd6-4df2-bdab-b6d27f974d38/scratchpad/probe.sh
+--- /slots before
+slots: [(0, None, None)]
+--- request 1: Antworte nur mit: eins
+http=200
+{"choices":[{"finish_reason":"stop","index":0,"message":{"role":"assistant","content":"eins"}}],"created":1787947069,"model":"flashnext","system_fingerprint":"b288-c93d460b6","object":"chat.completion","usage":{"completion_tokens":3,"prompt_tokens":19,"total_tokens":22,"prompt_tokens_details":{"cached_tokens":0}},"id":"chatcmpl-fFV5pPgIUn7Y2UO8vyo5riXF6Vb0MsKo","timings":{"cache_n":0,"prompt_n":19
+slots: [(0, 21, None)]
+probe rc=0
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.5 GiB
+  restarting llama-user@qwen38 and llama-probe.timer
+  done · dead man's switch disarmed

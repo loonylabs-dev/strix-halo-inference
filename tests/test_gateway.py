@@ -21,6 +21,7 @@ GW  = common.load("setup/claude/cc-gateway.py", "cc_gateway",
 VW  = common.load("tools/prewarm.py", "prewarm",
                      {"SLOT_PATH": "/nonexistent-slots"})
 SYN = common.load("tools/synthetic.py", "synthetic")
+DIA = common.load("setup/claude/dialects.py", "dialects")
 
 
 # --------------------------------------------------------- Cache-Korrektur ---
@@ -1440,3 +1441,135 @@ class TestTokenFile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWarmIsAMeasurement(unittest.TestCase):
+    """`warm` was a claim: "I have seen this prefix id". Whether llama.cpp
+    then reused anything was never asked — and on 28.08.2026 a restore from
+    disk was logged warm, cost a full 14960-token prefill, and nothing
+    anywhere disagreed. The numbers were in the answer the gateway had just
+    proxied. See `saved-prefix-holds-a-foreign-state`.
+    """
+
+    def test_llama_cpps_own_timings_are_preferred(self):
+        got = DIA.reuse_from_text('{"timings": {"cache_n": 14957, "prompt_n": 4}}')
+        self.assertEqual(got, (14957, 4))
+
+    def test_the_anthropic_shape_is_read_from_the_head_of_a_stream(self):
+        """message_start is the FIRST event, not the last, which is why the
+        sniffer keeps a head as well as a tail."""
+        sse = ('data: {"type":"message_start","message":{"usage":'
+               '{"cache_read_input_tokens": 30, "input_tokens": 15}}}\n\n'
+               'data: {"type":"ping"}\n\n')
+        self.assertEqual(DIA.reuse_from_text(sse), (30, 15))
+
+    def test_the_openai_shape_subtracts_rather_than_guessing(self):
+        got = DIA.reuse_from_text(
+            '{"usage": {"prompt_tokens": 100,'
+            ' "prompt_tokens_details": {"cached_tokens": 90}}}')
+        self.assertEqual(got, (90, 10))
+
+    def test_rubbish_answers_none_instead_of_raising(self):
+        """It is fed the two ends of a proxied stream, so half events and
+        truncated JSON are NORMAL input. A gateway that dies over its own
+        bookkeeping is worse than one that cannot label a request."""
+        for text in ("", "data: {\"broken\": ", ":\n\n", "not json at all",
+                     '{"usage": {"input_tokens": "many"}}'):
+            with self.subTest(text=text[:20]):
+                self.assertIsNone(DIA.reuse_from_text(text))
+
+    def test_a_restore_that_carried_nothing_is_a_verdict(self):
+        ok, why = GW.restore_verdict(("f", 14957), (0, 14960))
+        self.assertIs(ok, False)
+        self.assertIn("14957", why)
+        self.assertIn("does not hold what its name says", why)
+
+    def test_a_restore_that_carried_is_left_alone(self):
+        ok, _ = GW.restore_verdict(("f", 14957), (14957, 4))
+        self.assertIs(ok, True)
+
+    def test_a_prefix_that_grew_a_little_is_not_condemned(self):
+        """The threshold is generous on purpose: a request that added a tool
+        since the save still reuses most of the state, and that is the file
+        working, not failing."""
+        ok, _ = GW.restore_verdict(("f", 14957), (12000, 3000))
+        self.assertIs(ok, True)
+
+    def test_without_numbers_there_is_no_verdict(self):
+        """Unknown must not read as guilty — an answer whose accounting could
+        not be parsed says nothing about the file."""
+        self.assertIsNone(GW.restore_verdict(("f", 14957), None)[0])
+        self.assertIsNone(GW.restore_verdict(None, (0, 14960))[0])
+        self.assertIsNone(GW.restore_verdict(("f", 0), (0, 14960))[0])
+
+
+class TestQuarantine(unittest.TestCase):
+    """A wrong file is not the defect. A wrong file that costs a cold prefill
+    on every future request for that prefix is."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(prefix="slots-")
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        self.saved = {k: getattr(GW, k) for k in ("SLOT_PATH", "SAVED")}
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+        GW.SLOT_PATH = self.d
+        GW.SAVED = {"abc123": "abc123"}
+        with open(os.path.join(self.d, "abc123.bin"), "w") as f:
+            f.write("x")
+        with open(os.path.join(self.d, "abc123.json"), "w") as f:
+            json.dump({"name": "abc123", "render_id": "deadbeef"}, f)
+
+    def test_the_file_is_set_aside_with_its_reason_and_not_deleted(self):
+        """1.1 GB and a cold prefill bought it; it is worth looking at before
+        it goes, and a deletion cannot be argued with afterwards."""
+        self.assertTrue(GW.quarantine("abc123", "abc123", "reused 0 of 14957"))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "abc123.bin")))
+        self.assertTrue(os.path.exists(os.path.join(self.d, "abc123.bin.unusable")))
+        side = json.load(open(os.path.join(self.d, "abc123.json")))
+        self.assertIn("reused 0 of 14957", side["unusable"]["reason"])
+        self.assertEqual(side["render_id"], "deadbeef", "the sidecar is kept")
+
+    def test_it_leaves_the_store_so_the_next_request_does_not_pay_again(self):
+        GW.quarantine("abc123", "abc123", "why")
+        self.assertNotIn("abc123", GW.SAVED)
+
+    def test_a_missing_file_does_not_take_the_gateway_down(self):
+        os.remove(os.path.join(self.d, "abc123.bin"))
+        self.assertTrue(GW.quarantine("abc123", "abc123", "why"))
+        self.assertNotIn("abc123", GW.SAVED)
+
+
+class TestTheSaveIsBracketed(unittest.TestCase):
+    """The WRITE side of the same defect.
+
+    Saving a prefix means putting it into a slot, and with -np 1 there is one.
+    The save is asynchronous and takes ~102 s here, so a request admitted
+    meanwhile takes that slot — and what lands on disk is its prefix under our
+    name. The window cannot be inspected afterwards without reading a
+    gigabyte, so it is WATCHED instead.
+    """
+
+    def test_the_source_counts_what_was_served_and_compares_it(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("served_before = SERVED_COUNT", src)
+        self.assertIn("SERVED_COUNT != served_before", src)
+
+    def test_the_counter_is_raised_where_the_request_reaches_the_model(self):
+        """Not at admission and not at the answer: what matters is that the
+        model was asked, because that is what touches the slot."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("async def handler(")
+        body = src[start:src.index("\n    finally:", start)]
+        self.assertIn("SERVED_COUNT += 1", body)
+        # The INFERENCE forward, not the pass-through one earlier in the
+        # handler: only the former puts a prompt into a slot.
+        self.assertLess(body.index("SERVED_COUNT += 1"),
+                        body.index("return await forward(req, body, out, early,"),
+                        "counted after the forward, a save could still race it")
+
+    def test_a_dropped_save_names_the_defect_it_avoids(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("saved-prefix-holds-a-foreign-state", src)

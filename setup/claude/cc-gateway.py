@@ -207,6 +207,11 @@ IN_FLIGHT_PER_TOKEN = {}
 # into a free slot before forwarding — ~0.15 s instead of 110 s.
 SLOT_PATH = env("SLOT_PATH", "SLOTPFAD", os.path.expanduser("~/.cache/llama-slots"))
 SAVED = {}
+# How many requests have been forwarded to the model. Not a statistic: a save
+# takes ~102 s here and there is ONE slot, so anything served in that window
+# may have replaced the state being written out. The save compares this before
+# and after and throws its own file away if the number moved. See auto_save.
+SERVED_COUNT = 0
 
 # Save automatically once a prefix has warmed up for the first time. 0 turns
 # it off. The upper limit keeps the disk from filling up; cleanup goes by
@@ -354,13 +359,34 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                 with open(tmp, "w", encoding="utf-8") as f:
                     json.dump(body, f, ensure_ascii=False)
                 t0 = time.time()
+                # THE BRACKET. Saving a prefix means putting it into a slot,
+                # and with -np 1 there is one. A request admitted while the
+                # save runs takes that slot, and what lands on disk is then
+                # ITS prefix under our name — measured on 28.08.2026 as a file
+                # that restored 14957 tokens and matched nothing the request
+                # asked for. The file cannot be inspected afterwards without
+                # reading a gigabyte, so instead the WINDOW is watched: if
+                # anything was served while we were writing, the file is not
+                # trustworthy and is dropped. Costs a save, not a wrong answer.
+                served_before = SERVED_COUNT
                 pr = await asyncio.create_subprocess_exec(
                     sys.executable, PREWARM, "save",
                     "--body", tmp, "--name", id_,
                     "--gateway-id", id_, "--dialect", dialect,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
                 proc_out, _ = await pr.communicate()
-                if pr.returncode == 0:
+                if pr.returncode == 0 and SERVED_COUNT != served_before:
+                    n = SERVED_COUNT - served_before
+                    log("NOTE        %s saved while %d request(s) were served — "
+                        "dropping it rather than trusting it, see "
+                        "saved-prefix-holds-a-foreign-state" % (id_, n))
+                    for suffix in (".bin", ".json"):
+                        try:
+                            os.remove(os.path.join(SLOT_PATH, id_ + suffix))
+                        except OSError:
+                            pass
+                    SAVED = refresh_saved(force=True)
+                elif pr.returncode == 0:
                     SAVED = refresh_saved(force=True)
                     if id_ not in SAVED:
                         log("WARNING     %s saved but missing from the store — "
@@ -380,7 +406,14 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
         _save_pending.discard(id_)
 
 async def restore_from_disk(id_):
-    """Pull a saved prefix into a free slot. True on success."""
+    """Pull a saved prefix into a free slot.
+
+    Returns (name, n_restored) so the caller can hold the CLAIM against what
+    the server later reports having reused. A restore is not a success because
+    it copied bytes: on 28.08.2026 one copied 14957 tokens in 285 ms and the
+    request that followed evaluated all 14960 of them. None when nothing was
+    restored.
+    """
     name = SAVED.get(id_)
     # The file may be gone since the last read (cleanup service). Then re-read
     # instead of handing llama-server a restore onto nothing.
@@ -388,7 +421,7 @@ async def restore_from_disk(id_):
         log("NOTE        %s.bin has vanished — store re-read" % name)
         name = refresh_saved(force=True).get(id_)
     if not name:
-        return False
+        return None
     try:
         timeout = ClientTimeout(total=300)
         async with ClientSession(timeout=timeout) as s:
@@ -401,7 +434,7 @@ async def restore_from_disk(id_):
             # a poisoned KV state ruins every answer after it — fatal.
             if any(x.get("is_processing") for x in slots):
                 log("NOTE        restore of %s deferred: server busy" % name)
-                return False
+                return None
     # Prefer EMPTY slots. Otherwise the reload overwrites a prefix that was
     # just fetched — in testing projB evicted projA from slot 0, and the next
     # request for projA ran cold.
@@ -412,7 +445,7 @@ async def restore_from_disk(id_):
             free = empty + used
             if not free:
                 log("NOTE        no free slot for %s" % name)
-                return False
+                return None
             target = free[0]
             if not empty:
                 log("NOTE        all slots busy — %s evicts slot %d" % (name, target))
@@ -421,15 +454,75 @@ async def restore_from_disk(id_):
                               json={"filename": name + ".bin"}) as r:
                 if r.status != 200:
                     log("NOTE        restoring %s: HTTP %d" % (name, r.status))
-                    return False
+                    return None
                 d = await r.json()
         log("RESTORED    prefix %s from %s.bin -> slot %d, %d tokens, %.0f ms"
             % (id_, name, target, d.get("n_restored", -1),
                (time.time() - t0) * 1000))
-        return True
+        n = d.get("n_restored")
+        return (name, n if isinstance(n, int) else 0)
     except Exception as e:
         log("NOTE        restore failed: %r" % (e,))
+        return None
+
+def quarantine(name, id_, reason):
+    """Set a saved prefix aside, with the evidence, instead of deleting it.
+
+    RENAMED rather than removed, for two reasons that pull the same way: a
+    file that cost 1.1 GB of disk and a cold prefill is worth looking at
+    before it goes, and a deletion cannot be argued with afterwards. The
+    sidecar keeps the reason, so `prewarm list` and a human both see WHY.
+
+    It is dropped from SAVED in the same breath. Otherwise the next request
+    for that id restores it again and pays the same prefill again — the defect
+    this exists for is not that a file is wrong, it is that being wrong costs
+    forever.
+    """
+    global SAVED
+    binp = os.path.join(SLOT_PATH, name + ".bin")
+    try:
+        if os.path.exists(binp):
+            os.rename(binp, binp + ".unusable")
+        side = os.path.join(SLOT_PATH, name + ".json")
+        if os.path.exists(side):
+            with open(side, encoding="utf-8") as f:
+                d = json.load(f)
+            d["unusable"] = {"reason": reason,
+                             "when": time.strftime("%Y-%m-%d %H:%M")}
+            with open(side, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        log("NOTE        quarantine of %s failed: %r" % (name, e))
         return False
+    SAVED = {k: v for k, v in SAVED.items() if v != name}
+    log("QUARANTINED %s (%s) — %s" % (name, id_, reason))
+    return True
+
+
+def restore_verdict(restored, reuse):
+    """Did the restore carry? (verdict, reason) — verdict None when unknown.
+
+    `restored` is (name, n_restored) as claimed by the server at restore time,
+    `reuse` is (reused, evaluated) as reported for the request that followed.
+
+    The threshold is deliberately generous. A restore that carried MOST of its
+    tokens is working as intended even if the request grew a little since the
+    save; what this has to catch is the case measured on 28.08., where 14957
+    tokens were restored and 14960 were then computed — reuse of nothing at
+    all. Half is far below any normal case and far above the broken one.
+    """
+    if not restored or not reuse:
+        return None, "no numbers"
+    name, n_restored = restored
+    reused, evaluated = reuse
+    if n_restored <= 0:
+        return None, "nothing was restored"
+    if reused >= n_restored // 2:
+        return True, "reused %d of %d restored" % (reused, n_restored)
+    return False, ("restored %d tokens, the server then reused %d and computed "
+                   "%d — the file does not hold what its name says"
+                   % (n_restored, reused, evaluated))
+
 
 def log(*a):
     print("[%8.1fs]" % (time.time() - T0), *a, flush=True)
@@ -990,6 +1083,9 @@ async def handler(req):
     # Set BEFORE the try, because the finally reads them and an exception can
     # be raised at any point inside.
     answered = {"ok": False}
+    # What a restore CLAIMED, and room for what the server then did with it.
+    restored = None
+    sniff = {"head": b"", "tail": b""}
     was_cold = False
     t_start = time.time()
     try:
@@ -999,7 +1095,8 @@ async def handler(req):
         # restore (up to 300 s) used to make the gate slot seep away, and
         # MAX_INFLIGHT dropped by one for the rest of the service's life.
         if cold and ident in SAVED:
-            if await restore_from_disk(ident):
+            restored = await restore_from_disk(ident)
+            if restored:
                 cold = False
         t_start = time.time()
         if ident:
@@ -1015,7 +1112,9 @@ async def handler(req):
             % (ip, PRIORITY_NAME[prio], who, ident, "COLD" if cold else "warm",
                waited, depth, "  kept-alive" if early is not None else ""))
         was_cold = cold
-        return await forward(req, body, out, early, answered)
+        global SERVED_COUNT
+        SERVED_COUNT += 1
+        return await forward(req, body, out, early, answered, sniff)
     finally:
         # EVERYTHING that belongs after the answer happens HERE, not after the
         # forward() call, and this is not style.
@@ -1050,11 +1149,35 @@ async def handler(req):
                     asyncio.create_task(auto_save(ident, json.loads(out), dialect))
                 except Exception as e:
                     log("NOTE        save not scheduled: %r" % (e,))
+            # WHAT THE SERVER ACTUALLY DID, before anything is claimed about
+            # it. The numbers ride along in the answer that was just proxied.
+            reuse = None
+            try:
+                text = (sniff["head"] + b"\n" + sniff["tail"]).decode(
+                    "utf-8", "ignore")
+                reuse = DIA.reuse_from_text(text)
+            except Exception as e:
+                log("NOTE        reuse not read: %r" % (e,))
+            if ident and reuse:
+                e = PREFIXES.setdefault(ident, {})
+                e["reused_sum"] = e.get("reused_sum", 0) + reuse[0]
+                e["evaluated_sum"] = e.get("evaluated_sum", 0) + reuse[1]
             if ident:
                 PREFIXES[ident]["took_sum"] += took
                 PREFIXES[ident]["last"] = time.time()
-            log("DONE        %-15s %-6s who=%-12s prefix=%s took=%.1fs"
-                % (ip, PRIORITY_NAME[prio], who, ident, took))
+            log("DONE        %-15s %-6s who=%-12s prefix=%s took=%.1fs%s"
+                % (ip, PRIORITY_NAME[prio], who, ident, took,
+                   "" if not reuse else
+                   "  reused=%d computed=%d" % reuse))
+            # A restore that carried nothing is not a slow request, it is a
+            # wrong file — and one that would cost this again on every future
+            # request for the same prefix.
+            ok, why = restore_verdict(restored, reuse)
+            if ok is False:
+                quarantine(restored[0], ident, why)
+            elif ok is None and restored:
+                log("NOTE        restore of %s unverified: %s"
+                    % (restored[0], why))
         else:
             log("ABORTED     %-15s %-6s who=%-12s prefix=%s after=%.1fs — no "
                 "answer, nothing saved"
@@ -1170,12 +1293,27 @@ async def models_with_aliases(req, body):
             add_derived_names(listing, MODES_LIB.names(SERVED, MODES)))
     return web.json_response(add_aliases(listing, KWARGS_BY_MODEL, SERVED))
 
-async def forward(req, body, out, resp=None, answered=None):
+# How much of a proxied answer is kept to read the accounting out of. Head AND
+# tail, because the two dialects put it at opposite ends: an Anthropic stream
+# carries the input tokens in `message_start`, the FIRST event; an OAI stream
+# carries `timings` in the last one. 8 KiB of each is far more than either
+# needs and small enough that a 200 MB answer costs nothing to watch.
+SNIFF_BYTES = 8192
+
+
+async def forward(req, body, out, resp=None, answered=None, sniff=None):
     """Pass the request through. `resp` is an already-prepared response.
 
     It is set when the caller was kept alive while queued: the headers went out
     before the upstream status was known, so a later failure can only be
     reported inside the stream.
+
+    `sniff` is a two-key dict the caller owns, filled with the first and last
+    SNIFF_BYTES of the answer as it passes. It exists so the warm/cold label
+    can be a MEASUREMENT: llama-server reports per request how many prompt
+    tokens it reused and how many it computed, and until 28.08.2026 this
+    gateway proxied that number straight past itself while claiming warm on a
+    request that reused nothing.
 
     `answered` is a one-key dict the caller owns. It is set the moment the
     UPSTREAM answer has been received in full — before write_eof, because at
@@ -1203,6 +1341,14 @@ async def forward(req, body, out, resp=None, answered=None):
                 return resp
             async for ch in up.content.iter_any():   # no buffering -> SSE stays intact
                 await resp.write(ch)
+                if sniff is not None:
+                    # A rolling window, not a copy of the answer. The caller
+                    # reads it once the response is done; nothing here waits
+                    # for it or parses it, so a malformed chunk cannot delay
+                    # or break the proxying.
+                    if len(sniff["head"]) < SNIFF_BYTES:
+                        sniff["head"] += ch[:SNIFF_BYTES - len(sniff["head"])]
+                    sniff["tail"] = (sniff["tail"] + ch)[-SNIFF_BYTES:]
             if answered is not None:
                 answered["ok"] = True    # the model is done; the slot holds it
             await resp.write_eof()

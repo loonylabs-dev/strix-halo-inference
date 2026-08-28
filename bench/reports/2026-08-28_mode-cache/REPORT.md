@@ -109,7 +109,39 @@ thrown away: llama-server returns `timings.cache_n` and `prompt_n`, which say
 exactly how many tokens were reused and how many were computed. A warm/cold
 label could be a measurement instead of a claim, at no cost.
 
-Registered as `saved-prefix-holds-a-foreign-state`.
+Registered as `saved-prefix-holds-a-foreign-state`, and fixed at both ends the
+same evening.
+
+## The fix, and its proof on the file that started it
+
+**Read side.** `dialects.reuse_from_text()` reads what the server actually did
+out of the answer the gateway is already proxying — `timings.cache_n` /
+`prompt_n` from llama.cpp, `cache_read_input_tokens` / `input_tokens` from the
+Anthropic route, `prompt_tokens_details.cached_tokens` from the OpenAI shape —
+sniffed from the first and last 8 KiB, because an Anthropic stream carries the
+accounting in its FIRST event and an OAI stream in its last. Every `DONE` line
+now ends in `reused=N computed=M`, and a restore that reused less than half of
+what it loaded quarantines its own file.
+
+**Write side.** `auto_save` counts the requests that reached the model before
+and after the save and drops its own file if anything was served in that
+window — with one slot, that request took the slot being written out. The race
+is not prevented; its result is no longer published.
+
+Live, on the production gateway, against `8774f83a80be`:
+
+    RESTORED    prefix 8774f83a80be ... 14957 tokens, 122 ms
+    START       ... warm
+    DONE        ... took=74.3s  reused=0 computed=14960
+    QUARANTINED 8774f83a80be — restored 14957 tokens, the server then reused 0
+                and computed 14960 — the file does not hold what its name says
+    START       ... warm
+    DONE        ... took=1.1s   reused=14956 computed=4
+
+The first line is the defect, the fourth is the system noticing it for the
+first time, and the last is what a working restore looks like when it is
+measured rather than claimed. The store now cleans itself, one prefill per bad
+file, and `ls ~/.cache/llama-slots/*.unusable` says what went.
 
 ## Files
 

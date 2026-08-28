@@ -275,3 +275,99 @@ def template_payload(body, dialect, probe="X"):
     if isinstance(kw, dict) and kw:
         payload["chat_template_kwargs"] = kw
     return payload
+
+
+# --- what the server actually did -------------------------------------------
+#
+# Until 28.08.2026 the gateway's warm/cold label was a CLAIM: "I have seen this
+# prefix id before". Whether llama.cpp then reused anything was never asked,
+# and on that day a restore from disk was logged warm, cost a full 14960-token
+# prefill, and nothing anywhere disagreed — see
+# `saved-prefix-holds-a-foreign-state` in setup/defects.json.
+#
+# The answer was in the response the whole time. llama-server reports, per
+# request, how many prompt tokens came out of a cache and how many it had to
+# compute. Three shapes carry it, and a gateway that speaks two dialects meets
+# all three:
+#
+#   llama.cpp OAI    "timings": {"cache_n": 14957, "prompt_n": 4}
+#   OpenAI usage     "usage": {"prompt_tokens": 14961,
+#                              "prompt_tokens_details": {"cached_tokens": 14957}}
+#   Anthropic        "usage": {"cache_read_input_tokens": 14957,
+#                              "input_tokens": 4}
+#
+# `timings` is preferred where present: it is llama.cpp's own accounting rather
+# than a translation of it.
+
+def _pair(reused, evaluated):
+    ok = (isinstance(reused, int) and isinstance(evaluated, int)
+          and reused >= 0 and evaluated >= 0)
+    return (reused, evaluated) if ok else None
+
+
+def reuse_from_object(obj):
+    """(reused, evaluated) from ONE parsed response object, or None.
+
+    Anthropic's streaming carries the input accounting in `message_start`,
+    which is the FIRST event, not the last — so a caller sniffing a stream has
+    to offer this function the head as well as the tail.
+    """
+    if not isinstance(obj, dict):
+        return None
+    t = obj.get("timings")
+    if isinstance(t, dict):
+        got = _pair(t.get("cache_n"), t.get("prompt_n"))
+        if got:
+            return got
+    for u in (obj.get("usage"),
+              (obj.get("message") or {}).get("usage")
+              if isinstance(obj.get("message"), dict) else None):
+        if not isinstance(u, dict):
+            continue
+        got = _pair(u.get("cache_read_input_tokens"), u.get("input_tokens"))
+        if got:
+            return got
+        det = u.get("prompt_tokens_details")
+        if isinstance(det, dict) and isinstance(u.get("prompt_tokens"), int):
+            cached = det.get("cached_tokens")
+            if isinstance(cached, int):
+                got = _pair(cached, u["prompt_tokens"] - cached)
+                if got:
+                    return got
+    return None
+
+
+def reuse_from_text(text):
+    """(reused, evaluated) from a response body or an SSE fragment, or None.
+
+    Tolerant on purpose. It is fed the head and the tail of a proxied stream,
+    so it will see truncated JSON, half events and keep-alive comments, and it
+    must answer "I do not know" rather than raise — a gateway that dies over
+    its own bookkeeping is worse than one that cannot label a request.
+    """
+    if not text:
+        return None
+    best = None
+    for chunk in text.split("\n"):
+        line = chunk.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        got = reuse_from_object(obj)
+        if got:
+            # The LAST complete answer wins: in an Anthropic stream the head
+            # carries message_start's accounting, and nothing later contradicts
+            # it; in an OAI stream the final chunk carries `timings`, which is
+            # the better source.
+            best = got
+    if best is None:
+        try:
+            best = reuse_from_object(json.loads(text))
+        except Exception:
+            best = None
+    return best

@@ -277,13 +277,33 @@ class TestScript(unittest.TestCase):
         """
         loc = common.comma_decimal_locale(self)
         runs = {}
+        # C, then the locale, then C AGAIN. gtt.sh reports the LIVE GTT state,
+        # and a differential test compares two readings of a quantity that
+        # moves: if anything allocates or frees between the two calls, the
+        # outputs differ and this test blames the locale for it. Found 28.08.
+        # during a measurement session that was starting and stopping servers
+        # — one red run in a suite that was green six times either side of it,
+        # with a message naming LC_NUMERIC and a cause that had nothing to do
+        # with it. A flake that accuses the wrong thing is worse than a flake.
+        #
+        # The third reading decides which it is. C == C means the machine held
+        # still and any C-vs-locale difference IS the locale. C != C means the
+        # machine moved and this test cannot answer — so it says so instead of
+        # failing, which is this repo's rule for a test that cannot decide.
         for name, env in (("C", dict(os.environ, LC_ALL="C", LANG="C")),
-                          (loc, dict(os.environ, LC_ALL=loc, LANG=loc))):
+                          (loc, dict(os.environ, LC_ALL=loc, LANG=loc)),
+                          ("C2", dict(os.environ, LC_ALL="C", LANG="C"))):
             r = subprocess.run(["bash", self.GTT], capture_output=True,
                                text=True, timeout=60, env=env)
             self.assertEqual(r.returncode, 0, "%s: %s" % (name, r.stdout + r.stderr))
             self.assertNotIn("printf:", r.stderr, name)
             runs[name] = r.stdout
+        if runs["C"] != runs["C2"]:
+            self.skipTest(
+                "the live GTT state moved between two identical C runs, so a "
+                "C-vs-%s difference could not be attributed to the locale. "
+                "Something is allocating or freeing on this machine — re-run "
+                "when it is idle." % loc)
         self.assertEqual(runs["C"], runs[loc],
                          "gtt.sh prints differently under %s than under C — a "
                          "number is being formatted by something that reads "

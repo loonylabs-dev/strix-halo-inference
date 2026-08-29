@@ -1,0 +1,185 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>cc-gateway trace</title>
+<!--
+  One file, no build, no dependency, nothing loaded from anywhere. It is
+  served by `python3 tools/tracelog.py serve` on 127.0.0.1 and reads the
+  gateway's JSONL trace through two endpoints:
+
+      /events?file=&since=   everything after a byte offset, text REDACTED
+      /record?file=&at=      one row, in full — only when a row is clicked
+
+  The redaction is the point of the split: a table that ships whole prompts to
+  the browser by default is one port-forward away from being a leak. What the
+  row shows is that there IS text and how much; the click asks for it.
+-->
+<style>
+  :root {
+    --bg:#12141a; --fg:#e6e8ee; --dim:#8b93a7; --line:#262a35;
+    --cold:#e0913a; --warm:#4a9d6a; --bad:#d1495b; --acc:#5b8dd6;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fbfbfd; --fg:#1b1e26; --dim:#6b7280; --line:#e3e6ee;
+            --cold:#b4651a; --warm:#2f7a4d; --bad:#b3213a; --acc:#2f5fa8; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  header { position:sticky; top:0; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:10px 14px; display:flex; gap:14px; align-items:center; flex-wrap:wrap }
+  h1 { font-size:13px; margin:0 10px 0 0; font-weight:600; letter-spacing:.02em }
+  input,select,button { background:transparent; color:var(--fg); border:1px solid var(--line);
+                        border-radius:5px; padding:4px 8px; font:inherit }
+  button { cursor:pointer } button:hover { border-color:var(--acc) }
+  button.on { border-color:var(--acc); color:var(--acc) }
+  .sp { flex:1 } .dim { color:var(--dim) }
+  table { border-collapse:collapse; width:100%; }
+  th,td { text-align:left; padding:3px 10px; border-bottom:1px solid var(--line);
+          white-space:nowrap; }
+  th { position:sticky; top:47px; background:var(--bg); color:var(--dim); font-weight:500 }
+  tbody tr { cursor:pointer } tbody tr:hover { background:rgba(127,127,127,.10) }
+  td.num { text-align:right; font-variant-numeric:tabular-nums }
+  .cold { color:var(--cold) } .warm { color:var(--warm) } .bad { color:var(--bad) }
+  .kind { color:var(--dim) }
+  .bar { display:inline-block; height:9px; vertical-align:middle; border-radius:2px }
+  .bar-r { background:var(--warm) } .bar-c { background:var(--cold) }
+  pre { margin:0; padding:10px 14px; white-space:pre-wrap; word-break:break-word;
+        background:rgba(127,127,127,.07); border-left:2px solid var(--acc) }
+  .empty { padding:30px 14px; color:var(--dim) }
+</style>
+
+<header>
+  <h1>cc-gateway trace</h1>
+  <select id=day></select>
+  <input id=q placeholder="filter: slug, prefix, who, mode…" size=26>
+  <select id=kind>
+    <option value="">alle Arten</option>
+    <option>request</option><option>save</option><option>restore</option>
+    <option>quarantine</option><option>mismatch</option>
+  </select>
+  <button id=live class=on>live</button>
+  <span class=sp></span>
+  <span class=dim id=meta></span>
+</header>
+<table>
+  <thead><tr>
+    <th>Zeit</th><th>Art</th><th>wer</th><th>slug</th><th>served/mode</th>
+    <th>prefix</th><th></th><th class=num>s</th>
+    <th class=num>reused</th><th class=num>computed</th><th>Cache</th>
+  </tr></thead>
+  <tbody id=rows></tbody>
+</table>
+<div class=empty id=empty>nichts geladen</div>
+
+<script>
+const MAX_ROWS = 2000;          // a live view must not grow forever
+let file = null, offset = 0, records = [], live = true, openAt = null;
+
+const $ = s => document.querySelector(s);
+const clock = t => new Date(t * 1000).toLocaleTimeString();
+const esc = s => String(s ?? "").replace(/[<&]/g, c => c === "<" ? "&lt;" : "&amp;");
+
+function matches(r) {
+  const k = $("#kind").value, q = $("#q").value.trim().toLowerCase();
+  if (k && r.kind !== k) return false;
+  if (!q) return true;
+  return JSON.stringify(r).toLowerCase().includes(q);
+}
+
+// reused against computed, as a bar. A row that is almost all green reused its
+// prefix; a warm row that is all orange is the defect of 28.08. — the gateway
+// said warm and the server computed everything.
+function bar(r) {
+  const a = r.reused, b = r.computed;
+  if (typeof a !== "number" || typeof b !== "number") return "";
+  const tot = Math.max(a + b, 1), w = 90;
+  const lie = r.cold === false && a * 4 < b;
+  return `<span class="bar bar-r" style="width:${Math.round(w * a / tot)}px"></span>` +
+         `<span class="bar bar-c" style="width:${Math.max(1, Math.round(w * b / tot))}px"></span>` +
+         (lie ? ` <span class=bad>warm?</span>` : "");
+}
+
+function row(r, i) {
+  const cold = r.kind !== "request" ? "" :
+        (r.cold ? `<span class=cold>COLD</span>` : `<span class=warm>warm</span>`);
+  const mode = r.mode ? `${esc(r.served || "")}/<b>${esc(r.mode)}</b>` : "";
+  const slugBad = r.kind === "request" && r.mode === "bare" && r.slug &&
+                  r.slug !== r.served;
+  return `<tr data-i="${i}">
+    <td>${clock(r.t)}</td>
+    <td class=kind>${esc(r.kind)}</td>
+    <td>${esc(r.who || "")}</td>
+    <td class="${slugBad ? "bad" : ""}">${esc(r.slug || r.model || "")}</td>
+    <td class=dim>${mode}</td>
+    <td class=dim>${esc(r.prefix || r.file || "")}</td>
+    <td>${cold}</td>
+    <td class=num>${r.took_s ?? r.saved_s ?? ""}</td>
+    <td class=num>${r.reused ?? ""}</td>
+    <td class=num>${r.computed ?? ""}</td>
+    <td>${bar(r)}</td></tr>` +
+    (openAt === r._at ? `<tr><td colspan=11><pre id=detail>lädt …</pre></td></tr>` : "");
+}
+
+function render() {
+  const shown = records.filter(matches).slice(-MAX_ROWS);
+  $("#rows").innerHTML = shown.map(row).join("");
+  $("#empty").style.display = shown.length ? "none" : "block";
+  $("#meta").textContent = `${shown.length}/${records.length} Zeilen · ${file || ""}`;
+  if (openAt !== null) loadDetail();
+}
+
+async function loadDetail() {
+  const el = $("#detail"); if (!el) return;
+  const r = await fetch(`/record?file=${encodeURIComponent(file)}&at=${openAt}`);
+  const d = await r.json();
+  el.textContent = JSON.stringify(d, null, 2);
+}
+
+document.addEventListener("click", e => {
+  const tr = e.target.closest("tbody tr[data-i]");
+  if (!tr) return;
+  const rec = records.filter(matches).slice(-MAX_ROWS)[+tr.dataset.i];
+  openAt = (openAt === rec._at) ? null : rec._at;      // click again to close
+  render();
+});
+
+async function poll(force) {
+  // Not polling while nobody looks is the whole point of the visibility
+  // check — but the FIRST load has to happen anyway, or a tab opened in the
+  // background stays empty and looks broken.
+  if (!force && (!live || document.visibilityState !== "visible")) return;
+  const u = `/events?since=${offset}` + (file ? `&file=${encodeURIComponent(file)}` : "");
+  const d = await (await fetch(u)).json();
+  file = d.file; offset = d.offset;
+  if (d.records.length) {
+    records = records.concat(d.records.filter(r => r.kind !== "header"));
+    if (records.length > MAX_ROWS * 2) records = records.slice(-MAX_ROWS);
+    render();
+  }
+  document.title = `trace · ${d.level}`;
+}
+
+async function days() {
+  const d = await (await fetch("/days")).json();
+  $("#day").innerHTML = d.days.map(x =>
+    `<option${x === file ? " selected" : ""}>${x}</option>`).join("");
+}
+
+$("#day").onchange = e => { file = e.target.value; offset = 0; records = []; render(); poll(); };
+$("#q").oninput = render;
+$("#kind").onchange = render;
+$("#live").onclick = () => { live = !live; $("#live").classList.toggle("on", live);
+                             $("#live").textContent = live ? "live" : "pausiert"; if (live) poll(); };
+// Scrolling away pauses by itself: nothing is worse than a row that jumps
+// while it is being read.
+addEventListener("scroll", () => {
+  if (window.scrollY > 200 && live) $("#live").click();
+}, { passive: true });
+
+// Coming back to the tab shows the current state at once rather than after
+// the next tick.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && live) poll();
+});
+days(); poll(true); setInterval(poll, 2000);
+</script>

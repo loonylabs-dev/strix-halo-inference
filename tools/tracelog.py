@@ -6,6 +6,7 @@
     python3 tools/tracelog.py off
     python3 tools/tracelog.py status
 
+    python3 tools/tracelog.py serve            a table in the browser, live
     python3 tools/tracelog.py show             the last events, compact
     python3 tools/tracelog.py lies             warm that was not warm
     python3 tools/tracelog.py prefixes         per prefix: cost and reuse
@@ -18,7 +19,7 @@ turned the trace on to look at.
 `show`, `lies` and the rest are the questions this stack keeps asking. They
 exist so that reading a trace is not an exercise in jq.
 """
-import argparse, json, os, sys, time
+import argparse, json, os, re, sys, time
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -145,6 +146,143 @@ def cmd_saves(a):
                                                 ensure_ascii=False)[:150]))
 
 
+# --- the browser view --------------------------------------------------------
+#
+# A separate process on purpose. The gateway sits on the request path of every
+# answer this machine gives; a display that can crash, block or grow must not
+# live there. 127.0.0.1 only, like everything else here.
+#
+# The trace is append-only JSONL, so "what is new" is a byte offset — which is
+# why this polls instead of holding a connection open. A poll survives a
+# gateway restart, the file rolling over at midnight and a laptop lid, and each
+# of those would need its own handling in a stream.
+
+DAY_FILE = re.compile(r"^trace-\d{4}-\d{2}-\d{2}\.jsonl$")
+# What a row must be clicked to reveal. The server does not send it otherwise —
+# not because a browser on the same machine is a threat, but because a default
+# that ships whole prompts over a socket is the kind of thing that is later
+# port-forwarded by somebody in a hurry.
+TEXT_FIELDS = ("system_head", "answer_tail", "prompt", "answer")
+
+
+def _safe_file(name, directory):
+    """A day file inside the trace directory, or None. No traversal, no
+    guessing: the name has to look exactly like what the trace writes."""
+    if not name or not DAY_FILE.match(name):
+        return None
+    path = os.path.join(directory, name)
+    if os.path.realpath(os.path.dirname(path)) != os.path.realpath(directory):
+        return None
+    return path if os.path.exists(path) else None
+
+
+def _redact(rec):
+    """Replace text by its size. The row says there is something to see; the
+    click fetches it."""
+    out = dict(rec)
+    for k in TEXT_FIELDS:
+        if isinstance(out.get(k), str):
+            out[k] = "<%d characters — click the row>" % len(out[k])
+    return out
+
+
+def read_since(path, offset, limit=2000, redact=True):
+    """Records after `offset`, and where to continue. Each carries its own
+    byte position, so one row can be fetched again in full."""
+    recs = []
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        end = f.tell()
+        if offset > end:                       # truncated or rotated under us
+            offset = 0
+        f.seek(offset)
+        while len(recs) < limit:
+            at = f.tell()
+            line = f.readline()
+            if not line or not line.endswith(b"\n"):
+                f.seek(at)                     # a half-written line: next time
+                break
+            try:
+                rec = json.loads(line.decode("utf-8"))
+            except Exception:
+                continue
+            rec["_at"] = at
+            recs.append(_redact(rec) if redact else rec)
+        return recs, f.tell()
+
+
+def read_one(path, at):
+    with open(path, "rb") as f:
+        f.seek(at)
+        line = f.readline()
+    return json.loads(line.decode("utf-8"))
+
+
+def cmd_serve(a):
+    import http.server, socketserver, urllib.parse
+    t = _tr()
+    ui = os.path.join(HERE, "traceui.html")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def _send(self, code, body, ctype="application/json"):
+            body = body.encode("utf-8") if isinstance(body, str) else body
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            # Nothing from this page may leave the machine, and nothing from
+            # outside may embed it.
+            self.send_header("Content-Security-Policy",
+                             "default-src 'self' 'unsafe-inline'; connect-src 'self'")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass                               # the terminal is for the operator
+
+        def do_GET(self):
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query)
+            one = lambda k, d=None: (q.get(k) or [d])[0]
+            if u.path in ("/", "/index.html"):
+                with open(ui, "rb") as f:
+                    return self._send(200, f.read(), "text/html; charset=utf-8")
+            if u.path == "/days":
+                days = sorted(f for f in os.listdir(t.dir)
+                              if DAY_FILE.match(f)) if os.path.isdir(t.dir) else []
+                return self._send(200, json.dumps(
+                    {"days": days, "level": t.refresh(), "dir": t.dir}))
+            if u.path == "/events":
+                name = one("file") or os.path.basename(t.path_for_today())
+                path = _safe_file(name, t.dir)
+                if not path:
+                    return self._send(200, json.dumps(
+                        {"file": name, "offset": 0, "records": [],
+                         "level": t.refresh()}))
+                recs, off = read_since(path, int(one("since", "0") or 0))
+                return self._send(200, json.dumps(
+                    {"file": name, "offset": off, "records": recs,
+                     "level": t.refresh()}))
+            if u.path == "/record":
+                path = _safe_file(one("file"), t.dir)
+                if not path:
+                    return self._send(404, json.dumps({"error": "no such file"}))
+                try:
+                    return self._send(200, json.dumps(read_one(path, int(one("at", "0")))))
+                except Exception as e:
+                    return self._send(404, json.dumps({"error": repr(e)}))
+            return self._send(404, json.dumps({"error": "no such path"}))
+
+    with socketserver.ThreadingTCPServer(("127.0.0.1", a.port), Handler) as srv:
+        srv.allow_reuse_address = True
+        print("trace ui: http://127.0.0.1:%d   (level %s, %s)"
+              % (a.port, t.level, t.dir))
+        print("  ctrl-c to stop")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            print()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -156,6 +294,8 @@ def main():
                         "result of forgetting.")
     sub.add_parser("off").set_defaults(fn=cmd_off)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    sv = sub.add_parser("serve"); sv.set_defaults(fn=cmd_serve)
+    sv.add_argument("--port", type=int, default=8092)
     for name, fn in (("show", cmd_show), ("lies", cmd_lies),
                      ("prefixes", cmd_prefixes), ("saves", cmd_saves)):
         p = sub.add_parser(name); p.set_defaults(fn=fn)

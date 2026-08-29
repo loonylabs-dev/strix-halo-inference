@@ -95,7 +95,7 @@ def main():
     # (prefix, epoch), and flag every restore whose request reused exactly
     # what the file carried.
     biggest = defaultdict(int)
-    pending, hits, restores = None, [], 0
+    pending, hits, restores, events = None, [], 0, []
     for line in gw:
         t = stamp(line)
         if t is None:
@@ -114,8 +114,17 @@ def main():
         key = (prefix, epoch_of(t))
         if pending and pending[1] == prefix and reused is not None:
             _, _, n_file = pending
+            seen = biggest[key]
+            if computed is not None:
+                # Every restore, not only the harmful ones: the sweep below
+                # needs the ones a threshold would WRONGLY skip just as much.
+                events.append({"t": t, "prefix": prefix, "n_file": n_file,
+                               "total": reused + computed,
+                               "tail": reused + computed - n_file,
+                               "hidden": (min(seen, reused + computed) - n_file
+                                          if reused == n_file and seen > n_file
+                                          else 0)})
             if reused == n_file and computed:
-                seen = biggest[key]
                 if seen > n_file:
                     hits.append({"t": t, "who": who, "prefix": prefix,
                                  "file_tokens": n_file, "computed": computed,
@@ -151,7 +160,61 @@ def main():
     print("\n  %d incidents, at most %d tokens hidden from the cache." % (len(hits), total))
     print("  UPPER BOUND. It assumes the earlier state was still resident, "
           "which llama.cpp does not log.")
+    sweep(events)
     return 0
+
+
+def sweep(events):
+    """What a RESTORE_MAX_TAIL_CHARS threshold would have done to this traffic.
+
+    The switch skips the restore when the conversation BEHIND the prefix is
+    long. Each restore in the journal falls into one of two buckets:
+
+      harmful   the request reused only the file while a longer state of the
+                same prefix had been served in the same server life -- the
+                cache almost certainly had it, and the restore hid it
+      useful    everything else. Here the restore is what put the prefix in
+                the slot, so skipping it means prefilling the prefix too
+
+    A threshold saves the hidden tokens of the harmful ones it skips and costs
+    the prefix of the useful ones it skips. Both columns are in TOKENS; the
+    switch is in characters, so the last column converts at the ratio this
+    traffic actually shows.
+    """
+    if not events:
+        return
+    chars_per_token = 4.3      # this stack's own prefixes: 60428 chars / 14568
+                               # tokens = 4.15, 73404 / 17784 = 4.13; rounded
+                               # up so a threshold errs towards restoring
+    print("\n  What a RESTORE_MAX_TAIL_CHARS threshold would have done")
+    print("  %d restores with a request behind them, %d of them harmful"
+          % (len(events), sum(1 for e in events if e["hidden"])))
+    rows = []
+    for t_tok in (500, 1000, 2000, 5000, 10000, 20000, 50000):
+        skipped = [e for e in events if e["tail"] > t_tok]
+        saved = sum(e["hidden"] for e in skipped)
+        cost = sum(e["n_file"] for e in skipped if not e["hidden"])
+        rows.append((t_tok, len(skipped), sum(1 for e in skipped if e["hidden"]),
+                     saved, cost))
+    print("\n  %10s %10s %8s %10s %10s %12s"
+          % ("tail >", "skipped", "harmful", "saved tok", "cost tok", "net tok"))
+    for t_tok, n, harm, saved, cost in rows:
+        print("  %10d %10d %8d %10d %10d %12d"
+              % (t_tok, n, harm, saved, cost, saved - cost))
+    if len(set(r[1:] for r in rows)) == 1:
+        # A table whose every row agrees is not a consensus, it is an absence
+        # of evidence -- and printed without saying so it reads as the former.
+        print("\n  EVERY ROW IS IDENTICAL, so this traffic CANNOT CHOOSE a")
+        print("  threshold. Only %d restore(s) have a tail large enough to be"
+              % rows[0][1])
+        print("  affected at all, and the same one is affected at every value")
+        print("  tested. Nothing here justifies a default; leave the switch off")
+        print("  until a period with more of them has been recorded.")
+        return
+    print("\n  In characters, at ~%.1f characters a token: multiply the first"
+          % chars_per_token)
+    print("  column by that. THIN DATA -- read the counts, not the totals: a")
+    print("  single incident dominates every row it appears in.")
 
 
 if __name__ == "__main__":

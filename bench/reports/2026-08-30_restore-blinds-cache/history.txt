@@ -9,3 +9,21 @@
 
   3 incidents, at most 54896 tokens hidden from the cache.
   UPPER BOUND. It assumes the earlier state was still resident, which llama.cpp does not log.
+
+  What a RESTORE_MAX_TAIL_CHARS threshold would have done
+  7 restores with a request behind them, 3 of them harmful
+
+      tail >    skipped  harmful  saved tok   cost tok      net tok
+         500          1        1      54699          0        54699
+        1000          1        1      54699          0        54699
+        2000          1        1      54699          0        54699
+        5000          1        1      54699          0        54699
+       10000          1        1      54699          0        54699
+       20000          1        1      54699          0        54699
+       50000          1        1      54699          0        54699
+
+  EVERY ROW IS IDENTICAL, so this traffic CANNOT CHOOSE a
+  threshold. Only 1 restore(s) have a tail large enough to be
+  affected at all, and the same one is affected at every value
+  tested. Nothing here justifies a default; leave the switch off
+  until a period with more of them has been recorded.

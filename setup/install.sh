@@ -82,6 +82,9 @@ link_ "$SRC/claude/PROFILE.md"        "$HOME/.claude/profiles/README.md"
 # is not the same as working. tests/test_install.py now walks these links.
 link_ "$SRC/claude/dialects.py"       "$HOME/.claude/bin/dialects.py"
 link_ "$SRC/claude/modes.py"          "$HOME/.claude/bin/modes.py"
+# The third such module, added 29.08.2026 — and tests/test_install.py caught
+# it missing the same day it was written, which is what it is for.
+link_ "$SRC/claude/tracelog.py"       "$HOME/.claude/bin/tracelog.py"
 link_ "$SRC/claude/cc-gateway.py"     "$HOME/.claude/bin/cc-gateway.py"
 link_ "$SRC/claude/cc-router.py"      "$HOME/.claude/bin/cc-router.py"
 # cc-cachefix.py and cc-cachefix2.py are NOT installed. Both were superseded by

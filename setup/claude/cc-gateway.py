@@ -48,6 +48,13 @@ import hashlib, urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dialects as DIA                                   # noqa: E402
 import modes as MODES_LIB                                # noqa: E402
+import tracelog as TRACE_LIB                                # noqa: E402
+
+# Off unless somebody switches it on with tools/tracelog.py, re-read per event so
+# the switch works while this is serving. Every call site below is wrapped in
+# nothing: tracelog.record() swallows its own errors, because a trace that breaks
+# the thing it observes is worse than no trace.
+TRACE = TRACE_LIB.Trace()
 
 # The repo this file lives in, through the symlink in ~/.claude/bin. Needed for
 # two things and nothing else: the profile directory below, and systemdfile —
@@ -474,6 +481,12 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                             % id_)
                     log("SAVED       prefix %s automatically, %.1f s, disk now %.1f GB"
                         % (id_, time.time() - t0, disk_used_gb()))
+                    TRACE.record("save",
+                                 summary={"prefix": id_,
+                                          "saved_s": round(time.time() - t0, 1),
+                                          "disk_gb": round(disk_used_gb(), 1)},
+                                 detail={"output": (proc_out or b"").decode(
+                                     "utf-8", "replace")[-400:].strip()})
                 else:
                     log("NOTE        automatic save of %s failed: %s"
                         % (id_, (proc_out or b"").decode("utf-8", "replace")[-200:].strip()))
@@ -555,6 +568,8 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
             log("NOTE        %s renders %s but the file was saved for %s — not "
                 "restoring it; this request is genuinely cold"
                 % (name, want, have))
+            TRACE.record("mismatch", summary={"prefix": id_, "file": name,
+                                              "renders": want, "saved_for": have})
             SAVED = {k: v for k, v in SAVED.items() if v != name}
             return None
     try:
@@ -594,6 +609,11 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
         log("RESTORED    prefix %s from %s.bin -> slot %d, %d tokens, %.0f ms"
             % (id_, name, target, d.get("n_restored", -1),
                (time.time() - t0) * 1000))
+        TRACE.record("restore",
+                     summary={"prefix": id_, "file": name,
+                              "tokens": d.get("n_restored"),
+                              "ms": round((time.time() - t0) * 1000)},
+                     detail={"slot": target, "evicted": not empty})
         n = d.get("n_restored")
         return (name, n if isinstance(n, int) else 0)
     except Exception as e:
@@ -631,6 +651,8 @@ def quarantine(name, id_, reason):
         return False
     SAVED = {k: v for k, v in SAVED.items() if v != name}
     log("QUARANTINED %s (%s) — %s" % (name, id_, reason))
+    TRACE.record("quarantine", summary={"prefix": id_, "file": name,
+                                        "note": reason})
     return True
 
 
@@ -1341,6 +1363,27 @@ async def handler(req):
                 % (ip, PRIORITY_NAME[prio], who, ident, took,
                    "" if not reuse else
                    "  reused=%d computed=%d" % reuse))
+            TRACE.record(
+                "request",
+                summary={"who": who, "zone": PRIORITY_NAME[prio],
+                         "model": (p or {}).get("model"), "prefix": ident,
+                         "cold": was_cold, "took_s": round(took, 2),
+                         "waited_s": round(waited, 2),
+                         "reused": reuse[0] if reuse else None,
+                         "computed": reuse[1] if reuse else None,
+                         "restored": restored[0] if restored else None,
+                         "restored_tokens": restored[1] if restored else None,
+                         "streaming": streaming},
+                detail={"ip": ip, "queue": depth, "volatile_moved": n_vol,
+                        "kwargs": (p or {}).get("chat_template_kwargs"),
+                        "tools": len(((p or {}).get("tools") or [])),
+                        "messages": len(((p or {}).get("messages") or [])),
+                        "head_chars": len(head or ""),
+                        "prefix_chars": len(prefix_text(p, dialect)) if p else None,
+                        "bytes_out": len(out or b"")},
+                text={"system_head": head,
+                      "answer_tail": (sniff["tail"] or b"")[-2000:].decode(
+                          "utf-8", "ignore")})
             # A restore that carried nothing is not a slow request, it is a
             # wrong file — and one that would cost this again on every future
             # request for the same prefix.
@@ -1702,6 +1745,11 @@ def main():
     SAVED = refresh_saved(force=True)
     log("cc-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))
     log("  saved prefixes on disk: %d (%.1f GB)" % (len(SAVED), disk_used_gb()))
+    if TRACE.refresh() != "off":
+        log("  TRACE IS ON at level %s -> %s%s" % (
+            TRACE.level, TRACE.dir,
+            "   (prompts are being written in the clear)"
+            if TRACE.level == "text" else ""))
     log("  automatic saving: %s%s"
         % ("on" if AUTO_SAVE else "off",
            ", limit %g GB" % AUTO_MAX_GB if AUTO_SAVE else ""))

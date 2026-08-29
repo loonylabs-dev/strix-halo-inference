@@ -1,0 +1,153 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-unpatched-b10631/bin/llama-server",
+  "build_from_binary": "b251-5d5cb4c",
+  "build_id": "b10631",
+  "env": {},
+  "stamp": {
+   "build_id": "b10631",
+   "backend": "rocm",
+   "family": "rocm-unpatched",
+   "patched": "no",
+   "upstream_ref": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "upstream_commit": "5d5cb4c3a4ea8769490d39a275ee49a45184774d",
+   "patch_commit": "none",
+   "patch_branch": "none",
+   "built_at": "2026-08-27T23:07:45+02:00",
+   "version": "version: 0.3.0-dev (build 251, commit 5d5cb4c3a)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "shape": {
+   "np": 2,
+   "ctx": 32768,
+   "tools": 10,
+   "spec": true,
+   "cram": false,
+   "mmproj": false,
+   "kv_unified": false,
+   "bulk": 700,
+   "sys": 300,
+   "ub": 2048
+  },
+  "argv": [
+   "--alias",
+   "sidetest",
+   "-m",
+   "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf",
+   "-ngl",
+   "999",
+   "-fa",
+   "on",
+   "-c",
+   "32768",
+   "-np",
+   "2",
+   "-b",
+   "2048",
+   "-ub",
+   "2048",
+   "--no-kv-unified",
+   "--spec-type",
+   "draft-mtp,ngram-mod",
+   "--spec-draft-n-max",
+   "12",
+   "--spec-ngram-mod-n-min",
+   "24",
+   "--chat-template-kwargs",
+   "{\"enable_thinking\":false}",
+   "--jinja",
+   "--host",
+   "127.0.0.1",
+   "--port",
+   "8081"
+  ],
+  "starts": 3
+ },
+ "runs": [
+  {
+   "case": "par-two-prefixes",
+   "run": 1,
+   "answers": [
+    {
+     "nonce": "A-3426-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3426-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "A-3491-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3491-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    }
+   ],
+   "corrupt": 4,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 2,
+   "answers": [
+    {
+     "nonce": "A-3570-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3570-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "A-3637-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3637-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    }
+   ],
+   "corrupt": 4,
+   "other": 0
+  },
+  {
+   "case": "par-two-prefixes",
+   "run": 3,
+   "answers": [
+    {
+     "nonce": "A-3718-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3718-0",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "A-3792-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    },
+    {
+     "nonce": "B-3792-1",
+     "verdict": "CORRUPT",
+     "text": "////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    }
+   ],
+   "corrupt": 4,
+   "other": 0
+  }
+ ]
+}

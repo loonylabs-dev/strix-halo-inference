@@ -448,8 +448,19 @@ def provenance(binary):
             # carried across, so the restore-safety run that carries the
             # single-cause finding recorded nothing. It lives in the shared
             # reader now, where a suite cannot forget it.
+            #
+            # The VENDOR prefixes joined it on 29.08., one day and one prefix
+            # later, for the same reason and after the same near miss: the
+            # outside reproduction on llama.cpp #27579 restores correct output
+            # with HIP_LAUNCH_BLOCKING=1, so measuring it here makes that
+            # variable the independent one — and under a GGML_/LLAMA_ filter
+            # the report would not have named it. HIP_ and AMD_ serialise or
+            # redirect what the GPU does; HSA_ and ROCR_ decide which device
+            # and which ISA the run even used.
             "env": {k: v for k, v in sorted(os.environ.items())
-                    if k.startswith(("GGML_", "LLAMA_")) and k != "LLAMA_SRC"}}
+                    if k.startswith(("GGML_", "LLAMA_", "HIP_", "HSA_",
+                                     "AMD_", "ROCR_"))
+                    and k != "LLAMA_SRC"}}
     stamp = os.path.join(os.path.dirname(os.path.dirname(binary)),
                          ".build-stamp")
     if not os.path.exists(stamp):

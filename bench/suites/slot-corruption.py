@@ -121,18 +121,35 @@ def make_body(which, nonce, n_tools=None, bulk_reps=None, sys_reps=None):
 
 
 def ask(body_, timeout=900):
+    """The whole MESSAGE, not just its text.
+
+    It returned `content` alone until 29.08., and an answer made of
+    `tool_calls` has no content — so a model that replied with a tool call
+    was recorded as `empty`, which reads as a server that returned nothing.
+    The bodies here define ten tools; that is not an exotic path. Five of
+    twelve answers in the HIP_LAUNCH_BLOCKING run of 29.08. and three of
+    twelve on the PATCHED build the same hour landed in that bucket, and the
+    server log showed sixteen decoded tokens behind each of them.
+    """
     r = urllib.request.Request(URL + "/v1/chat/completions",
                                data=json.dumps(body_).encode(),
                                headers={"content-type": "application/json"})
     with urllib.request.urlopen(r, timeout=timeout) as x:
         resp = json.loads(x.read().decode())
-    return (resp["choices"][0]["message"].get("content") or "").strip()
+    return resp["choices"][0]["message"]
 
 
-def verdict(text, nonce):
+def verdict(msg, nonce):
+    """CORRUPT first: it is what this suite exists to see, and an answer can
+    carry slashes AND a tool call."""
+    text = (msg.get("content") or "").strip()
     if "////" in text or text.count("/") > 8:
         return "CORRUPT"
-    return "ok" if nonce in text else ("empty" if not text else "other")
+    if nonce in text:
+        return "ok"
+    if text:
+        return "other"
+    return "tool-call" if msg.get("tool_calls") else "empty"
 
 
 def seq_one_prefix():
@@ -200,11 +217,14 @@ def one_run(name, run_no, dest):
             rec["error"] = "/slots never answered"
             return rec
         outs = CASES[name]()
-        rec["answers"] = [{"nonce": n, "verdict": verdict(t, n),
-                           "text": t[:120]} for n, t in outs]
-        rec["corrupt"] = sum(1 for n, t in outs if verdict(t, n) == "CORRUPT")
-        rec["other"] = sum(1 for n, t in outs
-                           if verdict(t, n) in ("other", "empty"))
+        rec["answers"] = [{"nonce": n, "verdict": verdict(m, n),
+                           "text": (m.get("content") or "")[:120],
+                           "tool_calls": [c.get("function", {}).get("name")
+                                          for c in (m.get("tool_calls") or [])]}
+                          for n, m in outs]
+        rec["corrupt"] = sum(1 for n, m in outs if verdict(m, n) == "CORRUPT")
+        rec["other"] = sum(1 for n, m in outs
+                           if verdict(m, n) in ("other", "empty", "tool-call"))
         for a in rec["answers"]:
             print("   %-18s %-8s %r" % (a["nonce"], a["verdict"], a["text"][:36]))
     except (Exception, SystemExit) as e:

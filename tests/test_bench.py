@@ -111,5 +111,54 @@ class TestTheBuildHelpersAreSharedNotCopied(unittest.TestCase):
         self.assertIn("def provenance(", src)
 
 
+class TestProvenanceEnvironment(unittest.TestCase):
+    """The environment a measurement ran in, as the report records it.
+
+    The filter used to be `GGML_`/`LLAMA_` only, and on 29.08. that was one
+    prefix short of the experiment being run: llama.cpp #27579 carries an
+    outside reproduction on this very hardware in which
+    `HIP_LAUNCH_BLOCKING=1` restores correct output. Measuring that means
+    the variable IS the independent variable — and a result.json that does
+    not name it is indistinguishable from a run without it. Exactly the
+    failure the comment in provenance() already describes for
+    GGML_SCHED_UMA_RING, one vendor prefix later.
+    """
+
+    def setUp(self):
+        self.run = common.load("bench/run.py", "benchrun")
+
+    def env_of(self, **vars_):
+        import os
+        old = dict(os.environ)
+        try:
+            os.environ.update(vars_)
+            return self.run.provenance("/nonexistent/bin/llama-server")["env"]
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+
+    def test_a_runtime_variable_of_the_backend_is_recorded(self):
+        for var in ("HIP_LAUNCH_BLOCKING", "HSA_OVERRIDE_GFX_VERSION",
+                    "AMD_SERIALIZE_KERNEL", "ROCR_VISIBLE_DEVICES"):
+            with self.subTest(var=var):
+                self.assertIn(var, self.env_of(**{var: "1"}),
+                              "%s changes what the GPU does and the report "
+                              "must say whether it was set" % var)
+
+    def test_the_variables_it_already_carried_are_still_there(self):
+        env = self.env_of(GGML_SCHED_UMA_RING="1", LLAMA_SET_ROWS="1")
+        self.assertIn("GGML_SCHED_UMA_RING", env)
+        self.assertIn("LLAMA_SET_ROWS", env)
+
+    def test_the_path_variable_stays_out(self):
+        """LLAMA_SRC names a directory on one machine, not a configuration."""
+        self.assertNotIn("LLAMA_SRC", self.env_of(LLAMA_SRC="/home/x/llama.cpp"))
+
+    def test_unrelated_variables_stay_out(self):
+        env = self.env_of(HOME="/home/x", EDITOR="vi")
+        self.assertNotIn("HOME", env)
+        self.assertNotIn("EDITOR", env)
+
+
 if __name__ == "__main__":
     unittest.main()

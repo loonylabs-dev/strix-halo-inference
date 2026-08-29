@@ -377,6 +377,26 @@
       "last_checked": "2026-08-28"
     },
     {
+      "id": "watchdog-evicts-the-working-slot",
+      "title": "The probe takes the one slot and the next turn pays for it",
+      "applies_to": {
+        "component": "llama-probe"
+      },
+      "shows_as": "slow",
+      "symptom": "A turn in a warm session suddenly re-prefills a large part of the conversation: the gateway reports it warm, the cache share drops from 97-99 % to 70 %, and the answer takes minutes instead of seconds. Nothing errors, and the cause is not in the gateway's log at all — the probe goes straight to llama-server, past the admission control, so no line of the request log mentions it.",
+      "measured": "29.08.2026, from llama-server's journal over seven days (bench/suites/probe-cost.py, report at bench/reports/2026-08-29_probe-cost). The signature is exact: the probe asks a fixed 34-token question, so it leaves the slot holding ~34 tokens, and with -np 1 that is the whole conversation gone. Caught live at 21:19:46: `task 8099 release n_tokens = 62852`, then `task 8352 prompt eval 4 tokens, release n_tokens = 34`, then `task 8389 prompt eval 18668 tokens` — 218.8 s for a turn whose neighbours took 30 to 90. OVER SEVEN DAYS: 485 probes, 106 of them (22 %) landed on a conversation of 2000+ tokens, and 33 of those caused work that would not otherwise have happened — 209,587 tokens re-prefilled, about 24.8 minutes of GPU, worst single case +31,819 tokens or 321 seconds of extra waiting. The other 73 collisions cost nothing because -cram 32768 handed the state back from RAM, which is why this stayed invisible for a week: three quarters of them leave no trace.",
+      "mitigation": "None yet. Skipping the probe while a conversation is resident is a trade rather than a fix — it blinds the watchdog exactly when the machine is busiest. The better direction, and it only became possible on 28.08.: the gateway already keeps the first and last 8 KiB of every answer for the token accounting, so the degeneracy check that this probe exists for is a character histogram over a string already in hand — no slot, no request, no SSE parsing in the hot path, which is the objection probe.py's own docstring raises against putting it there. The arithmetic half of the probe (`the answer must contain 391`) cannot be done on foreign traffic and would remain a job for an ACTIVE probe on an idle machine, where the slot is empty and the collision cannot happen.",
+      "detect": {
+        "kind": "manual",
+        "how": "python3 bench/suites/probe-cost.py 7 — it reads llama-server's journal and needs no GPU. A probe shows as a task that evaluates a handful of tokens and leaves the slot holding about 34; the bill is the next request's prompt eval."
+      },
+      "suite": "bench/suites/probe-cost.py",
+      "upstream": [],
+      "status": "open, found 29.08.2026",
+      "first_seen": "2026-08-29",
+      "last_checked": "2026-08-29"
+    },
+    {
       "id": "autosave-evicts-the-working-slot",
       "title": "The automatic prefix save throws the current prefix out of the slot",
       "applies_to": {

@@ -15,9 +15,16 @@ from aiohttp.test_utils import TestServer
 
 import common
 
+# TRACE_DIR points the tracing away from the operator's real one. Without it
+# the suite writes its fixtures — `abc123`, `id1`, who=`tester` — into
+# ~/.cache/cc-gateway-trace whenever tracing happens to be switched on, and an
+# analysis of that file then reports twelve quarantines that never happened.
+# Found on 29.08.2026 by reading the trace of a real morning and nearly
+# drawing a conclusion from test data.
 GW  = common.load("setup/claude/cc-gateway.py", "cc_gateway",
                      {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
-                      "SLOT_PATH": "/nonexistent-slots"})
+                      "SLOT_PATH": "/nonexistent-slots",
+                      "TRACE_DIR": "/nonexistent-trace"})
 VW  = common.load("tools/prewarm.py", "prewarm",
                      {"SLOT_PATH": "/nonexistent-slots"})
 SYN = common.load("tools/synthetic.py", "synthetic")

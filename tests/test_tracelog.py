@@ -183,3 +183,32 @@ class TestTheGatewayActuallyRecords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheSuiteCannotWriteIntoTheRealTrace(unittest.TestCase):
+    """A test run must not appear in the operator's data.
+
+    It did, on 29.08.2026: the fixtures `abc123` and `id1` and the access
+    `tester` were in ~/.cache/cc-gateway-trace, because loading cc-gateway
+    constructs a Trace at import and the level happened to be on. An analysis
+    of that morning showed twelve quarantines, all of them this suite.
+    """
+
+    def test_the_gateway_under_test_traces_somewhere_harmless(self):
+        import importlib
+        gw = common.load("setup/claude/cc-gateway.py", "cc_gateway_trace_check",
+                         {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
+                          "SLOT_PATH": "/nonexistent-slots",
+                          "TRACE_DIR": "/nonexistent-trace"})
+        self.assertEqual(gw.TRACE.dir, "/nonexistent-trace")
+        self.assertEqual(gw.TRACE.level, "off",
+                         "a directory that does not exist has no level to read")
+
+    def test_the_env_var_is_what_redirects_it(self):
+        src = (common.REPO / "setup" / "claude" / "tracelog.py").read_text(
+            encoding="utf-8")
+        self.assertIn('os.environ.get("TRACE_DIR")', src)
+        loader = (common.REPO / "tests" / "test_gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"TRACE_DIR"', loader,
+                      "the suite has to point the trace away from the real one")

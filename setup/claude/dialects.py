@@ -429,3 +429,44 @@ def output_from_text(text):
         except Exception:
             best = None
     return best
+
+
+def rates_from_text(text):
+    """(reading, writing) in tokens per second, from `timings`, or None.
+
+    llama.cpp measures both phases itself and reports them as
+    `prompt_per_second` (the prefill — reading) and `predicted_per_second`
+    (the decode — writing). They are two different machines: measured on this
+    stack, reading runs at ~200 t/s and writing at ~10-15.
+
+    ONLY from `timings`, and never derived. A request's total duration cannot
+    be split into the two phases afterwards — a rate computed from it would be
+    neither of them, and a number that looks like a measurement but is a guess
+    is worse than an empty column.
+
+    That also means these are absent for the Anthropic route: llama.cpp's
+    to_json_anthropic() (server-task.cpp:779) builds id, type, role, content,
+    model, stop_reason, stop_sequence and usage — no timings. So Claude Code
+    traffic has no rates and this returns None, which is the honest answer.
+    """
+    if not text:
+        return None
+    best = None
+    for chunk in text.split("\n"):
+        line = chunk.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            t = json.loads(line).get("timings")
+        except Exception:
+            continue
+        if not isinstance(t, dict):
+            continue
+        r, w = t.get("prompt_per_second"), t.get("predicted_per_second")
+        ok = lambda v: isinstance(v, (int, float)) and v > 0
+        if ok(r) or ok(w):
+            best = (round(r, 1) if ok(r) else None,
+                    round(w, 1) if ok(w) else None)
+    return best

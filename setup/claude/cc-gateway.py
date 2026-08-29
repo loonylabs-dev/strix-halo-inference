@@ -1367,12 +1367,13 @@ async def handler(req):
             _ = big_enough
             # WHAT THE SERVER ACTUALLY DID, before anything is claimed about
             # it. The numbers ride along in the answer that was just proxied.
-            reuse, wrote = None, None
+            reuse, wrote, rates = None, None, None
             try:
                 text = (sniff["head"] + b"\n" + sniff["tail"]).decode(
                     "utf-8", "ignore")
                 reuse = DIA.reuse_from_text(text)
                 wrote = DIA.output_from_text(text)
+                rates = DIA.rates_from_text(text)
             except Exception as e:
                 log("NOTE        reuse not read: %r" % (e,))
             if ident and reuse:
@@ -1419,6 +1420,13 @@ async def handler(req):
                          "reused": reuse[0] if reuse else None,
                          "computed": reuse[1] if reuse else None,
                          "output": wrote,
+                         # Only where llama.cpp measured them itself. The
+                         # Anthropic route carries no timings, so these stay
+                         # empty for Claude Code — an empty column is the
+                         # honest answer, a rate derived from the total
+                         # duration would be neither phase.
+                         "read_tps": rates[0] if rates else None,
+                         "write_tps": rates[1] if rates else None,
                          "restored": restored[0] if restored else None,
                          "restored_tokens": restored[1] if restored else None,
                          "streaming": streaming},

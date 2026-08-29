@@ -288,3 +288,41 @@ class TestOneNameMeansOneThing(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"prewarm_stdout"', src)
         self.assertNotIn('detail={"output"', src)
+
+
+class TestTheRatesAreMeasuredOrAbsent(unittest.TestCase):
+    """Reading and writing are two different machines — ~200 t/s against
+    ~10-15 on this stack — and a request's total duration cannot be split into
+    them afterwards. So the rates come from llama.cpp's own `timings` or they
+    do not come at all."""
+
+    DIA = common.load("setup/claude/dialects.py", "dialects_rates")
+
+    def test_both_rates_come_from_the_timings_object(self):
+        got = self.DIA.rates_from_text(
+            '{"timings":{"prompt_per_second":203.4,"predicted_per_second":13.27}}')
+        self.assertEqual(got, (203.4, 13.3))
+
+    def test_the_anthropic_shape_has_none_and_says_so(self):
+        """llama.cpp's to_json_anthropic() builds id, type, role, content,
+        model, stop_reason, stop_sequence and usage — no timings. Claude Code
+        rows therefore have no rates, and inventing one would be worse than an
+        empty column."""
+        self.assertIsNone(self.DIA.rates_from_text(
+            '{"usage":{"cache_read_input_tokens":5650,"input_tokens":98,'
+            '"output_tokens":40}}'))
+
+    def test_zero_is_not_a_rate(self):
+        self.assertIsNone(self.DIA.rates_from_text(
+            '{"timings":{"prompt_per_second":0,"predicted_per_second":0}}'))
+
+    def test_one_of_the_two_is_still_worth_having(self):
+        got = self.DIA.rates_from_text('{"timings":{"predicted_per_second":12.5}}')
+        self.assertEqual(got, (None, 12.5))
+
+    def test_nothing_is_derived_from_the_duration(self):
+        src = (common.REPO / "setup" / "claude" / "dialects.py").read_text(
+            encoding="utf-8")
+        body = src[src.index("def rates_from_text"):]
+        for forbidden in ("took", "elapsed", "/ duration", "time.time"):
+            self.assertNotIn(forbidden, body)

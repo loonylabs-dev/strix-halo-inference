@@ -85,7 +85,7 @@
   <thead><tr>
     <th>Zeit</th><th>Art</th><th>wer</th><th>Client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th></th><th class=num>s</th>
-    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th>Anteil</th>
+    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>Anteil</th>
   </tr></thead>
   <tbody id=rows></tbody>
 </table>
@@ -137,6 +137,16 @@ function share(r) {
   return Math.round(100 * r.reused / t) + "%";
 }
 
+// Read and write rates, and ONLY where llama.cpp measured them itself. The
+// Anthropic route carries no timings, so Claude Code rows stay empty here —
+// an empty cell is the honest answer. A rate computed from the total duration
+// would be neither the prefill nor the decode.
+function rates(r) {
+  if (r.read_tps == null && r.write_tps == null) return "";
+  const f = v => v == null ? "–" : Math.round(v);
+  return `${f(r.read_tps)}·${f(r.write_tps)}`;
+}
+
 function client(r) {
   const ua = (r.ua || "").toLowerCase();
   if (ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
@@ -177,8 +187,9 @@ function row(r, i) {
     <td class=num>${req ? (inTok(r) ?? "") : tokensOf(r)}</td>
     <td class=num>${req ? share(r) : ""}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
+    <td class=num title="gemessen vom Server; die Anthropic-Route liefert keine Zeiten">${rates(r)}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=13><pre id=detail>lädt …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=14><pre id=detail>lädt …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------

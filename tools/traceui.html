@@ -85,7 +85,7 @@
   <thead><tr>
     <th>Zeit</th><th>Art</th><th>wer</th><th>Client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th></th><th class=num>s</th>
-    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>Anteil</th>
+    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>Historie</th><th>Anteil</th>
   </tr></thead>
   <tbody id=rows></tbody>
 </table>
@@ -147,6 +147,24 @@ function rates(r) {
   return `${f(r.read_tps)}·${f(r.write_tps)}`;
 }
 
+// The reading that separates a lost state from a rewritten history. Both look
+// the same in `reused` alone, which is how a watchdog got blamed for a
+// client's own edit on 29.08.
+function history(r) {
+  if (r.kind !== "request" || r.msgs_prev == null) return {label: "", why: "", bad: false};
+  const rewrote = r.msgs_kept < r.msgs_prev;
+  const dropped = r.prev_in != null && r.reused != null && r.reused < r.prev_in * 0.9;
+  if (rewrote)
+    return {label: `umgeschrieben ab ${r.msgs_kept + 1}`, bad: false,
+            why: `${r.msgs_kept} von ${r.msgs_prev} Nachrichten kamen unverändert wieder — `
+                 + `der Client hat seine Historie geändert, nicht der Cache verloren`};
+  if (dropped)
+    return {label: "Zustand verloren", bad: true,
+            why: `die Historie stand (${r.msgs_kept} von ${r.msgs_prev}), aber nur `
+                 + `${r.reused} von zuvor ${r.prev_in} Tokens kamen zurück`};
+  return {label: "", why: "", bad: false};
+}
+
 function client(r) {
   const ua = (r.ua || "").toLowerCase();
   if (ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
@@ -188,8 +206,9 @@ function row(r, i) {
     <td class=num>${req ? share(r) : ""}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
     <td class=num title="gemessen vom Server; die Anthropic-Route liefert keine Zeiten">${rates(r)}</td>
+    <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=14><pre id=detail>lädt …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=15><pre id=detail>lädt …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------

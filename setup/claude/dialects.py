@@ -27,6 +27,7 @@ Design rules for anything added here:
   * nothing here talks to the network or reads configuration. It is pure
     body-in/body-out so it can be tested without a GPU and without a server.
 """
+import hashlib
 import json
 
 ANTHROPIC = "anthropic"
@@ -470,3 +471,47 @@ def rates_from_text(text):
             best = (round(r, 1) if ok(r) else None,
                     round(w, 1) if ok(w) else None)
     return best
+
+
+def message_shape(body, dialect=ANTHROPIC):
+    """One short hash per message, in order — the SHAPE of a conversation.
+
+    Two requests for the same prefix normally share every message but the last
+    few: the client appends. When they do not, the client has rewritten its own
+    history — a compaction, a truncated tool result, a re-ordered turn — and
+    everything after the change has to be computed again.
+
+    That is indistinguishable, from the outside, from the slot having been
+    taken away: both show up as a drop in `reused`. On 29.08.2026 it cost two
+    rounds of blaming the wrong thing — the watchdog was measured at 209,587
+    re-prefilled tokens a week, and the arithmetic later said the client had
+    edited its own history while the probe stood next to it.
+
+    Comparing the two shapes tells them apart:
+
+        the shapes agree, reuse dropped   -> the state was lost
+        the shapes diverge, reuse dropped -> the client rewrote
+
+    Per MESSAGE, not per token: a change inside one long message marks the
+    whole message. That is enough for the distinction and cheap enough for the
+    request path — a few dozen hashes over text already in memory.
+    """
+    out = []
+    for m in (body.get("messages") or []):
+        try:
+            canon = json.dumps(m, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False)
+        except Exception:
+            canon = repr(m)
+        out.append(hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:8])
+    return out
+
+
+def shapes_agree(old, new):
+    """How many leading messages are unchanged."""
+    n = 0
+    for a, b in zip(old or [], new or []):
+        if a != b:
+            break
+        n += 1
+    return n

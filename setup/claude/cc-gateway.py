@@ -231,6 +231,13 @@ SERVED_TRAIL = []
 # one will try again by itself. The count is kept for the log: a prefix that
 # keeps losing says so instead of failing quietly.
 SAVE_OWED = {}
+# The last conversation SHAPE per prefix — one short hash per message, plus
+# what that request cost as input. A few hundred bytes each, and the only way
+# to tell "the client rewrote its history" from "the state was taken away":
+# both show as a drop in `reused`, and on 29.08.2026 that cost two rounds of
+# blaming the watchdog for what a client-side rewrite had done.
+LAST_SHAPE = {}
+LAST_SHAPE_MAX = 64
 # How long the first request of a prefix may be held for its own save. It is
 # bounded because the save now sits IN the request path: the write is 314 ms
 # and the prefill in front of it is work the request had to do anyway, but a
@@ -1376,6 +1383,16 @@ async def handler(req):
                 rates = DIA.rates_from_text(text)
             except Exception as e:
                 log("NOTE        reuse not read: %r" % (e,))
+            # WHAT CHANGED SINCE LAST TIME, for this prefix. Computed here,
+            # after the answer, so nothing is added to the request path.
+            prev = LAST_SHAPE.get(ident) if ident else None
+            shape = DIA.message_shape(p, dialect) if p else []
+            kept = DIA.shapes_agree(prev["shape"], shape) if prev else None
+            if ident:
+                LAST_SHAPE[ident] = {"shape": shape,
+                                     "in": (reuse[0] + reuse[1]) if reuse else None}
+                if len(LAST_SHAPE) > LAST_SHAPE_MAX:
+                    LAST_SHAPE.pop(next(iter(LAST_SHAPE)))
             if ident and reuse:
                 e = PREFIXES.setdefault(ident, {})
                 e["reused_sum"] = e.get("reused_sum", 0) + reuse[0]
@@ -1427,6 +1444,14 @@ async def handler(req):
                          # duration would be neither phase.
                          "read_tps": rates[0] if rates else None,
                          "write_tps": rates[1] if rates else None,
+                         # The two readings that separate a lost state from a
+                         # rewritten history. `msgs_kept` is how many leading
+                         # messages came back unchanged; `prev_in` what the
+                         # last request for this prefix cost as input.
+                         "prev_in": prev.get("in") if prev else None,
+                         "msgs_prev": len(prev["shape"]) if prev else None,
+                         "msgs_kept": kept,
+                         "msgs": len(shape),
                          "restored": restored[0] if restored else None,
                          "restored_tokens": restored[1] if restored else None,
                          "streaming": streaming},

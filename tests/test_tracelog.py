@@ -326,3 +326,46 @@ class TestTheRatesAreMeasuredOrAbsent(unittest.TestCase):
         body = src[src.index("def rates_from_text"):]
         for forbidden in ("took", "elapsed", "/ duration", "time.time"):
             self.assertNotIn(forbidden, body)
+
+
+class TestALostStateLooksNothingLikeARewrite(unittest.TestCase):
+    """Both show up as a drop in `reused`, and on 29.08.2026 that cost two
+    rounds of blaming the watchdog for what the client had done to its own
+    history. One hash per message tells them apart."""
+
+    DIA = common.load("setup/claude/dialects.py", "dialects_shape")
+
+    def msgs(self, *texts):
+        return {"messages": [{"role": "user", "content": t} for t in texts]}
+
+    def test_appending_keeps_every_earlier_message(self):
+        a = self.DIA.message_shape(self.msgs("eins", "zwei"))
+        b = self.DIA.message_shape(self.msgs("eins", "zwei", "drei"))
+        self.assertEqual(self.DIA.shapes_agree(a, b), 2)
+
+    def test_a_changed_message_cuts_the_agreement_there(self):
+        a = self.DIA.message_shape(self.msgs("eins", "zwei", "drei"))
+        b = self.DIA.message_shape(self.msgs("eins", "GEAENDERT", "drei"))
+        self.assertEqual(self.DIA.shapes_agree(a, b), 1)
+
+    def test_the_order_matters(self):
+        a = self.DIA.message_shape(self.msgs("eins", "zwei"))
+        b = self.DIA.message_shape(self.msgs("zwei", "eins"))
+        self.assertEqual(self.DIA.shapes_agree(a, b), 0)
+
+    def test_it_is_per_message_and_says_so(self):
+        """A change INSIDE one long message marks the whole message. Enough
+        for the distinction, and cheap enough for the request path."""
+        src = (common.REPO / "setup" / "claude" / "dialects.py").read_text(
+            encoding="utf-8")
+        self.assertIn("Per MESSAGE, not per token", src)
+
+    def test_an_unserialisable_message_does_not_raise(self):
+        shape = self.DIA.message_shape({"messages": [{"role": "user", "content": object()}]})
+        self.assertEqual(len(shape), 1)
+
+    def test_the_gateway_bounds_what_it_remembers(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("LAST_SHAPE_MAX", src)
+        self.assertIn("LAST_SHAPE.pop(next(iter(LAST_SHAPE)))", src)

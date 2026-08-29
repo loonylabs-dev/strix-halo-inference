@@ -12,5 +12,11 @@ Type=oneshot
 # remedy. UNREACHABLE is usually a server still loading, and restarting it
 # then turns a slow start into a loop; WRONG is not a known fault of this
 # machine. See setup/scripts/probe.py.
+#
+# Since 29.08. a run that never got past production's single slot exits 0 as
+# BUSY rather than failing as UNREACHABLE — measured, the two were the same
+# queue one request apart. BLIND, after BUSY_LIMIT such rounds, does fail:
+# a watchdog that has not seen the model for half an hour must not read as
+# a healthy one.
 Environment=LLAMA_UNIT=llama-user@qwen38
 ExecStart=/usr/bin/python3 %h/.claude/bin/probe.py --restart

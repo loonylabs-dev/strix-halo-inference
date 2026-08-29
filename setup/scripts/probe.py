@@ -33,6 +33,11 @@ Two independent verdicts, because they fail differently:
                 is the '////' signature, and it is checked separately because
                 a degenerate answer is a KNOWN failure with a known cause,
                 while a merely wrong one is not.
+
+And a third question, which is not about the answer at all: was there one to
+judge? Production serves ONE slot, so this probe queues behind whatever is in
+flight. A round that timed out in that queue is BUSY — not a fault — while a
+run of them is BLIND, which is. See classify_stall().
 """
 import argparse, collections, json, os, subprocess, sys, time
 import urllib.error, urllib.request
@@ -65,13 +70,13 @@ def looks_degenerate(text, min_len=24, share=0.6):
     return False, ""
 
 
-def ask(url=URL, timeout=180):
+def ask(url=URL, timeout=None):
     r = urllib.request.Request(
         url + "/v1/chat/completions",
         data=json.dumps({"model": "probe", "max_tokens": 16, "stream": False,
                          "messages": [{"role": "user", "content": QUESTION}]}).encode(),
         headers={"content-type": "application/json"})
-    with urllib.request.urlopen(r, timeout=timeout) as x:
+    with urllib.request.urlopen(r, timeout=timeout or ANSWER_TIMEOUT_S) as x:
         d = json.loads(x.read().decode())
     return (d["choices"][0]["message"].get("content") or "").strip()
 
@@ -105,8 +110,19 @@ def judge(text):
 GRACE_S = 90
 RETRY_EVERY_S = 10
 
+# How long ONE attempt may take before it is given up on.
+#
+# This is the deadline that actually fires. GRACE_S only governs retries of a
+# connection that was refused; once the server accepts and then computes,
+# nothing but this number ends the wait. Measured 29.08. over 277 runs behind
+# production's single slot: median 1 s, p90 8 s, twelve runs over a minute,
+# and the longest that still answered took 160 s. So 180 is not generous —
+# it is just past the tail, and the runs that hit it were queued, not down.
+ANSWER_TIMEOUT_S = 180
 
-def ask_with_patience(url, grace=GRACE_S, sleep=time.sleep):
+
+def ask_with_patience(url, grace=GRACE_S, sleep=time.sleep, now=time.monotonic,
+                      timeout=None):
     """(text, None) once it answers, or (None, reason) after `grace` seconds.
 
     A server that ANSWERS is judged on what it said, immediately — that is the
@@ -128,20 +144,133 @@ def ask_with_patience(url, grace=GRACE_S, sleep=time.sleep):
 
     A 503 that PERSISTS past the window still fails, so nothing is lost.
     """
-    deadline = time.monotonic() + max(0, grace)
+    started = now()
+    deadline = started + max(0, grace)
     last = ""
     while True:
         try:
-            return ask(url), None
+            return ask(url, timeout or ANSWER_TIMEOUT_S), None
         except urllib.error.HTTPError as e:
             if e.code != 503:
                 return None, repr(e)      # it answered, with a status. Real.
             last = repr(e)                # "not ready", not a verdict
         except Exception as e:
             last = repr(e)
-        if time.monotonic() >= deadline:
-            return None, "%s (still not ready after %ds)" % (last, grace)
+        if now() >= deadline:
+            # The ELAPSED time, not `grace`. It said "after 90s" while 180 had
+            # passed — one read timeout in ask() outlasts the whole connect
+            # window, so the number in the message was never the number that
+            # mattered, and on 29.08. it sent the investigation looking at the
+            # connect path for a fault that was in the queue.
+            return None, "%s (gave up after %ds)" % (last, round(now() - started))
         sleep(RETRY_EVERY_S)
+
+
+# ---------------------------------------------------- busy is not down -------
+#
+# Production serves ONE slot — the mitigation for gfx1151-two-slots — so every
+# request queues behind the one in flight, this probe included. Measured
+# 29.08. over 277 runs: median 1 s, p90 8 s, but twelve runs took over a
+# minute and the longest that still answered took 160 s against a 180 s read
+# timeout. The three UNREACHABLE verdicts on record are not a different kind
+# of event from that 160 s success — they are the same queue, one request
+# longer, and a red `failed` unit for a server that was working perfectly.
+#
+# What makes the two separable, measured the same day with the slot occupied
+# for 112 s: /health answered 200 in 0.001 s on 11 of 11 samples while
+# is_processing stayed true, and a probe-shaped request queued behind it came
+# back correct after 109 s. So the distinction costs one cheap GET, and only
+# in the case that was going to be a failure anyway.
+BUSY_LIMIT = 3
+STREAK_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or os.path.expanduser("~/.cache"),
+    "llama-probe-busy-streak")
+
+
+def server_state(url, timeout=5):
+    """(alive, processing, detail) — is it there, and is it working?
+
+    /health says the HTTP server is up; /slots says whether anything is being
+    computed. Both answer in a millisecond under load, which is the whole
+    reason this can be asked at the moment the chat request has given up.
+    """
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=timeout) as x:
+            x.read()
+    except Exception as e:
+        return False, None, "no /health (%r)" % e
+    try:
+        with urllib.request.urlopen(url + "/slots", timeout=timeout) as x:
+            slots = json.loads(x.read().decode())
+        busy = sum(1 for sl in slots if sl.get("is_processing"))
+        return True, busy > 0, "%d of %d slots busy" % (busy, len(slots))
+    except Exception as e:
+        # /health answered, so the server IS there. Whether it is working is
+        # then unknown rather than false — and unknown must not be filed as a
+        # stall, which is a finding.
+        return True, None, "/health ok, no /slots (%r)" % e
+
+
+def busy_streak(path, busy):
+    """How many runs in a row have now ended BUSY. 0 once a real verdict
+    lands. State on disk, because each run is its own process — and losing
+    the file must never take the watchdog down with it."""
+    n = 0
+    if busy:
+        try:
+            with open(path, encoding="utf-8") as f:
+                n = int(f.read().strip() or 0)
+        except Exception:
+            n = 0
+        n += 1
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(n))
+    except Exception:
+        pass
+    return n
+
+
+def classify_stall(url, err, streak_path=STREAK_PATH, state=None):
+    """(verdict, ok, detail) for a probe that got no answer.
+
+    Four outcomes, and the three that are not BUSY all stay failures:
+
+      UNREACHABLE  nothing answers. The original meaning, untouched.
+      BUSY         the server answers /health and a slot is computing. Someone
+                   else's request is in front of ours — not a fault.
+      UNKNOWN      /health is fine but /slots could not be read, so whether it
+                   computes is unknown. Not a finding — `--no-slots` alone
+                   would otherwise manufacture one on every busy minute.
+      STALLED      /health is fine, NOTHING is computing, and a chat request
+                   still timed out. Nothing explains that.
+      BLIND        so many rounds in a row without a look at the model that
+                   the watchdog has stopped watching. Silence from a
+                   silent-failure detector reads exactly like good news,
+                   which is why it is counted.
+    """
+    state = state or server_state
+    # A status code IS an answer. Only a request that never came back can be
+    # explained by the queue, so everything else keeps its old verdict.
+    if "TimeoutError" not in err and "timed out" not in err:
+        busy_streak(streak_path, False)
+        return "UNREACHABLE", False, err
+    alive, processing, detail = state(url)
+    if not alive:
+        busy_streak(streak_path, False)
+        return "UNREACHABLE", False, "%s; %s" % (err, detail)
+    if processing is False:
+        busy_streak(streak_path, False)
+        return "STALLED", False, "%s; %s" % (err, detail)
+    # True, or None for "/slots did not say". Neither is a look at the model,
+    # so both count towards BLIND.
+    n = busy_streak(streak_path, True)
+    if n > BUSY_LIMIT:
+        return ("BLIND", False,
+                "%s; %s — %d rounds in a row without a look at the model"
+                % (err, detail, n))
+    return ("BUSY" if processing else "UNKNOWN", True,
+            "%s; %s (streak %d)" % (err, detail, n))
 
 
 def main():
@@ -150,16 +279,21 @@ def main():
     ap.add_argument("--restart", action="store_true",
                     help="restart $LLAMA_UNIT when the verdict is DEGENERATE")
     ap.add_argument("--url", default=URL)
+    ap.add_argument("--timeout", type=int, default=ANSWER_TIMEOUT_S,
+                    help="seconds one attempt may take before it is given up "
+                         "on (default: %(default)s)")
     ap.add_argument("--grace", type=int, default=GRACE_S,
                     help="seconds to keep retrying a server that will not "
                          "connect, before calling it unreachable")
     a = ap.parse_args()
 
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    text, err = ask_with_patience(a.url, a.grace)
+    text, err = ask_with_patience(a.url, a.grace, timeout=a.timeout)
     if err is not None:
-        ok, verdict, detail, text = False, "UNREACHABLE", err, ""
+        verdict, ok, detail = classify_stall(a.url, err)
+        text = ""
     else:
+        busy_streak(STREAK_PATH, False)
         ok, verdict, detail = judge(text)
 
     if a.json:

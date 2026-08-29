@@ -110,8 +110,12 @@ class TestPatienceWithARestartingServer(unittest.TestCase):
         text, err = probe.ask_with_patience("x", grace=0, sleep=self.slept.append)
         self.assertIsNone(text)
         # "not ready" rather than "refusing" since 27.08.: the window now
-        # covers a 503 as well, and one message has to describe both.
-        self.assertIn("still not ready", err)
+        # covers a 503 as well, and one message has to describe both. Since
+        # 29.08. it names the ELAPSED time instead — "still not ready after
+        # 90s" was printed after 180 s had passed, and the phrase also claimed
+        # a server that was merely busy had never come up. What the test is
+        # for is unchanged: the reason has to survive into the message.
+        self.assertIn("gave up after", err)
         self.assertIn("Connection refused", err,
                       "the reason must survive into the message, or a dead "
                       "server and a slow one read the same")
@@ -161,7 +165,7 @@ class TestPatienceWithARestartingServer(unittest.TestCase):
                                             sleep=self.slept.append)
         self.assertIsNone(text)
         self.assertIn("503", err)
-        self.assertIn("still not ready", err)
+        self.assertIn("gave up after", err)
 
     def test_every_other_status_is_still_judged_at_once(self):
         """The positive control for the exemption: 503 must be the only one.
@@ -197,6 +201,221 @@ class TestSideserverRestoresTheWatchdogLast(unittest.TestCase):
         self.assertLess(i, j, "the timer must go back after production")
         self.assertIn("wait_for_slots(PRODUCTION_URL", src[i:j],
                       "starting them together is what caused the false alarm")
+
+
+class TestBusyIsNotDown(unittest.TestCase):
+    """A server working on somebody else's request is not an outage.
+
+    Production runs ONE slot -- the mitigation for gfx1151-two-slots -- so
+    every request queues behind the one in flight, the probe included.
+    Measured 29.08. over 277 runs: median 1 s, but 12 runs took over a
+    minute and the longest that still answered took 160 s. The read timeout
+    in ask() is 180 s. The three UNREACHABLE verdicts on record are not a
+    different kind of event from the 160 s success -- they are the same
+    queue, one request longer.
+
+    Measured the same day against production with the slot deliberately
+    occupied for 112 s: /health answered 200 in 0.001 s on 11 of 11 samples,
+    /slots reported is_processing=True throughout, and a probe-shaped request
+    queued behind it came back correct after 109 s. So `busy` and `down` are
+    distinguishable without waiting the timeout out at all.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.path = os.path.join(tempfile.mkdtemp(), "streak")
+
+    def state(self, alive, processing, detail="1 of 1 slots busy"):
+        return lambda url, timeout=5: (alive, processing, detail)
+
+    def classify(self, alive, processing, err="TimeoutError('timed out')"):
+        return probe.classify_stall(
+            "u", err, streak_path=self.path,
+            state=self.state(alive, processing))
+
+    def test_a_busy_server_is_not_unreachable(self):
+        verdict, ok, _ = self.classify(True, True)
+        self.assertEqual(verdict, "BUSY")
+        self.assertTrue(ok, "a working server must not be a systemd failure")
+
+    def test_a_server_that_is_gone_is_still_unreachable(self):
+        """The patience must keep catching a real outage."""
+        verdict, ok, _ = self.classify(False, None)
+        self.assertEqual(verdict, "UNREACHABLE")
+        self.assertFalse(ok)
+
+    def test_a_server_that_answers_health_but_computes_nothing_is_a_stall(self):
+        """The case BUSY must not swallow: /health fine, no slot working, and
+        a chat request that still timed out. Nothing explains that, so it
+        stays a failure rather than being filed as ordinary load."""
+        verdict, ok, _ = self.classify(True, False)
+        self.assertEqual(verdict, "STALLED")
+        self.assertFalse(ok)
+
+    def test_a_status_code_is_an_answer_and_keeps_its_old_verdict(self):
+        """Only a request that never came back can be explained by the queue.
+        A 500 IS an answer, and must not be re-filed as load."""
+        verdict, ok, _ = self.classify(
+            True, True, err="HTTPError('u', 500, 'boom', None, None)")
+        self.assertEqual(verdict, "UNREACHABLE")
+        self.assertFalse(ok)
+
+    def test_the_reason_survives_into_the_detail(self):
+        _, _, detail = self.classify(True, True)
+        self.assertIn("timed out", detail)
+        self.assertIn("slot", detail)
+
+    def test_slots_being_unreadable_is_not_a_stall(self):
+        """/health answered, so the server is there. Whether it computes is
+        then UNKNOWN — and unknown must not be reported as STALLED, which is
+        a finding. --no-slots alone would otherwise manufacture one on every
+        busy minute."""
+        verdict, ok, _ = self.classify(True, None)
+        self.assertEqual(verdict, "UNKNOWN")
+        self.assertTrue(ok)
+
+    def test_unknown_still_counts_as_a_round_without_a_look(self):
+        """It is not a failure, but it is not a look at the model either —
+        so it must reach BLIND just as BUSY does, or --no-slots would make
+        the watchdog quietly permanent."""
+        for _ in range(probe.BUSY_LIMIT):
+            probe.busy_streak(self.path, True)
+        verdict, ok, _ = self.classify(True, None)
+        self.assertEqual(verdict, "BLIND")
+        self.assertFalse(ok)
+
+
+class TestBlindStreak(unittest.TestCase):
+    """BUSY is not a failure -- but an unbroken run of it is.
+
+    A watchdog that never gets a turn reports nothing and looks exactly like
+    a watchdog that keeps finding everything in order. That is the silent
+    failure mode of the silent-failure detector, so the streak is counted.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "busy-streak")
+
+    def test_one_busy_run_is_fine(self):
+        self.assertEqual(probe.busy_streak(self.path, True), 1)
+
+    def test_the_streak_accumulates(self):
+        for expected in (1, 2, 3):
+            self.assertEqual(probe.busy_streak(self.path, True), expected)
+
+    def test_any_real_verdict_clears_it(self):
+        probe.busy_streak(self.path, True)
+        probe.busy_streak(self.path, True)
+        self.assertEqual(probe.busy_streak(self.path, False), 0)
+        self.assertEqual(probe.busy_streak(self.path, True), 1)
+
+    def test_a_long_streak_becomes_a_failure(self):
+        for _ in range(probe.BUSY_LIMIT):
+            probe.busy_streak(self.path, True)
+        verdict, ok, detail = probe.classify_stall(
+            "u", "TimeoutError('timed out')", streak_path=self.path,
+            state=lambda url, timeout=5: (True, True, "1 of 1 slots busy"))
+        self.assertEqual(verdict, "BLIND")
+        self.assertFalse(ok, "not seeing the server for %d runs in a row is "
+                             "not a green light" % probe.BUSY_LIMIT)
+        self.assertIn(str(probe.BUSY_LIMIT + 1), detail)
+
+    def test_an_unreadable_counter_does_not_take_the_probe_down(self):
+        """State on disk is a convenience; the watchdog must survive losing
+        it."""
+        self.assertEqual(probe.busy_streak("/proc/nonexistent/x", True), 1)
+
+
+class TestTheMessageNamesTheTimeActuallyWaited(unittest.TestCase):
+    """It said `still not ready after 90s` while 180 s had passed.
+
+    90 is the connect-patience; the read timeout in ask() is 180. Reading
+    that line sends whoever investigates looking at the wrong number --
+    measured 29.08., it did exactly that.
+    """
+
+    def setUp(self):
+        self._ask = probe.ask
+
+    def tearDown(self):
+        probe.ask = self._ask
+
+    def test_it_reports_the_elapsed_time(self):
+        clock = [0.0]
+
+        def slow_fail(url, timeout=180):
+            clock[0] += 180.0
+            raise TimeoutError("timed out")
+        probe.ask = slow_fail
+        _, err = probe.ask_with_patience("x", grace=90, sleep=lambda s: None,
+                                         now=lambda: clock[0])
+        self.assertIn("180", err, "the message must name the time that passed")
+        self.assertNotIn("after 90s", err,
+                         "90 is the connect window, not what was waited")
+
+
+class TestTheAnswerTimeoutIsAKnob(unittest.TestCase):
+    """180 s lived as a default argument on ask() and nowhere else.
+
+    It is the number that actually decides when a queued probe gives up --
+    the 90 s grace never gets a say once a connection is accepted -- so it
+    belongs beside GRACE_S, and a watchdog whose deadline cannot be set
+    cannot be exercised against a real busy server either.
+    """
+
+    def setUp(self):
+        self._ask = probe.ask
+
+    def tearDown(self):
+        probe.ask = self._ask
+
+    def test_the_constant_exists_and_is_the_measured_one(self):
+        self.assertEqual(probe.ANSWER_TIMEOUT_S, 180)
+
+    def test_it_reaches_ask(self):
+        seen = []
+
+        def spy(url, timeout=probe.ANSWER_TIMEOUT_S):
+            seen.append(timeout)
+            return "391"
+        probe.ask = spy
+        probe.ask_with_patience("u", grace=0, sleep=lambda s: None, timeout=7)
+        self.assertEqual(seen, [7])
+
+
+class TestCheckShDoesNotCallASkippedRoundAPass(unittest.TestCase):
+    """`ok` and `BUSY` both exit 0, and they mean opposite things.
+
+    BUSY is not a failure — the server was working on somebody else's
+    request — but it is not a look at the model either. check.sh read
+    ExecMainStatus alone, so a run that checked NOTHING printed `last probe
+    passed`. That is the silent-failure detector failing silently, which is
+    the one shape this whole file exists to prevent.
+    """
+
+    def src(self):
+        return (common.REPO / "setup" / "check.sh").read_text(encoding="utf-8")
+
+    def test_it_reads_the_verdict_and_not_only_the_exit_code(self):
+        src = self.src()
+        i = src.index("llama-probe.timer enabled")
+        j = src.index("Memory budget", i)
+        section = src[i:j]
+        self.assertIn("BUSY", section,
+                      "check.sh must tell a skipped round from a passed one")
+        self.assertIn("journalctl", section,
+                      "the verdict lives in the journal; the exit code cannot "
+                      "carry it")
+
+    def test_the_verdicts_that_mean_no_look_are_all_covered(self):
+        src = self.src()
+        i = src.index("llama-probe.timer enabled")
+        section = src[i:src.index("Memory budget", i)]
+        for verdict in ("BUSY", "UNKNOWN"):
+            self.assertIn(verdict, section,
+                          "%s exits 0 and checked nothing" % verdict)
 
 
 if __name__ == "__main__":

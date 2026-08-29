@@ -566,10 +566,23 @@ PT=$(systemctl --user is-enabled llama-probe.timer 2>/dev/null)
 if [ "$PT" = "enabled" ]; then
   ok "llama-probe.timer enabled"
   LAST=$(systemctl --user show llama-probe.service -p ExecMainStatus --value 2>/dev/null)
+  # The EXIT CODE cannot say whether anything was looked at. Since 29.08. a
+  # probe that could not get past production's single slot exits 0 with the
+  # verdict BUSY — correct, because a queue is not a fault, and misleading
+  # here, because `last probe passed` for a round that checked nothing is the
+  # silent-failure detector failing silently. The verdict is in the journal,
+  # in the fixed format probe.py prints: "<date> <time>  VERDICT  detail".
+  LASTV=$(journalctl --user -u llama-probe.service -n 200 --no-pager -o cat 2>/dev/null \
+          | sed -nE 's/^[0-9-]{10} [0-9:]{8}  ([A-Za-z]+).*/\1/p' | tail -1)
   case "$LAST" in
-    0) ok "last probe passed" ;;
+    0) case "$LASTV" in
+         BUSY|UNKNOWN)
+           printf "  \033[33m?\033[0m the last probe got no turn ($LASTV) — the slot was busy,\n"
+           printf "    so nothing was checked. Not a fault; not a pass either\n" ;;
+         *) ok "last probe passed${LASTV:+ ($LASTV)}" ;;
+       esac ;;
     "") printf "  \033[33m?\033[0m llama-probe.service has not run yet\n" ;;
-    *) old "the last probe FAILED (status $LAST) — journalctl --user -u llama-probe" ;;
+    *) old "the last probe FAILED (status $LAST${LASTV:+, $LASTV}) — journalctl --user -u llama-probe" ;;
   esac
 else
   printf "  \033[33m?\033[0m llama-probe.timer is %s — nothing would notice a\n" "${PT:-not installed}"

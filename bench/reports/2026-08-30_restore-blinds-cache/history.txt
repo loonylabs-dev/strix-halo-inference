@@ -1,0 +1,11 @@
+  8 days, 34 restores, 87 llama-server starts, 26 cache-pressure lines
+  pressure at: 26.08 06:07, 26.08 06:08, 26.08 06:09, 26.08 06:10, 26.08 06:15, 26.08 06:15, 26.08 06:15, 26.08 06:16
+  -> on those days the upper bound below is loose: the entry may already have been dropped.
+
+  when           prefix         in file recomputed    hidden   took s
+  29.08 23:50    4c911caefaaf     14568     55452     54699    506.4
+  29.08 07:02    52f3f095ca67      6676        99        99      1.6
+  29.08 00:21    b4124abc721a     14838        98        98      1.4
+
+  3 incidents, at most 54896 tokens hidden from the cache.
+  UPPER BOUND. It assumes the earlier state was still resident, which llama.cpp does not log.

@@ -255,6 +255,33 @@ AUTO_MAX_GB  = float(os.environ.get("AUTO_MAX_GB", 20))
 # of SEVEN tokens in there, which on the next start would have occupied one of
 # the two slots that a real project belongs in.
 AUTO_MIN_CHARS = int(env("AUTO_MIN_CHARS", "AUTO_MIN_ZEICHEN", 4000))
+# Skip the prefix restore when the conversation behind the prefix is longer
+# than this many characters. 0 = off, and off is what runs today.
+#
+# WHY A RESTORE CAN COST RATHER THAN SAVE. It puts the prefix into the slot,
+# which makes the slot a PERFECT prefix of the incoming request — and
+# llama.cpp consults its own RAM prompt cache only `if (f_keep < 0.5f)`
+# (server-context.cpp:1595). So a restore switches that lookup off, and a
+# longer state of the same conversation sitting in the cache is never found.
+# Measured 30.08.2026, same request, only the restore differing: 56.4 s
+# against 1.0 s. See bench/reports/2026-08-30_restore-blinds-cache/.
+#
+# The trade, and why the threshold is on the TAIL rather than the prefix:
+#
+#   restore, cache warm     loses everything behind the prefix
+#   restore, cache cold     saves the prefix
+#   no restore, cache warm  saves everything
+#   no restore, cache cold  loses the prefix — but that request was going to
+#                           be expensive anyway, so it is a fraction of it
+#
+# Nothing exposes the cache, so the gateway cannot know which branch it is in.
+# What it can see is how much is at stake: with a short tail the restore risks
+# little and wins the prefix; with a long one it risks the whole conversation
+# to win a fraction. THE THRESHOLD IS NOT MEASURED — no number here is derived
+# from traffic yet, which is why the default is off rather than a guess
+# dressed as a default.
+RESTORE_MAX_TAIL_CHARS = int(env("RESTORE_MAX_TAIL_CHARS",
+                                 "RESTORE_MAX_TAIL_ZEICHEN", 0))
 PREWARM   = env("PREWARM", "VORWAERMEN",
                 os.path.expanduser("~/.claude/bin/prewarm.py"))
 _save_lock = None          # asyncio.Lock, can only be created inside the loop
@@ -557,6 +584,19 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
         name = refresh_saved(force=True).get(id_)
     if not name:
         return None
+    # IS THIS RESTORE WORTH THE CACHE IT WOULD HIDE? See
+    # RESTORE_MAX_TAIL_CHARS. Checked before the sidecar hash, because it is
+    # cheaper and because a skipped restore needs no file validation.
+    if RESTORE_MAX_TAIL_CHARS and body is not None:
+        tail = sum(n for _, n in DIA.message_fingerprints(body, dialect))
+        if tail > RESTORE_MAX_TAIL_CHARS:
+            log("NOTE        not restoring %s: %d characters of conversation "
+                "behind the prefix, and a restore would hide llama.cpp's own "
+                "cache from it" % (name, tail))
+            TRACE.record("restore-skipped",
+                         summary={"prefix": id_, "file": name, "tail": tail,
+                                  "limit": RESTORE_MAX_TAIL_CHARS})
+            return None
     # THE SIDECAR'S OWN HASH, read at last. prewarm has written `render_id`
     # into every sidecar since the store existed and no line of code ever read
     # it back — which is how a file holding another prefix's state kept its

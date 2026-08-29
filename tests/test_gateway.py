@@ -1750,3 +1750,78 @@ class TestTheSaveHappensBeforeTheAnswer(GatewayOnTheWire):
              mock.patch.object(GW, "log"):
             r = await self.fetch("/v1/messages", token=None)
         self.assertEqual(r.status, 200, "a stuck save must not hang the answer")
+
+
+class TestARestoreCanCostMoreThanItSaves(unittest.IsolatedAsyncioTestCase):
+    """Putting the prefix into the slot makes the slot a PERFECT prefix of the
+    incoming request, and llama.cpp consults its RAM prompt cache only when
+    `f_keep < 0.5` — so the restore switches that lookup off. When the cache
+    was holding the whole conversation, the restore costs everything behind
+    the prefix.
+
+    Measured 30.08.2026 on the production server, same request, only the
+    restore differing: 56.4 s against 1.0 s. bench/suites/restore-blinds-cache.py
+
+    The guard is OFF by default, so these tests must arm it explicitly — and
+    one of them checks that the default really is inert, because a threshold
+    that silently starts skipping restores would trade a rare tail risk for a
+    75 s prefix prefill on every cold start.
+    """
+
+    def body(self, chars):
+        return {"messages": [{"role": "user", "content": "x" * chars}]}
+
+    async def _run(self, limit, body):
+        self.seen = []
+        async def llama(request):
+            self.seen.append(request.path_qs)
+            if request.path == "/slots":
+                return web.json_response(
+                    [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}])
+            return web.json_response({"n_restored": 5})
+        lapp = web.Application()
+        lapp.router.add_route("*", "/{tail:.*}", llama)
+        server = TestServer(lapp)
+        await server.start_server()
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "n1.bin"), "wb").close()
+            with mock.patch.object(GW, "LLAMA",
+                                   str(server.make_url("")).rstrip("/")), \
+                 mock.patch.object(GW, "SLOT_PATH", d), \
+                 mock.patch.object(GW, "SAVED", {"id1": "n1"}), \
+                 mock.patch.object(GW, "RESTORE_MAX_TAIL_CHARS", limit), \
+                 mock.patch.object(GW, "log", lambda *a: None):
+                try:
+                    return await GW.restore_from_disk("id1", body=body)
+                finally:
+                    await server.close()
+
+    async def test_a_long_conversation_is_left_to_the_servers_own_cache(self):
+        ok = await self._run(5000, self.body(20000))
+        self.assertFalse(ok)
+        self.assertFalse([p for p in self.seen if "action=restore" in p])
+
+    async def test_a_short_one_is_still_restored(self):
+        """The restore is not the enemy. With little behind the prefix it
+        risks little and wins the whole prefix."""
+        ok = await self._run(5000, self.body(100))
+        self.assertTrue(ok)
+        self.assertTrue([p for p in self.seen if "action=restore" in p])
+
+    async def test_zero_means_off_and_off_is_what_ships(self):
+        ok = await self._run(0, self.body(10 ** 6))
+        self.assertTrue(ok, "a limit of 0 must not skip anything")
+
+    async def test_without_a_body_it_cannot_judge_and_does_not_pretend_to(self):
+        """prewarm and the cleanup path call this with no body. Guessing
+        'probably long' there would skip every restore they need."""
+        ok = await self._run(5000, None)
+        self.assertTrue(ok)
+
+    def test_the_default_is_off(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"RESTORE_MAX_TAIL_ZEICHEN", 0)', src)
+        self.assertIn("THE THRESHOLD IS NOT MEASURED", src,
+                      "a number nobody derived must say so where it is set")

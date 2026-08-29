@@ -36,7 +36,11 @@
   table { border-collapse:collapse; width:100%; }
   th,td { text-align:left; padding:3px 10px; border-bottom:1px solid var(--line);
           white-space:nowrap; }
-  th { position:sticky; top:47px; background:var(--bg); color:var(--dim); font-weight:500 }
+  /* --hh is measured, not guessed: the header wraps to two lines on a narrow
+     window, and a hard-wired offset then leaves the column titles sitting on
+     top of the filters. Seen in a screenshot, 29.08. */
+  th { position:sticky; top:var(--hh,47px); background:var(--bg); color:var(--dim);
+       font-weight:500 }
   tbody tr { cursor:pointer } tbody tr:hover { background:rgba(127,127,127,.10) }
   td.num { text-align:right; font-variant-numeric:tabular-nums }
   .cold { color:var(--cold) } .warm { color:var(--warm) } .bad { color:var(--bad) }
@@ -359,5 +363,16 @@ addEventListener("scroll", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && live) poll();
 });
+// A ResizeObserver rather than a resize listener: the header changes height
+// when it WRAPS, and it wraps for reasons a window resize never reports — a
+// zoom, a longer filename in the day picker, a different font. Measured 51 px
+// while the header was 93, in a screenshot, because the listener had not
+// fired.
+function measureHeader() {
+  const el = document.querySelector("header");
+  document.documentElement.style.setProperty("--hh", el.offsetHeight + "px");
+}
+new ResizeObserver(measureHeader).observe(document.querySelector("header"));
+measureHeader();
 days(); poll(true); setInterval(poll, 2000);
 </script>

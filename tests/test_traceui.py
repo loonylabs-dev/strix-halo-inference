@@ -218,3 +218,17 @@ class TestAColumnMeansOneThing(unittest.TestCase):
     def test_everything_else_stays_in_the_detail_view(self):
         """Where it is labelled, instead of guessed at by column position."""
         self.assertIn("loadDetail", self.html)
+
+
+class TestTheHeaderOffsetIsMeasured(unittest.TestCase):
+    """The column titles stick under the header. Hard-wiring that offset works
+    until the header wraps to two lines on a narrow window — and then the
+    titles sit on top of the filters. Seen in a screenshot, 29.08."""
+
+    def test_the_offset_comes_from_the_header_itself(self):
+        html = PAGE.read_text(encoding="utf-8")
+        self.assertIn("--hh", html)
+        self.assertIn("offsetHeight", html)
+        self.assertIn("ResizeObserver(measureHeader)", html,
+                      "a resize listener misses a wrap caused by a zoom or a "
+                      "longer filename — measured 51 px against a 93 px header")

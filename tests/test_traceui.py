@@ -162,3 +162,38 @@ class TestTheChartsShowTheSameRowsAsTheTable(unittest.TestCase):
 
     def test_the_charts_can_be_switched_off(self):
         self.assertIn("charts-btn", self.html)
+
+
+class TestWhichProgramAsked(unittest.TestCase):
+    """`who` is the ACCESS — it says martin-pc2 for Claude Code and for a
+    harness alike. Telling them apart needs what the request itself carries:
+    the dialect the path implies, the path, and what the client calls itself.
+    """
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+        self.gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_the_gateway_records_all_three(self):
+        # to the end of the call, not a guessed window: `ua` sits in the
+        # detail group, which is further down than the summary one
+        start = self.gw.index('TRACE.record(\n                "request"')
+        block = self.gw[start:self.gw.index("# A restore that carried nothing", start)]
+        for field in ('"dialect"', '"path"', '"ua"'):
+            with self.subTest(field=field):
+                self.assertIn(field, block)
+
+    def test_the_user_agent_is_truncated(self):
+        """A label, not a document."""
+        self.assertRegex(self.gw, r'user-agent"\) or ""\)\[:\d+\]')
+
+    def test_the_guess_keeps_the_raw_string_within_reach(self):
+        """The column is a guess; a label that pretends to be certain is worse
+        than one that does not. The exact user-agent stays on hover."""
+        self.assertIn("function client(r)", self.html)
+        self.assertIn('title="${esc(r.ua || "")}"', self.html)
+
+    def test_it_falls_back_to_the_dialect_when_nothing_names_itself(self):
+        self.assertIn('r.dialect === "openai"', self.html)
+        self.assertIn('r.dialect === "anthropic"', self.html)

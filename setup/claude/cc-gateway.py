@@ -1396,6 +1396,13 @@ async def handler(req):
                          "served": SERVED,
                          "mode": (_mode_of((p or {}).get("model"), SERVED)
                                   if mode_hit else "bare"),
+                         # WHICH PROGRAM, not just which machine. `who` is
+                         # the access token and says martin-pc2 for Claude
+                         # Code and for a harness alike; these three tell them
+                         # apart: the dialect the path implies, the path
+                         # itself, and what the client calls itself.
+                         "dialect": dialect,
+                         "path": req.path,
                          "prefix": ident,
                          "cold": was_cold, "took_s": round(took, 2),
                          "waited_s": round(waited, 2),
@@ -1405,6 +1412,10 @@ async def handler(req):
                          "restored_tokens": restored[1] if restored else None,
                          "streaming": streaming},
                 detail={"ip": ip, "queue": depth, "volatile_moved": n_vol,
+                        # Truncated: it is a label, not a document. Claude Code
+                        # names itself here, and so does anything else worth
+                        # telling apart.
+                        "ua": (req.headers.get("user-agent") or "")[:120],
                         "kwargs": (p or {}).get("chat_template_kwargs"),
                         "tools": len(((p or {}).get("tools") or [])),
                         "messages": len(((p or {}).get("messages") or [])),

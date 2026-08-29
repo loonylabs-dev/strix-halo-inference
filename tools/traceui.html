@@ -79,7 +79,7 @@
 </section>
 <table>
   <thead><tr>
-    <th>Zeit</th><th>Art</th><th>wer</th><th>slug</th><th>served/mode</th>
+    <th>Zeit</th><th>Art</th><th>wer</th><th>Client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th></th><th class=num>s</th>
     <th class=num>reused</th><th class=num>computed</th><th>Cache</th>
   </tr></thead>
@@ -115,6 +115,21 @@ function bar(r) {
          (lie ? ` <span class=bad>warm?</span>` : "");
 }
 
+// WHICH PROGRAM asked. `who` is the access and says martin-pc2 for everything
+// that machine runs; the dialect, the path and the user-agent are what tell
+// Claude Code from a harness. Kept as a guess with the raw string on hover,
+// because a label that pretends to be certain is worse than one that does not.
+function client(r) {
+  const ua = (r.ua || "").toLowerCase();
+  if (ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
+  if (ua.includes("node")) return "node";
+  if (ua.includes("python") || ua.includes("urllib") || ua.includes("httpx")) return "python";
+  if (ua.includes("curl")) return "curl";
+  if (r.dialect === "openai" || (r.path || "").includes("chat/completions")) return "oai-client";
+  if (r.dialect === "anthropic" || (r.path || "").includes("/messages")) return "anthropic-client";
+  return "";
+}
+
 function row(r, i) {
   const cold = r.kind !== "request" ? "" :
         (r.cold ? `<span class=cold>COLD</span>` : `<span class=warm>warm</span>`);
@@ -125,6 +140,7 @@ function row(r, i) {
     <td>${clock(r.t)}</td>
     <td class=kind>${esc(r.kind)}</td>
     <td>${esc(r.who || "")}</td>
+    <td class=dim title="${esc(r.ua || "")}">${esc(client(r))}</td>
     <td class="${slugBad ? "bad" : ""}">${esc(r.slug || r.model || "")}</td>
     <td class=dim>${mode}</td>
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
@@ -133,7 +149,7 @@ function row(r, i) {
     <td class=num>${r.reused ?? ""}</td>
     <td class=num>${r.computed ?? ""}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=11><pre id=detail>lädt …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=12><pre id=detail>lädt …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------

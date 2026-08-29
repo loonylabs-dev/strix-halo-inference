@@ -107,6 +107,19 @@ Left in the source as a comment, because the failure mode — a log-scraping
 regex that matches nothing and reports zero instead of failing — has no
 symptom of its own.
 
+## The third case, measured: the file is redundant while the cache is warm
+
+`restore-blinds-cache.py --mode redundant`. Prefill a 2690-token prefix, hand
+the slot to an unrelated tiny prompt (so the prefix goes into the RAM cache),
+restore NOTHING, then send that prefix plus a long new conversation:
+
+    0 prefill PREFIX             12.9 s   cache_n=0     prompt_n=2690
+    1 unrelated tiny              0.7 s   cache_n=0     prompt_n=7
+    3 PREFIX + new conversation  66.8 s   cache_n=2690  prompt_n=13290
+
+`cache_n = 2690` with no file involved: llama.cpp found the prefix in its own
+RAM cache and handed it back. The .bin added nothing.
+
 ## What a fix has to weigh
 
 Skipping the restore is not free. If the cache does NOT hold the conversation,
@@ -114,16 +127,33 @@ the restore is what saves the prefix: without it the slot holds something
 foreign, f_keep falls below 0.5, the lookup runs, finds nothing, and the
 prefix is prefilled too. On this machine that is 14,568 tokens, roughly 75 s.
 
-    restore, cache warm    costs everything behind the prefix   (measured: 55 s)
-    restore, cache cold    saves the prefix                     (~75 s)
-    no restore, cache warm saves everything                     (measured: 1 s)
-    no restore, cache cold costs the prefix                     (~75 s)
+    the RAM cache holds     with the restore        without it
+    ---------------------   ---------------------   ---------------------
+    the conversation        56.4 s   (measured)     1.0 s   (measured)
+    only the prefix         no different            no different (measured:
+                                                    the cache returns it)
+    nothing                 saves the prefix        prefilling the prefix,
+                            (~75 s here)            ~75 s
 
-So the decision is entirely about whether the cache holds the conversation,
-and the gateway cannot see the cache — nothing exposes it. What it CAN see is
-whether it has served this prefix since llama-server started: if it has not,
-the cache cannot hold anything for it, and the restore is safe. That is the
-narrow rule implemented behind `RESTORE_WHEN_UNSEEN`, default off, and it is
+Two of the three rows are now measured, and they say something sharper than a
+threshold: **the disk restore adds value in exactly one situation — when
+llama.cpp's RAM cache holds nothing for this prefix.** With `-cram 32768` that
+means after a llama-server restart, or after the entry was evicted under
+pressure (26 such lines in eight days, all on 26.08.).
+
+So the better rule is not "how long is the tail" but "is the server cold for
+this prefix", and it needs no magic number. What it needs is a way to know,
+and there is none directly: `/props` carries no uptime and no boot id, and
+`/health` is one field. Two ways round it, neither built:
+
+  * derive it — persist the last-seen llama-server start beside the prefix
+    ledger, and treat a restart as invalidating every "recently served" flag;
+  * measure it — skip the restore, let the request run, and read `reused`.
+    Poor reuse means the server is cold, so restore for the NEXT request. That
+    costs exactly one slow turn per server restart, against a possible 500 s
+    on any long conversation today.
+
+Until one of them exists, what ships is the blunter `RESTORE_WHEN_UNSEEN`, default off, and it is
 NOT yet measured against real traffic.
 
 ## Reproduce

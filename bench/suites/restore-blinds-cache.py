@@ -106,8 +106,46 @@ def round_once(url, tag, restore, conv_words, prefix_words):
             "conv_tokens": c["total"], "final": d, "file": name}
 
 
+def round_redundant(url, tag, conv_words, prefix_words):
+    """Does the .bin add anything the RAM cache would not have given anyway?
+
+    The other experiment shows the restore HURTS when the cache holds the
+    conversation. This one asks the complementary question: when the cache
+    holds only the PREFIX -- the state after a fresh project's first turn, and
+    the case the disk store exists for -- does skipping the restore cost
+    anything at all?
+
+        0  prefill PREFIX                       -> slot
+        1  unrelated tiny prompt                -> LRU takeover saves PREFIX
+                                                   into the RAM cache
+        2  no restore
+        3  PREFIX + a long NEW conversation     -> read cache_n
+
+    If cache_n comes back as the prefix, llama.cpp found it in RAM by itself
+    and the file was never needed.
+    """
+    prefix = filler(tag + "P", prefix_words)
+    conv = prefix + " " + filler(tag + "C", conv_words)
+    print("    round %s — is the file redundant while the cache is warm?" % tag)
+    p = send(url, prefix, "0 prefill PREFIX")
+    send(url, "Noch ein ganz anderer Satz.", "1 unrelated tiny")
+    d = send(url, conv, "3 PREFIX + new conversation")
+    got = d["cache_n"] or 0
+    print("      -> cache_n=%s of a %s-token prefix: %s"
+          % (got, p["total"],
+             "the RAM cache handed the prefix back WITHOUT any file"
+             if abs(got - (p["total"] or 0)) <= 8 else
+             "the prefix did NOT come back — the file would have been needed"))
+    return {"tag": tag, "restore": None, "prefix_tokens": p["total"],
+            "conv_tokens": d["total"], "final": d, "file": None}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--mode", choices=("blinds", "redundant"), default="blinds",
+                    help="blinds: A/B on the restore with the conversation "
+                         "cached. redundant: does the file add anything when "
+                         "only the prefix is cached?")
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--rounds", type=int, default=1,
                     help="repetitions of the A/B pair")
@@ -130,6 +168,11 @@ def main():
     print("  server: %s" % a.url)
     results, written = [], []
     try:
+        if a.mode == "redundant":
+            for i in range(a.rounds):
+                results.append(round_redundant(
+                    a.url, "R%s%d" % (a.salt, i), a.conv_words, a.prefix_words))
+            return 0
         order = (True, False) if a.restore_first == "1" else (False, True)
         for i in range(a.rounds):
             for restore in order:

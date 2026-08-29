@@ -156,6 +156,25 @@ and there is none directly: `/props` carries no uptime and no boot id, and
 Until one of them exists, what ships is the blunter `RESTORE_WHEN_UNSEEN`, default off, and it is
 NOT yet measured against real traffic.
 
+## What measuring it cost the machine it was measured on
+
+The runs above evicted the operator's live session from the RAM cache:
+
+    30.08. 00:12  removing oldest entry (327, 381, 360, 360, 942 MiB)
+    30.08. 00:19  removing oldest entry (6570.640 MiB)   <- the session
+    30.08. 00:25  removing oldest entry (301, 1134 MiB)
+
+6570 MiB is a 66,826-token conversation, which is what Claude Code had running
+at 00:01. At `-cram 32768` the cache holds roughly five states that size, and
+each A/B round adds two of its own — so a few minutes of benchmarking is
+enough to push a real session out. Their next turn is a cold start.
+
+This is worth more than an apology in a report. It is the same arithmetic as
+the defect itself: the cache is the thing that makes long conversations cheap,
+it is small in units of real sessions, and nothing warns when it fills. The
+suite's docstring now says so, and the honest place to run it is a side server
+or an idle machine.
+
 ## Reproduce
 
     python3 bench/suites/restore-blinds-cache.py                  # A then B

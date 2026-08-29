@@ -42,6 +42,21 @@ IT USES THE PRODUCTION SERVER, and it takes the one slot for a few minutes.
 It writes two files into --slot-save-path and removes them again; both are
 named `restore-blinds-<round>.bin` and nothing else in that directory is
 touched.
+
+IT ALSO EVICTS WHOEVER WAS USING THE MACHINE, and that is not a theoretical
+cost. Measured 30.08.2026, 00:19, running these rounds against production:
+
+    alloc: - making room for prompt cache entry, removing oldest entry
+           (size = 6570.640 MiB)
+
+That entry was the operator's live Claude Code session — 66,826 tokens. At
+`-cram 32768` the RAM cache holds about five states of that size, and each
+round of this suite adds two of its own. So the next turn of whatever was
+running before is a cold start: on this machine, the better part of ten
+minutes.
+
+Run it when nobody is working, or on a side server via bench/sideserver.py.
+The A/B itself is honest either way; the bystander is what pays.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.request
 

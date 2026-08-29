@@ -435,6 +435,26 @@
       "status": "open, found 28.08.2026, not yet fixed",
       "first_seen": "2026-08-28",
       "last_checked": "2026-08-28"
+    },
+    {
+      "id": "restore-blinds-the-ram-cache",
+      "title": "Restoring a prefix file switches off llama.cpp's own prompt cache",
+      "applies_to": {
+        "component": "cc-gateway"
+      },
+      "shows_as": "slow",
+      "symptom": "A continuation of a conversation the server still has in its RAM prompt cache runs as if nothing were cached: the gateway reports the prefix as restored, reuse equals the prefix size exactly, and every token of the conversation behind it is computed again. Nothing errors. The gateway's own log looks like a success -- it restored the file it meant to restore.",
+      "measured": "29.08.2026, 23:41:50, qwen38, live traffic. The session's last turn had released n_tokens = 69939 at 21:29:35, and the very next slot selection (21:30:22, the watchdog) was by LRU -- which runs prompt_save() on the outgoing state, so those 69939 tokens went into the 32 GiB RAM cache. For the next two hours every probe selected by LCP similarity with f_keep = 0.794 against its own 34 tokens, so nothing touched that entry, and the server never logged `removing oldest entry` or `exceeds cache size limit` on 29.08. at all. At 23:41:50 the user's next turn arrived (70020 tokens, 68 messages, a pure append). The gateway restored the 14568-token prefix file into the slot in 124 ms, and llama-server then logged for the request itself: `selected slot by LCP similarity, f_sim_best = 0.208, f_keep = 1.000` -- 0.208 * 70020 = 14564, i.e. the slot held exactly the restored prefix and all of it matched. CAUSE, server-context.cpp:1595: the prompt cache is consulted only `if (f_keep < 0.5f)`. A restore makes the slot a PERFECT prefix of the incoming prompt, f_keep = 1.0, and the lookup that would have found the 69939-token entry never runs. Result: reused 14568, computed 55452, took 506.4 s. Had the gateway restored nothing, the slot would have held an unrelated 245-token state from a bench run, f_keep would have been near zero, and prompt_load() would have compared the new prompt against the cached 69939 tokens at f_keep = 1.0 / f_sim = 0.999 -- the entry it selects. INFERRED, not directly observed: that the entry was still in the cache. llama.cpp does not log cache contents at INFO level. It rests on the absence of every eviction line and on no request in those two hours being able to consume it (each would need f_keep >= 0.25 against 69939 tokens; the largest was 4719).",
+      "mitigation": "None in place. The gateway decides to restore from its own bookkeeping ('have I seen this prefix'), which cannot see llama.cpp's RAM cache -- and nothing exposes it. Directions, none measured: skip the restore when the incoming prompt is much longer than the prefix AND this prefix was served recently, i.e. exactly when a longer state is likely to be cached; or restore only after a request has shown the conversation is NOT cached, which costs one slow turn instead of every one. The controlled experiment -- same continuation with and without the restore -- has not been run.",
+      "detect": {
+        "kind": "manual",
+        "how": "python3 tools/tracelog.py diff, plus the server's own journal. The signature is a request whose `restored` is set and whose `reused` equals `restored_tokens` EXACTLY while the conversation behind it is recomputed, together with a `selected slot by LCP similarity` line carrying f_keep = 1.000 for that task. No suite reproduces it yet: it needs a state in the RAM cache that the restore then hides, and nothing exposes the cache to assert against."
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "open, found 30.08.2026 in the live trace",
+      "first_seen": "2026-08-30",
+      "last_checked": "2026-08-30"
     }
   ]
 }

@@ -212,3 +212,43 @@ class TestTheSuiteCannotWriteIntoTheRealTrace(unittest.TestCase):
             encoding="utf-8")
         self.assertIn('"TRACE_DIR"', loader,
                       "the suite has to point the trace away from the real one")
+
+
+class TestBothNamesAreRecorded(unittest.TestCase):
+    """What came in and what was used are two different things, and the gap
+    between them is where a whole morning went wrong: a harness sent
+    `qwen38-think` — a name from the retired vocabulary — and was served as the
+    bare alias, i.e. with no thinking at all, silently."""
+
+    GW = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.GW = common.load("setup/claude/cc-gateway.py", "cc_gateway_names",
+                             {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
+                              "SLOT_PATH": "/nonexistent-slots",
+                              "TRACE_DIR": "/nonexistent-trace"})
+
+    def test_a_mode_slug_reads_as_its_mode(self):
+        self.assertEqual(self.GW._mode_of("qwen38-low", "qwen38"), "low")
+        self.assertEqual(self.GW._mode_of("qwen38-xhigh", "qwen38"), "xhigh")
+
+    def test_the_bare_alias_is_called_bare(self):
+        self.assertEqual(self.GW._mode_of("qwen38", "qwen38"), "bare")
+
+    def test_a_slug_for_another_model_is_not_read_as_a_mode(self):
+        """`gemma26-low` while qwen38 serves is not a mode of qwen38, and
+        pretending otherwise would put a name in the column that nothing
+        honours."""
+        self.assertEqual(self.GW._mode_of("gemma26-low", "qwen38"), "bare")
+
+    def test_nothing_known_still_answers(self):
+        self.assertEqual(self.GW._mode_of(None, "qwen38"), "bare")
+        self.assertEqual(self.GW._mode_of("qwen38-low", None), "bare")
+
+    def test_the_record_carries_slug_served_and_mode(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        block = src[src.index('TRACE.record(\n                "request"'):][:1200]
+        for field in ('"slug"', '"served"', '"mode"'):
+            self.assertIn(field, block)

@@ -656,6 +656,22 @@ def quarantine(name, id_, reason):
     return True
 
 
+def _mode_of(slug, served):
+    """The mode name inside a slug, given the alias it belongs to.
+
+    `qwen38-low` under a served `qwen38` is `low`. The bare alias is `bare`,
+    and so is anything that did not resolve — the caller decides which of the
+    two it was, because only it knows whether the lookup hit.
+    """
+    if not slug or not served:
+        return "bare"
+    if slug == served:
+        return "bare"
+    if slug.startswith(served + "-"):
+        return slug[len(served) + 1:]
+    return "bare"
+
+
 def _window_was_clean(window, ident):
     """Was this request alone with the slot from `window` until now?
 
@@ -1182,6 +1198,7 @@ async def handler(req):
     ident = None
     cold = False
     streaming = False
+    mode_hit = None            # did the incoming slug resolve to a mode?
 
     if inference and body:
         try:
@@ -1200,7 +1217,7 @@ async def handler(req):
             # would put two different prompts on one key — which is what this
             # gateway did until 28.08.2026, and what made a restore poison the
             # slot it was supposed to warm.
-            p, _ = inject_model_kwargs(p, served=SERVED)
+            p, mode_hit = inject_model_kwargs(p, served=SERVED)
             ident, head = prefix_id(p, dialect)
             cold = ident not in PREFIXES
             p, n_vol = correct(p, dialect)
@@ -1366,7 +1383,20 @@ async def handler(req):
             TRACE.record(
                 "request",
                 summary={"who": who, "zone": PRIORITY_NAME[prio],
-                         "model": (p or {}).get("model"), "prefix": ident,
+                         # THE TWO NAMES, and the difference between them is
+                         # the point. `slug` is what the consumer sent;
+                         # `served` is the alias llama-server actually holds;
+                         # `mode` is what the slug resolved to, or "bare" when
+                         # it resolved to nothing and the command line decided
+                         # instead. On 29.08. a harness sent `qwen38-think` for
+                         # a whole morning — a name from the retired
+                         # vocabulary — and got no thinking at all, which this
+                         # column makes visible at a glance.
+                         "slug": (p or {}).get("model"),
+                         "served": SERVED,
+                         "mode": (_mode_of((p or {}).get("model"), SERVED)
+                                  if mode_hit else "bare"),
+                         "prefix": ident,
                          "cold": was_cold, "took_s": round(took, 2),
                          "waited_s": round(waited, 2),
                          "reused": reuse[0] if reuse else None,

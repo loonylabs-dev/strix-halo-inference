@@ -517,3 +517,86 @@ class TestTheDiffNamesTheMessageThatChanged(unittest.TestCase):
         self.write({"t": 1, "shape": ["a"], "reused": 100, "computed": 5},
                    {"t": 2, "shape": ["a", "b"], "reused": 200, "computed": 5})
         self.assertIn("1 pairs", self.run_diff())
+
+
+class TestAChangedHeadIsItsOwnFailure(unittest.TestCase):
+    """Grouping by prefix — which the shape comparison must do — is blind to
+    the most expensive failure there is, because the two requests land in
+    different groups and are never compared.
+
+    Measured 30.08.2026, 00:01: the tool list went 13 -> 21 mid-conversation,
+    the prefix id changed with it, and 55,856 tokens of an UNTOUCHED
+    conversation were recomputed. 655 seconds. The tools sit in front of the
+    messages, so nothing behind them survives.
+    """
+
+    CLI = common.load("tools/tracelog.py", "tracelog_cli_head")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="trace-head-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.old = os.environ.get("TRACE_DIR")
+        os.environ["TRACE_DIR"] = self.dir
+        self.addCleanup(lambda: os.environ.__setitem__("TRACE_DIR", self.old)
+                        if self.old else os.environ.pop("TRACE_DIR", None))
+
+    def run_on(self, *recs):
+        import contextlib, io
+        rows = [dict({"kind": "request", "who": "someone"}, **r) for r in recs]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.CLI._head_changes(rows)
+        return buf.getvalue()
+
+    def test_a_new_head_is_reported_with_what_grew(self):
+        out = self.run_on(
+            {"t": 1, "prefix": "aaa", "tools": 13, "prefix_chars": 60428},
+            {"t": 2, "prefix": "bbb", "tools": 21, "prefix_chars": 73404,
+             "reused": 17784, "computed": 55856, "took_s": 655.8})
+        self.assertIn("NEVER SEEN", out)
+        self.assertIn("13 -> 21", out)
+        self.assertIn("60428 -> 73404", out)
+        self.assertIn("55856", out)
+
+    def test_a_return_to_a_known_prefix_is_counted_not_reported(self):
+        """Claude Code runs two prompt types side by side and they flip the
+        prefix back and forth all day. Reporting each flip buries the one
+        change that cost eleven minutes."""
+        out = self.run_on({"t": 1, "prefix": "aaa"}, {"t": 2, "prefix": "bbb"},
+                          {"t": 3, "prefix": "aaa"}, {"t": 4, "prefix": "bbb"})
+        self.assertIn("2 returns", out)
+        self.assertEqual(out.count("NEVER SEEN"), 1, "only bbb was ever new")
+
+    def test_it_says_whether_the_history_was_to_blame(self):
+        same = ["h%d" % i for i in range(20)]
+        out = self.run_on(
+            {"t": 1, "prefix": "aaa", "shape": same},
+            {"t": 2, "prefix": "bbb", "shape": same + ["new"], "computed": 9})
+        self.assertIn("the history was not the cause", out)
+
+    def test_the_expensive_one_comes_first(self):
+        """A day holds a dozen head changes and one of them cost eleven
+        minutes. Chronological order buries it."""
+        out = self.run_on(
+            {"t": 1, "prefix": "p0"},
+            {"t": 2, "prefix": "p1", "computed": 10},
+            {"t": 3, "prefix": "p2", "computed": 55856})
+        first = [l for l in out.splitlines() if "NEVER SEEN" in l][0]
+        self.assertIn("-> p2", first)
+
+    def test_a_caller_that_never_changed_head_says_so(self):
+        out = self.run_on({"t": 1, "prefix": "aaa"}, {"t": 2, "prefix": "aaa"})
+        self.assertIn("never seen before", out)
+
+    def test_two_callers_do_not_share_a_history(self):
+        """`who` is the access. One caller's first sight of a prefix is not
+        made stale by another caller having used it."""
+        rows = [{"kind": "request", "who": "a", "t": 1, "prefix": "p1"},
+                {"kind": "request", "who": "a", "t": 2, "prefix": "p2"},
+                {"kind": "request", "who": "b", "t": 3, "prefix": "p2"},
+                {"kind": "request", "who": "b", "t": 4, "prefix": "p1"}]
+        import contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.CLI._head_changes(rows)
+        self.assertEqual(buf.getvalue().count("NEVER SEEN"), 2)

@@ -228,6 +228,68 @@ def cmd_diff(a):
     if not hits:
         print("  nothing in %d pairs: every request for every prefix was a "
               "clean, cheap append" % pairs)
+    _head_changes(_load(a))
+
+
+def _head_changes(records):
+    """When the PREFIX id itself changes from one request to the next.
+
+    Grouping by prefix — which everything above does — is blind to exactly the
+    most expensive failure there is, because the two requests land in
+    different groups and are never compared. Measured 30.08.2026, 00:01: the
+    tool list went from 13 to 21 entries mid-conversation, the prefix id
+    changed with it, and 55,856 tokens of an untouched conversation were
+    recomputed. 655 seconds. The message shapes agreed throughout.
+
+    The tools and the system prompt sit IN FRONT of the messages in the
+    rendered prompt, so a change there invalidates everything behind it. No
+    amount of history stability helps.
+    """
+    per = defaultdict(list)
+    for r in records:
+        if r.get("kind") == "request" and r.get("who") and r.get("prefix"):
+            per[r["who"]].append(r)
+    fresh, returning = [], 0
+    for who, rows in per.items():
+        rows.sort(key=lambda r: r.get("t", 0))
+        seen = set()
+        for prev, cur in zip(rows, rows[1:]):
+            seen.add(prev["prefix"])
+            if prev["prefix"] == cur["prefix"]:
+                continue
+            if cur["prefix"] in seen:
+                # Claude Code runs TWO prompt types side by side — the
+                # conversation and a small toolless one — and they flip the
+                # prefix back and forth all day. A prefix this caller has used
+                # before is that, not a head that changed.
+                returning += 1
+                continue
+            fresh.append((who, prev, cur))
+    if returning:
+        print("  (%d returns to a prefix this caller had used before — two "
+              "prompt types alternating, not a new head)" % returning)
+    if not fresh:
+        print("  no caller met a prefix it had never seen before")
+        return
+    for who, prev, cur in sorted(fresh, key=lambda t: -(t[2].get("computed") or 0)):
+        print("  %s who=%s  A HEAD IT HAD NEVER SEEN: prefix %s -> %s"
+              % (_clock(cur), who, prev["prefix"], cur["prefix"]))
+        print("      tools %s -> %s, prefix %s -> %s characters"
+              % (prev.get("tools"), cur.get("tools"),
+                 prev.get("prefix_chars"), cur.get("prefix_chars")))
+        print("      cost: reused=%s computed=%s took=%ss"
+              % (cur.get("reused"), cur.get("computed"), cur.get("took_s")))
+        old, new = prev.get("shape") or [], cur.get("shape") or []
+        if old and new:
+            kept = 0
+            for x, y in zip(old, new):
+                if x != y:
+                    break
+                kept += 1
+            print("      the messages: %d of %d unchanged — %s"
+                  % (kept, len(old),
+                     "the history was not the cause" if kept >= len(old) - 3
+                     else "the history moved too"))
 
 
 def cmd_saves(a):

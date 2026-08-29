@@ -70,6 +70,50 @@ because foreign traffic asks its own questions — but degeneracy is the
 measured, known failure mode, and "wrong but not degenerate" was always the
 speculative half.
 
+## CORRECTION, same evening: the attribution above is an upper bound
+
+Read llama.cpp's source before trusting the number, and it does not hold as
+stated. When a slot is taken over BY LRU — which is what the probe does —
+server-context.cpp:1631 runs `prompt_save()` on the outgoing prompt before
+`prompt_load()` brings in the new one. The evicted conversation goes into the
+RAM prompt cache, and the next turn gets it back from there.
+
+So the eviction is normally absorbed, and the arithmetic of the flagship
+incident says so too:
+
+    21:19:44  previous turn total          60184 tokens
+    21:23:23  next turn total              63069, of which 44401 reused
+
+If the probe had never run, the slot would have held those 60184 tokens — and
+the longest common prefix with the new prompt is 44401 whatever holds it. The
+18668 recomputed tokens are therefore NOT the probe's doing: the client sent a
+conversation that diverges from its own previous one at token 44401.
+
+That happens regularly and has nothing to do with the watchdog. Today alone,
+in this trace:
+
+    08:14:44   in 22688, reused 12435, previous total 21419
+    21:12:15   in 44979, reused 14568, previous total 44405
+    21:23:23   in 63069, reused 44401, previous total 60184
+
+A client that rewrites its own history — compaction, a truncated tool result,
+a re-ordered turn — costs exactly this, and the probe was standing next to it.
+
+WHAT SURVIVES THE CORRECTION. The probe does take the one slot; that part is
+directly observed. Its cost is the restore from RAM (sub-second) rather than a
+re-prefill, EXCEPT when the RAM cache no longer holds the state. That happens
+under pressure, and the server says so: `making room for prompt cache entry,
+removing oldest entry` appears 18 times in seven days — all of them on 26.08.,
+none since.
+
+So the honest figure is not "24.8 minutes of GPU a week". It is: the probe
+takes the slot about five times a day, is normally absorbed by a 32 GiB RAM
+cache that was under pressure on exactly one day of seven, and the 209,587
+tokens counted above are an upper bound that mixes it with client-side
+divergence. Separating the two needs one more number per request — the common
+prefix against the PREVIOUS prompt — which the gateway can record and does
+not yet.
+
 ## What is NOT settled
 
 * Whether a passive check finds the `////` signature reliably, and how often

@@ -129,3 +129,36 @@ class TestThePageStandsAlone(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheChartsShowTheSameRowsAsTheTable(unittest.TestCase):
+    """A picture that shows something other than the list beneath it is how a
+    wrong conclusion gets drawn. All three read the filtered rows."""
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_they_are_drawn_from_the_filtered_set(self):
+        self.assertRegex(self.html, r"drawCharts\(shown\)")
+        for fn in ("drawDurations", "drawTokens", "drawPrefixes"):
+            self.assertIn("%s(rows)" % fn, self.html)
+
+    def test_durations_use_a_log_scale(self):
+        """One morning held 0.66 s and 836 s. On a linear axis everything
+        below a minute is a line on the floor."""
+        self.assertIn("Math.log10", self.html)
+
+    def test_a_point_opens_the_same_detail_as_its_row(self):
+        """Otherwise the chart shows an outlier and leaves you hunting for it
+        in the table."""
+        self.assertIn('closest("[data-at]")', self.html)
+        self.assertIn('"data-at": r._at', self.html)
+
+    def test_the_svg_is_built_by_hand(self):
+        """No library, and none is coming: this repo has no npm and three
+        pictures are not a reason to acquire one."""
+        self.assertIn("createElementNS", self.html)
+        self.assertNotRegex(self.html, r"(d3|chart\.js|plotly|echarts)")
+
+    def test_the_charts_can_be_switched_off(self):
+        self.assertIn("charts-btn", self.html)

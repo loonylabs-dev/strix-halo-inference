@@ -46,6 +46,13 @@
   pre { margin:0; padding:10px 14px; white-space:pre-wrap; word-break:break-word;
         background:rgba(127,127,127,.07); border-left:2px solid var(--acc) }
   .empty { padding:30px 14px; color:var(--dim) }
+  #charts { display:grid; gap:2px; padding:10px 14px 4px }
+  figure { margin:0 } figcaption { color:var(--fg); font-size:11px; padding:6px 0 2px }
+  svg { width:100%; height:auto; display:block; background:rgba(127,127,127,.05);
+        border:1px solid var(--line); border-radius:5px }
+  svg text { fill:var(--dim); font-size:9px }
+  svg .grid { stroke:var(--line); stroke-width:1 }
+  svg .pt { cursor:pointer } svg .pt:hover { stroke:var(--acc); stroke-width:2 }
 </style>
 
 <header>
@@ -58,9 +65,18 @@
     <option>quarantine</option><option>mismatch</option>
   </select>
   <button id=live class=on>live</button>
+  <button id=charts-btn class=on>Charts</button>
   <span class=sp></span>
   <span class=dim id=meta></span>
 </header>
+<section id=charts>
+  <figure><figcaption>Dauer je Anfrage <span class=dim>· logarithmisch, Farbe = kalt/warm</span></figcaption>
+    <svg id=c-dur viewBox="0 0 1000 150" preserveAspectRatio=none></svg></figure>
+  <figure><figcaption>Tokens je Anfrage <span class=dim>· grün wiederverwendet, orange gerechnet</span></figcaption>
+    <svg id=c-tok viewBox="0 0 1000 120" preserveAspectRatio=none></svg></figure>
+  <figure><figcaption>je Prefix <span class=dim>· Anfragen und gerechnete Tokens</span></figcaption>
+    <svg id=c-pre viewBox="0 0 1000 130" preserveAspectRatio=none></svg></figure>
+</section>
 <table>
   <thead><tr>
     <th>Zeit</th><th>Art</th><th>wer</th><th>slug</th><th>served/mode</th>
@@ -120,11 +136,111 @@ function row(r, i) {
     (openAt === r._at ? `<tr><td colspan=11><pre id=detail>lädt …</pre></td></tr>` : "");
 }
 
+// ---- charts -------------------------------------------------------------
+//
+// Hand-drawn SVG, because this repo has no npm and is not getting one for
+// three pictures. They read the SAME filtered rows as the table, so a filter
+// narrows both — a chart that shows something else than the list underneath
+// it is how a wrong conclusion gets drawn.
+
+const svgNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(svgNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function clear(id) { const s = $(id); s.innerHTML = ""; return s; }
+
+// Durations span 0.6 s to 337 s in one morning, so a linear axis hides
+// everything below a minute. Log, with the decades drawn.
+function drawDurations(rows) {
+  const s = clear("#c-dur"), W = 1000, H = 150, P = 22;
+  const pts = rows.filter(r => r.kind === "request" && r.took_s > 0);
+  if (!pts.length) return;
+  const t0 = pts[0].t, t1 = pts[pts.length - 1].t || t0 + 1;
+  const x = t => P + (W - P - 6) * (t1 === t0 ? 0.5 : (t - t0) / (t1 - t0));
+  const lo = Math.log10(0.3), hi = Math.log10(Math.max(...pts.map(r => r.took_s), 10));
+  const y = v => H - 16 - (H - 30) * (Math.log10(Math.max(v, 0.3)) - lo) / (hi - lo);
+  for (let d = Math.ceil(lo); d <= hi; d++) {
+    const v = Math.pow(10, d);
+    el("line", {class: "grid", x1: P, x2: W - 6, y1: y(v), y2: y(v)}, s);
+    el("text", {x: 2, y: y(v) + 3}, s).textContent = v >= 1 ? v + "s" : v + "s";
+  }
+  for (const r of pts) {
+    const c = el("circle", {class: "pt", cx: x(r.t), cy: y(r.took_s), r: 3,
+                            fill: r.cold ? "var(--cold)" : "var(--warm)",
+                            "data-at": r._at}, s);
+    el("title", {}, c).textContent =
+      `${clock(r.t)}  ${r.slug || r.model || ""}  ${r.took_s}s  ` +
+      `reused ${r.reused ?? "?"} / computed ${r.computed ?? "?"}`;
+  }
+}
+
+// What the GPU actually did, next to what it was spared. A tall orange bar is
+// work; a tall green one is the cache earning its disk.
+function drawTokens(rows) {
+  const s = clear("#c-tok"), W = 1000, H = 120, P = 22;
+  const pts = rows.filter(r => r.kind === "request" &&
+                              (r.reused != null || r.computed != null));
+  if (!pts.length) return;
+  const max = Math.max(...pts.map(r => (r.reused || 0) + (r.computed || 0)), 1);
+  const bw = Math.max(1, Math.min(9, (W - P - 6) / pts.length - 1));
+  pts.forEach((r, i) => {
+    const x = P + i * ((W - P - 6) / pts.length);
+    const hr = (H - 18) * (r.reused || 0) / max;
+    const hc = (H - 18) * (r.computed || 0) / max;
+    const g = el("g", {class: "pt", "data-at": r._at}, s);
+    el("rect", {x, y: H - 12 - hr - hc, width: bw, height: hc,
+                fill: "var(--cold)"}, g);
+    el("rect", {x, y: H - 12 - hr, width: bw, height: hr,
+                fill: "var(--warm)"}, g);
+    el("title", {}, g).textContent =
+      `${clock(r.t)}  reused ${r.reused ?? "?"} · computed ${r.computed ?? "?"}`;
+  });
+  el("text", {x: 2, y: 12}, s).textContent = max.toLocaleString();
+}
+
+// One row per prefix: how often it was asked for, and what it cost in tokens
+// the GPU had to compute. The two together say whether a prefix earns its
+// gigabyte.
+function drawPrefixes(rows) {
+  const s = clear("#c-pre"), W = 1000, H = 130, P = 120;
+  const per = new Map();
+  for (const r of rows) {
+    if (r.kind !== "request" || !r.prefix) continue;
+    const e = per.get(r.prefix) || {n: 0, comp: 0, cold: 0, slug: r.slug || r.model};
+    e.n++; e.comp += r.computed || 0; e.cold += r.cold ? 1 : 0;
+    per.set(r.prefix, e);
+  }
+  const list = [...per.entries()].sort((a, b) => b[1].comp - a[1].comp).slice(0, 8);
+  if (!list.length) return;
+  const maxC = Math.max(...list.map(([, e]) => e.comp), 1);
+  const rowH = Math.min(14, (H - 8) / list.length);
+  list.forEach(([pid, e], i) => {
+    const y = 4 + i * rowH;
+    el("text", {x: 2, y: y + rowH - 4}, s).textContent =
+      `${pid.slice(0, 10)} ${e.n}×${e.cold ? " " + e.cold + " kalt" : ""}`;
+    const g = el("g", {class: "pt"}, s);
+    el("rect", {x: P, y: y + 1, width: Math.max(1, (W - P - 60) * e.comp / maxC),
+                height: rowH - 3, fill: "var(--cold)", opacity: .85}, g);
+    el("title", {}, g).textContent =
+      `${pid}  ${e.slug || ""}  ${e.n} Anfragen, ${e.comp.toLocaleString()} Tokens gerechnet`;
+    el("text", {x: W - 56, y: y + rowH - 4}, s).textContent = e.comp.toLocaleString();
+  });
+}
+
+function drawCharts(rows) {
+  if ($("#charts").style.display === "none") return;
+  drawDurations(rows); drawTokens(rows); drawPrefixes(rows);
+}
+
 function render() {
   const shown = records.filter(matches).slice(-MAX_ROWS);
   $("#rows").innerHTML = shown.map(row).join("");
   $("#empty").style.display = shown.length ? "none" : "block";
   $("#meta").textContent = `${shown.length}/${records.length} Zeilen · ${file || ""}`;
+  drawCharts(shown);
   if (openAt !== null) loadDetail();
 }
 
@@ -136,6 +252,15 @@ async function loadDetail() {
 }
 
 document.addEventListener("click", e => {
+  // A point in a chart opens the same detail as its row — otherwise the
+  // picture shows an outlier and leaves you searching the table for it.
+  const pt = e.target.closest("[data-at]");
+  if (pt) {
+    const at = +pt.getAttribute("data-at");
+    openAt = (openAt === at) ? null : at;
+    render();
+    return;
+  }
   const tr = e.target.closest("tbody tr[data-i]");
   if (!tr) return;
   const rec = records.filter(matches).slice(-MAX_ROWS)[+tr.dataset.i];
@@ -166,6 +291,12 @@ async function days() {
 }
 
 $("#day").onchange = e => { file = e.target.value; offset = 0; records = []; render(); poll(); };
+$("#charts-btn").onclick = () => {
+  const on = $("#charts").style.display !== "none";
+  $("#charts").style.display = on ? "none" : "grid";
+  $("#charts-btn").classList.toggle("on", !on);
+  if (on === false) render();
+};
 $("#q").oninput = render;
 $("#kind").onchange = render;
 $("#live").onclick = () => { live = !live; $("#live").classList.toggle("on", live);

@@ -197,3 +197,24 @@ class TestWhichProgramAsked(unittest.TestCase):
     def test_it_falls_back_to_the_dialect_when_nothing_names_itself(self):
         self.assertIn('r.dialect === "openai"', self.html)
         self.assertIn('r.dialect === "anthropic"', self.html)
+
+
+class TestAColumnMeansOneThing(unittest.TestCase):
+    """Seen on screen, 29.08.: a `save` row printed a paragraph of prewarm's
+    console output in the token column, because that record carried it under
+    `output` — the name the request rows use for written tokens. Renaming the
+    field fixed new records; the TABLE had to stop asking non-requests for
+    numbers, or every record written before the rename would keep doing it."""
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_token_columns_are_asked_only_of_requests(self):
+        self.assertIn('const req = r.kind === "request";', self.html)
+        self.assertIn('${req ? (inTok(r) ?? "") : tokensOf(r)}', self.html)
+        self.assertIn('${req ? share(r) : ""}', self.html)
+        self.assertIn('${req ? (r.output ?? "") : ""}', self.html)
+
+    def test_everything_else_stays_in_the_detail_view(self):
+        """Where it is labelled, instead of guessed at by column position."""
+        self.assertIn("loadDetail", self.html)

@@ -144,7 +144,17 @@ function client(r) {
   return "";
 }
 
+// Token columns belong to REQUESTS. A save or a restore has tokens too, but
+// they mean something else — and a record written before 29.08. carries
+// prewarm's console output under `output`, which is how a paragraph of text
+// ended up in a number column on screen. Everything else the row does not
+// understand stays in the detail view, where it is labelled.
+function tokensOf(r) {
+  return typeof r.tokens === "number" ? r.tokens : "";
+}
+
 function row(r, i) {
+  const req = r.kind === "request";
   const cold = r.kind !== "request" ? "" :
         (r.cold ? `<span class=cold>COLD</span>` : `<span class=warm>warm</span>`);
   const mode = r.mode ? `${esc(r.served || "")}/<b>${esc(r.mode)}</b>` : "";
@@ -160,9 +170,9 @@ function row(r, i) {
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
     <td>${cold}</td>
     <td class=num>${r.took_s ?? r.saved_s ?? ""}</td>
-    <td class=num>${inTok(r) ?? ""}</td>
-    <td class=num>${share(r)}</td>
-    <td class=num>${r.output ?? ""}</td>
+    <td class=num>${req ? (inTok(r) ?? "") : tokensOf(r)}</td>
+    <td class=num>${req ? share(r) : ""}</td>
+    <td class=num>${req ? (r.output ?? "") : ""}</td>
     <td>${bar(r)}</td></tr>` +
     (openAt === r._at ? `<tr><td colspan=13><pre id=detail>lädt …</pre></td></tr>` : "");
 }

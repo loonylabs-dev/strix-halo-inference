@@ -252,3 +252,39 @@ class TestBothNamesAreRecorded(unittest.TestCase):
         block = src[src.index('TRACE.record(\n                "request"'):][:1200]
         for field in ('"slug"', '"served"', '"mode"'):
             self.assertIn(field, block)
+
+
+class TestWhatCameBack(unittest.TestCase):
+    """Read and written are two different numbers, and until 29.08. only the
+    reading was recorded."""
+
+    DIA = common.load("setup/claude/dialects.py", "dialects_output")
+
+    def test_llama_cpps_own_count(self):
+        self.assertEqual(self.DIA.output_from_text('{"timings":{"predicted_n":42}}'), 42)
+
+    def test_the_anthropic_stream_reports_it_at_the_end(self):
+        """message_start says 1 and means nothing yet; message_delta at the
+        end is the figure that counts."""
+        sse = ('data: {"type":"message_start","message":{"usage":{"output_tokens":1}}}\n\n'
+               'data: {"type":"message_delta","usage":{"output_tokens":137}}\n\n')
+        self.assertEqual(self.DIA.output_from_text(sse), 137)
+
+    def test_the_openai_shape(self):
+        self.assertEqual(self.DIA.output_from_text('{"usage":{"completion_tokens":9}}'), 9)
+
+    def test_rubbish_is_unknown_rather_than_zero(self):
+        for text in ("", "not json", '{"usage": {"output_tokens": "many"}}'):
+            with self.subTest(text=text[:12]):
+                self.assertIsNone(self.DIA.output_from_text(text))
+
+
+class TestOneNameMeansOneThing(unittest.TestCase):
+    def test_output_is_written_tokens_and_nothing_else(self):
+        """A save event used to carry prewarm's stdout under `output`, and the
+        table — which reads `output` as the tokens the model wrote — printed a
+        paragraph of console text in a number column. Found on screen, 29.08."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"prewarm_stdout"', src)
+        self.assertNotIn('detail={"output"', src)

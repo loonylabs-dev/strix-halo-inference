@@ -485,7 +485,12 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                                  summary={"prefix": id_,
                                           "saved_s": round(time.time() - t0, 1),
                                           "disk_gb": round(disk_used_gb(), 1)},
-                                 detail={"output": (proc_out or b"").decode(
+                                 # NOT `output`: that name means written
+                                 # tokens everywhere else since 29.08., and a
+                                 # save event carrying prewarm's stdout under
+                                 # it put a paragraph of console text in the
+                                 # table's token column.
+                                 detail={"prewarm_stdout": (proc_out or b"").decode(
                                      "utf-8", "replace")[-400:].strip()})
                 else:
                     log("NOTE        automatic save of %s failed: %s"
@@ -1362,11 +1367,12 @@ async def handler(req):
             _ = big_enough
             # WHAT THE SERVER ACTUALLY DID, before anything is claimed about
             # it. The numbers ride along in the answer that was just proxied.
-            reuse = None
+            reuse, wrote = None, None
             try:
                 text = (sniff["head"] + b"\n" + sniff["tail"]).decode(
                     "utf-8", "ignore")
                 reuse = DIA.reuse_from_text(text)
+                wrote = DIA.output_from_text(text)
             except Exception as e:
                 log("NOTE        reuse not read: %r" % (e,))
             if ident and reuse:
@@ -1406,8 +1412,13 @@ async def handler(req):
                          "prefix": ident,
                          "cold": was_cold, "took_s": round(took, 2),
                          "waited_s": round(waited, 2),
+                         # read and written, and the split inside "read":
+                         # `reused` came from a cache, `computed` had to be
+                         # prefilled. Their sum is what the prompt cost as
+                         # input; `output` is what came back.
                          "reused": reuse[0] if reuse else None,
                          "computed": reuse[1] if reuse else None,
+                         "output": wrote,
                          "restored": restored[0] if restored else None,
                          "restored_tokens": restored[1] if restored else None,
                          "streaming": streaming},

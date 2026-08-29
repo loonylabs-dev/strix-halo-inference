@@ -81,7 +81,7 @@
   <thead><tr>
     <th>Zeit</th><th>Art</th><th>wer</th><th>Client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th></th><th class=num>s</th>
-    <th class=num>reused</th><th class=num>computed</th><th>Cache</th>
+    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th>Anteil</th>
   </tr></thead>
   <tbody id=rows></tbody>
 </table>
@@ -119,6 +119,20 @@ function bar(r) {
 // that machine runs; the dialect, the path and the user-agent are what tell
 // Claude Code from a harness. Kept as a guess with the raw string on hover,
 // because a label that pretends to be certain is worse than one that does not.
+// What the prompt cost as INPUT, and how much of it the cache carried. The
+// two numbers the gateway reports are `reused` (came from a cache) and
+// `computed` (had to be prefilled); their sum is the input the model saw, and
+// that sum is what a client's own "input tokens" counter shows — which is why
+// a session of 35 turns reads as hundreds of thousands while the context
+// never left 39k.
+const inTok = r => (r.reused == null && r.computed == null) ? null
+                 : (r.reused || 0) + (r.computed || 0);
+function share(r) {
+  const t = inTok(r);
+  if (!t || r.reused == null) return "";
+  return Math.round(100 * r.reused / t) + "%";
+}
+
 function client(r) {
   const ua = (r.ua || "").toLowerCase();
   if (ua.includes("claude-cli") || ua.includes("claude-code")) return "claude-code";
@@ -146,10 +160,11 @@ function row(r, i) {
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
     <td>${cold}</td>
     <td class=num>${r.took_s ?? r.saved_s ?? ""}</td>
-    <td class=num>${r.reused ?? ""}</td>
-    <td class=num>${r.computed ?? ""}</td>
+    <td class=num>${inTok(r) ?? ""}</td>
+    <td class=num>${share(r)}</td>
+    <td class=num>${r.output ?? ""}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=12><pre id=detail>lädt …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=13><pre id=detail>lädt …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------
@@ -251,9 +266,15 @@ function drawCharts(rows) {
   drawDurations(rows); drawTokens(rows); drawPrefixes(rows);
 }
 
+let listed = [];            // exactly what the table shows, newest first
+
 function render() {
+  // The charts read TIME, so they stay chronological; the table is read from
+  // the top, so the newest belongs there. Two orders, one set of rows — and
+  // the click handler uses `listed`, so the two can never drift apart.
   const shown = records.filter(matches).slice(-MAX_ROWS);
-  $("#rows").innerHTML = shown.map(row).join("");
+  listed = [...shown].reverse();
+  $("#rows").innerHTML = listed.map(row).join("");
   $("#empty").style.display = shown.length ? "none" : "block";
   $("#meta").textContent = `${shown.length}/${records.length} Zeilen · ${file || ""}`;
   drawCharts(shown);
@@ -279,7 +300,7 @@ document.addEventListener("click", e => {
   }
   const tr = e.target.closest("tbody tr[data-i]");
   if (!tr) return;
-  const rec = records.filter(matches).slice(-MAX_ROWS)[+tr.dataset.i];
+  const rec = listed[+tr.dataset.i];
   openAt = (openAt === rec._at) ? null : rec._at;      // click again to close
   render();
 });

@@ -371,3 +371,61 @@ def reuse_from_text(text):
         except Exception:
             best = None
     return best
+
+
+def output_from_object(obj):
+    """How many tokens the model WROTE, from one parsed object, or None.
+
+    The counterpart to reuse_from_object, and it comes from the same three
+    shapes: llama.cpp's own `timings.predicted_n`, Anthropic's
+    `usage.output_tokens`, OpenAI's `usage.completion_tokens`.
+
+    Anthropic streams it in `message_delta`, at the END — the opposite end
+    from where that dialect puts the input accounting, which is why a caller
+    sniffing a stream has to keep both its head and its tail.
+    """
+    if not isinstance(obj, dict):
+        return None
+    t = obj.get("timings")
+    if isinstance(t, dict) and isinstance(t.get("predicted_n"), int):
+        return t["predicted_n"]
+    for u in (obj.get("usage"),
+              (obj.get("message") or {}).get("usage")
+              if isinstance(obj.get("message"), dict) else None):
+        if not isinstance(u, dict):
+            continue
+        for key in ("output_tokens", "completion_tokens"):
+            if isinstance(u.get(key), int):
+                return u[key]
+    return None
+
+
+def output_from_text(text):
+    """Written tokens from a response body or SSE fragment, or None.
+
+    The LAST number wins: an Anthropic stream reports output_tokens in
+    message_start as well, where it is 1 or 2 and means nothing yet — the
+    figure that counts is the one in message_delta at the end.
+    """
+    if not text:
+        return None
+    best = None
+    for chunk in text.split("\n"):
+        line = chunk.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        got = output_from_object(obj)
+        if got is not None:
+            best = got
+    if best is None:
+        try:
+            best = output_from_object(json.loads(text))
+        except Exception:
+            best = None
+    return best

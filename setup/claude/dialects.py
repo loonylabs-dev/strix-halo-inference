@@ -496,6 +496,22 @@ def message_shape(body, dialect=ANTHROPIC):
     whole message. That is enough for the distinction and cheap enough for the
     request path — a few dozen hashes over text already in memory.
     """
+    return [h for h, _ in message_fingerprints(body, dialect)]
+
+
+def message_fingerprints(body, dialect=ANTHROPIC):
+    """(hash, characters) per message — the shape, plus what each one weighs.
+
+    The size is what turns a LOCATED divergence into a diagnosis, and the hash
+    alone cannot give it: a message that changed and kept its length is a
+    re-render (a timestamp, a counter, a reordered block), one that shrank is a
+    truncation, one that grew is an edit. On 29.08.2026 the difference decided
+    whether an 18,450-token re-prefill was the client rewriting one line or
+    compacting a third of the conversation, and there was no way to tell.
+
+    Cheap for the same reason `message_shape` is: the canonical form is built
+    once and its length is already in hand.
+    """
     out = []
     for m in (body.get("messages") or []):
         try:
@@ -503,7 +519,8 @@ def message_shape(body, dialect=ANTHROPIC):
                                ensure_ascii=False)
         except Exception:
             canon = repr(m)
-        out.append(hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:8])
+        out.append((hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:8],
+                    len(canon)))
     return out
 
 

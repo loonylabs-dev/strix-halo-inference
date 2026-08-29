@@ -369,3 +369,151 @@ class TestALostStateLooksNothingLikeARewrite(unittest.TestCase):
             encoding="utf-8")
         self.assertIn("LAST_SHAPE_MAX", src)
         self.assertIn("LAST_SHAPE.pop(next(iter(LAST_SHAPE)))", src)
+
+
+class TestTheShapeSurvivesTheProcessThatComputedIt(unittest.TestCase):
+    """`msgs_kept` is the comparison reduced to a count, and the count is made
+    against LAST_SHAPE — memory a gateway restart wipes. On 29.08.2026 that
+    was the whole gap: the incident at 21:23 had a shape, nobody had written
+    it down, and by the time the question was asked the count for that pair
+    could never be recomputed.
+
+    So the list goes into the record at `detail`, and the text it would take
+    to read the change stays behind `text`.
+    """
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = self.src.index('TRACE.record(\n                "request"')
+        self.block = self.src[start:self.src.index(
+            "# A restore that carried nothing", start)]
+
+    def _group(self, name):
+        """The record call's summary=/detail=/text= group, as source."""
+        at = self.block.index("%s={" % name)
+        nxt = [self.block.index("%s={" % o) for o in ("summary", "detail", "text")
+               if o != name and "%s={" % o in self.block
+               and self.block.index("%s={" % o) > at]
+        return self.block[at:min(nxt) if nxt else len(self.block)]
+
+    def test_the_shape_and_the_sizes_are_written_at_detail(self):
+        g = self._group("detail")
+        self.assertIn('"shape": shape', g)
+        self.assertIn('"msg_chars"', g)
+
+    def test_the_whole_body_needs_the_text_level(self):
+        """A record that carries every message is a conversation on disk. It
+        belongs in the group that expires by itself, not the one that runs
+        all day."""
+        self.assertIn('"body_full": p', self._group("text"))
+        self.assertNotIn("body_full", self._group("detail"))
+        self.assertNotIn("body_full", self._group("summary"))
+
+    def test_the_hashes_and_the_sizes_come_from_one_pass(self):
+        """Two passes over the same messages would let the log carry a size
+        that belongs to a different rendering than the hash beside it."""
+        self.assertIn("fingers = DIA.message_fingerprints", self.src)
+        self.assertIn("shape = [h for h, _ in fingers]", self.src)
+
+
+class TestTheDiffNamesTheMessageThatChanged(unittest.TestCase):
+    """The question of 29.08.2026, made answerable: 18,450 tokens were
+    re-prefilled inside ONE session — was the state taken away, or did the
+    client rewrite its own history, and if so, where?
+
+    Two consecutive records now hold enough to say so without the texts, and
+    with the texts they say what the change was.
+    """
+
+    CLI = common.load("tools/tracelog.py", "tracelog_cli_diff")
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="trace-diff-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.old = os.environ.get("TRACE_DIR")
+        os.environ["TRACE_DIR"] = self.dir
+        self.addCleanup(lambda: os.environ.__setitem__("TRACE_DIR", self.old)
+                        if self.old else os.environ.pop("TRACE_DIR", None))
+
+    def write(self, *recs):
+        with open(os.path.join(self.dir, "trace-2026-08-29.jsonl"), "w",
+                  encoding="utf-8") as f:
+            for r in recs:
+                f.write(json.dumps(dict({"kind": "request", "prefix": "p"}, **r))
+                        + "\n")
+
+    def run_diff(self):
+        import argparse, contextlib, io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.CLI.cmd_diff(argparse.Namespace(day=None, n=40))
+        return buf.getvalue()
+
+    def test_a_clean_cheap_append_is_not_reported(self):
+        self.write({"t": 1, "shape": ["a", "b"], "reused": 100, "computed": 5},
+                   {"t": 2, "shape": ["a", "b", "c"], "reused": 200, "computed": 5})
+        self.assertIn("nothing", self.run_diff())
+
+    def test_a_rewrite_is_located_by_message_index(self):
+        self.write({"t": 1, "shape": ["a", "b", "c"], "msg_chars": [10, 20, 30],
+                    "reused": 100, "computed": 5},
+                   {"t": 2, "shape": ["a", "X", "c"], "msg_chars": [10, 20, 30],
+                    "reused": 10, "computed": 900})
+        out = self.run_diff()
+        self.assertIn("kept 1", out)
+        self.assertIn("message 1", out)
+
+    def test_it_says_which_kind_of_rewrite(self):
+        for old_n, new_n, word in ((20, 20, "re-rendered"), (20, 5, "truncated"),
+                                   (20, 99, "extended")):
+            with self.subTest(word=word):
+                self.write({"t": 1, "shape": ["a", "b"], "msg_chars": [10, old_n],
+                            "reused": 100, "computed": 5},
+                           {"t": 2, "shape": ["a", "X"], "msg_chars": [10, new_n],
+                            "reused": 10, "computed": 900})
+                self.assertIn(word, self.run_diff())
+
+    def test_an_agreeing_shape_with_a_collapsed_reuse_blames_the_server(self):
+        """The other half of the distinction, and the half that was blamed
+        wrongly twice: the history is identical, so the state was lost."""
+        self.write({"t": 1, "shape": ["a", "b"], "reused": 100, "computed": 5},
+                   {"t": 2, "shape": ["a", "b", "c"], "reused": 10, "computed": 900})
+        out = self.run_diff()
+        self.assertIn("pure append", out)
+        self.assertIn("SERVER's", out)
+
+    def test_without_the_text_it_says_how_to_get_it(self):
+        self.write({"t": 1, "shape": ["a", "b"], "msg_chars": [10, 20],
+                    "reused": 100, "computed": 5},
+                   {"t": 2, "shape": ["a", "X"], "msg_chars": [10, 20],
+                    "reused": 10, "computed": 900})
+        self.assertIn("on text", self.run_diff())
+
+    def test_with_the_text_it_prints_both_versions(self):
+        self.write({"t": 1, "shape": ["a", "b"], "msg_chars": [10, 20],
+                    "reused": 100, "computed": 5,
+                    "body_full": {"messages": [{"c": "keep"}, {"c": "BEFORE"}]}},
+                   {"t": 2, "shape": ["a", "X"], "msg_chars": [10, 20],
+                    "reused": 10, "computed": 900,
+                    "body_full": {"messages": [{"c": "keep"}, {"c": "AFTER"}]}})
+        out = self.run_diff()
+        self.assertIn("BEFORE", out)
+        self.assertIn("AFTER", out)
+        self.assertNotIn("keep", out, "only the message that changed")
+
+    def test_nothing_to_compare_is_not_nothing_found(self):
+        """Records written before 29.08.2026 carry no shape. Printing "every
+        append was clean" over them turns a gap into a clean bill of health —
+        which is exactly the mistake this whole command exists to stop."""
+        self.write({"t": 1, "reused": 10, "computed": 900},
+                   {"t": 2, "reused": 10, "computed": 900})
+        out = self.run_diff()
+        self.assertIn("nothing to compare", out)
+        self.assertIn("2 requests", out)
+        self.assertNotIn("clean", out)
+
+    def test_a_clean_result_says_how_much_it_looked_at(self):
+        self.write({"t": 1, "shape": ["a"], "reused": 100, "computed": 5},
+                   {"t": 2, "shape": ["a", "b"], "reused": 200, "computed": 5})
+        self.assertIn("1 pairs", self.run_diff())

@@ -11,6 +11,8 @@
     python3 tools/tracelog.py lies             warm that was not warm
     python3 tools/tracelog.py prefixes         per prefix: cost and reuse
     python3 tools/tracelog.py saves            every save, restore, quarantine
+    python3 tools/tracelog.py diff             where a history stopped being
+                                               an append, and what it cost
 
 The switch takes effect on the next request without restarting cc-gateway —
 which matters, because restarting it clears the very prefix bookkeeping you
@@ -137,6 +139,97 @@ def cmd_prefixes(a):
                  e["reused"], e["computed"], " ".join(sorted(e["models"]))[:40]))
 
 
+def _excerpt(msg, width=160):
+    """One message reduced to something a terminal can show."""
+    try:
+        s = json.dumps(msg, ensure_ascii=False, sort_keys=True,
+                       separators=(",", ":"))
+    except Exception:
+        s = repr(msg)
+    s = re.sub(r"\s+", " ", s)
+    return s if len(s) <= width else s[:width - 1] + "…"
+
+
+def cmd_diff(a):
+    """Where a conversation stopped being an append — and what it cost.
+
+    Two consecutive requests for the same prefix normally share every message
+    but the last few. When they do not, everything after the first changed
+    message is re-prefilled, and that is indistinguishable in `reused` alone
+    from the slot having been taken away. This reads the two apart:
+
+        shape agrees, reuse dropped      the state was lost
+        shape diverges                   the client rewrote its own history
+
+    `msg_chars` then says which kind of rewrite: same length is a re-render,
+    shorter is a truncation, longer an edit. With the trace at `text` the two
+    versions of the message itself are printed underneath.
+    """
+    per, requests = defaultdict(list), 0
+    for r in _load(a):
+        if r.get("kind") != "request" or not r.get("prefix"):
+            continue
+        requests += 1
+        if r.get("shape"):
+            per[r["prefix"]].append(r)
+    pairs = sum(max(len(v) - 1, 0) for v in per.values())
+    if not pairs:
+        # "nothing found" and "nothing could be looked at" are different
+        # answers, and printing the first for the second is how a gap becomes
+        # a clean bill of health. Records written before 29.08.2026 carry no
+        # shape at all — the incident that motivated this command is among
+        # them and can never be diffed.
+        print("  nothing to compare: %d requests, none of them carrying a "
+              "`shape`.\n  The trace has to be at `detail` or higher WHEN the "
+              "request runs;\n  it cannot be added afterwards." % requests)
+        return
+    hits = 0
+    for pid, rows in per.items():
+        rows.sort(key=lambda r: r.get("t", 0))
+        for prev, cur in zip(rows, rows[1:]):
+            old, new = prev.get("shape") or [], cur.get("shape") or []
+            kept = 0
+            for x, y in zip(old, new):
+                if x != y:
+                    break
+                kept += 1
+            appended = kept == len(old)
+            reused, computed = cur.get("reused"), cur.get("computed")
+            if appended and not (isinstance(computed, int) and isinstance(reused, int)
+                                 and computed > 4 * max(reused, 1) / 10):
+                continue                       # a clean append that stayed cheap
+            hits += 1
+            print("  %s prefix=%s  msgs %d -> %d, kept %d%s"
+                  % (_clock(cur), pid, len(old), len(new), kept,
+                     "  (pure append)" if appended else ""))
+            print("      reused=%s computed=%s took=%ss"
+                  % (reused, computed, cur.get("took_s")))
+            if appended:
+                print("      the history agrees — a drop here is the SERVER's "
+                      "state, not the client's history")
+                continue
+            oc = (prev.get("msg_chars") or [None] * len(old))
+            nc = (cur.get("msg_chars") or [None] * len(new))
+            a_chars = oc[kept] if kept < len(oc) else None
+            b_chars = nc[kept] if kept < len(nc) else None
+            if a_chars is not None and b_chars is not None:
+                kind = ("re-rendered, same length" if a_chars == b_chars else
+                        "truncated" if b_chars < a_chars else "extended")
+                print("      message %d: %d -> %d characters — %s"
+                      % (kept, a_chars, b_chars, kind))
+            ob = (prev.get("body_full") or {}).get("messages") or []
+            nb = (cur.get("body_full") or {}).get("messages") or []
+            if kept < len(ob) and kept < len(nb):
+                print("      was: %s" % _excerpt(ob[kept]))
+                print("      now: %s" % _excerpt(nb[kept]))
+            elif not ob:
+                print("      (no text: run `tracelog.py on text` to see the "
+                      "message itself)")
+    if not hits:
+        print("  nothing in %d pairs: every request for every prefix was a "
+              "clean, cheap append" % pairs)
+
+
 def cmd_saves(a):
     for r in _load(a):
         if r.get("kind") in ("save", "restore", "quarantine", "mismatch"):
@@ -162,7 +255,7 @@ DAY_FILE = re.compile(r"^trace-\d{4}-\d{2}-\d{2}\.jsonl$")
 # not because a browser on the same machine is a threat, but because a default
 # that ships whole prompts over a socket is the kind of thing that is later
 # port-forwarded by somebody in a hurry.
-TEXT_FIELDS = ("system_head", "answer_tail", "prompt", "answer")
+TEXT_FIELDS = ("system_head", "answer_tail", "prompt", "answer", "body_full")
 
 
 def _safe_file(name, directory):
@@ -181,8 +274,16 @@ def _redact(rec):
     click fetches it."""
     out = dict(rec)
     for k in TEXT_FIELDS:
-        if isinstance(out.get(k), str):
-            out[k] = "<%d characters — click the row>" % len(out[k])
+        v = out.get(k)
+        if isinstance(v, str):
+            out[k] = "<%d characters — click the row>" % len(v)
+        elif isinstance(v, (dict, list)):
+            # `body_full` is a whole request. Measuring it means serialising it
+            # again for every row of every poll, so the row says how many parts
+            # there are and nothing more — the size is not worth a second pass
+            # over hundreds of megabytes.
+            out[k] = "<%d %s — click the row>" % (
+                len(v), "messages" if isinstance(v, list) else "fields")
     return out
 
 
@@ -297,7 +398,8 @@ def main():
     sv = sub.add_parser("serve"); sv.set_defaults(fn=cmd_serve)
     sv.add_argument("--port", type=int, default=8092)
     for name, fn in (("show", cmd_show), ("lies", cmd_lies),
-                     ("prefixes", cmd_prefixes), ("saves", cmd_saves)):
+                     ("prefixes", cmd_prefixes), ("saves", cmd_saves),
+                     ("diff", cmd_diff)):
         p = sub.add_parser(name); p.set_defaults(fn=fn)
         p.add_argument("--day", help="YYYY-MM-DD; default: the last three files")
         p.add_argument("-n", type=int, default=40)

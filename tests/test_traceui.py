@@ -232,3 +232,40 @@ class TestTheHeaderOffsetIsMeasured(unittest.TestCase):
         self.assertIn("ResizeObserver(measureHeader)", html,
                       "a resize listener misses a wrap caused by a zoom or a "
                       "longer filename — measured 51 px against a 93 px header")
+
+
+class TestAWholeRequestIsNotATableCell(unittest.TestCase):
+    """`body_full` is the entire conversation. The redaction was written for
+    strings, and a dict slips straight through it — which would put every
+    prompt of every row on the wire by default, the exact thing this file
+    exists to prevent."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="traceui-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.path = os.path.join(self.dir, "trace-2026-08-29.jsonl")
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "t": 1000, "kind": "request", "prefix": "p",
+                "body_full": {"system": "SECRET SYSTEM",
+                              "messages": [{"role": "user",
+                                            "content": "SECRET MESSAGE"}]},
+                "shape": ["aaaaaaaa"], "msg_chars": [42]}) + "\n")
+
+    def test_the_body_never_reaches_the_table(self):
+        recs, _ = UI.read_since(self.path, 0)
+        self.assertEqual(len(recs), 1)
+        self.assertNotIn("SECRET", json.dumps(recs[0]))
+        self.assertIn("click", recs[0]["body_full"])
+
+    def test_the_click_still_gets_it(self):
+        recs, _ = UI.read_since(self.path, 0)
+        full = UI.read_one(self.path, recs[0]["_at"])
+        self.assertEqual(full["body_full"]["system"], "SECRET SYSTEM")
+
+    def test_the_shape_is_not_redacted(self):
+        """It is the diagnosis, it is small, and a row that hides it makes the
+        table useless for the thing it was extended for."""
+        recs, _ = UI.read_since(self.path, 0)
+        self.assertEqual(recs[0]["shape"], ["aaaaaaaa"])
+        self.assertEqual(recs[0]["msg_chars"], [42])

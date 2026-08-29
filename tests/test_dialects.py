@@ -264,3 +264,37 @@ class TestTemplatePayload(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatEachMessageWeighs(unittest.TestCase):
+    """`message_shape` says THAT a message changed. On 29.08.2026 that was not
+    enough: an 18,450-token re-prefill could have been one re-rendered line or
+    a third of the conversation compacted away, and the trace could not tell
+    them apart. The size is the difference."""
+
+    def body(self, *texts):
+        return {"messages": [{"role": "user", "content": t} for t in texts]}
+
+    def test_it_carries_a_hash_and_a_length_per_message(self):
+        fp = D.message_fingerprints(self.body("hello", "a longer message"))
+        self.assertEqual(len(fp), 2)
+        for h, n in fp:
+            self.assertRegex(h, r"^[0-9a-f]{8}$")
+            self.assertIsInstance(n, int)
+        self.assertLess(fp[0][1], fp[1][1])
+
+    def test_the_shape_is_exactly_its_hashes(self):
+        """Two functions that disagree would put a wrong index in the log."""
+        b = self.body("one", "two", "three")
+        self.assertEqual(D.message_shape(b),
+                         [h for h, _ in D.message_fingerprints(b)])
+
+    def test_a_same_length_edit_changes_the_hash_but_not_the_size(self):
+        """The re-render case — and the one a length alone would miss."""
+        a = D.message_fingerprints(self.body("counter: 41"))[0]
+        b = D.message_fingerprints(self.body("counter: 42"))[0]
+        self.assertNotEqual(a[0], b[0])
+        self.assertEqual(a[1], b[1], "same length, so only the hash may differ")
+
+    def test_no_messages_is_an_empty_list_not_an_error(self):
+        self.assertEqual(D.message_fingerprints({}), [])

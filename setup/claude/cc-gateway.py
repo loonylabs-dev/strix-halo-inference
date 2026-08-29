@@ -1386,7 +1386,8 @@ async def handler(req):
             # WHAT CHANGED SINCE LAST TIME, for this prefix. Computed here,
             # after the answer, so nothing is added to the request path.
             prev = LAST_SHAPE.get(ident) if ident else None
-            shape = DIA.message_shape(p, dialect) if p else []
+            fingers = DIA.message_fingerprints(p, dialect) if p else []
+            shape = [h for h, _ in fingers]
             kept = DIA.shapes_agree(prev["shape"], shape) if prev else None
             if ident:
                 LAST_SHAPE[ident] = {"shape": shape,
@@ -1465,10 +1466,27 @@ async def handler(req):
                         "messages": len(((p or {}).get("messages") or [])),
                         "head_chars": len(head or ""),
                         "prefix_chars": len(prefix_text(p, dialect)) if p else None,
-                        "bytes_out": len(out or b"")},
+                        "bytes_out": len(out or b""),
+                        # WHERE the client's history differs from its own last
+                        # one. `msgs_kept` above is this comparison reduced to a
+                        # count, and the count is computed against memory that
+                        # a gateway restart wipes. The list is what survives:
+                        # two consecutive records reconstruct the divergence
+                        # index months later, and the sizes say whether the
+                        # message was re-rendered, truncated or edited.
+                        # ~1 KB per request at this level; the full text needs
+                        # `text` and is not on by default.
+                        "shape": shape,
+                        "msg_chars": [n for _, n in fingers]},
                 text={"system_head": head,
                       "answer_tail": (sniff["tail"] or b"")[-2000:].decode(
-                          "utf-8", "ignore")})
+                          "utf-8", "ignore"),
+                      # The whole request as llama-server received it — system,
+                      # tools, kwargs and every message. This is what makes a
+                      # divergence readable rather than merely locatable, and
+                      # it is why `text` writes complete conversations to disk
+                      # and expires by itself.
+                      "body_full": p})
             # A restore that carried nothing is not a slow request, it is a
             # wrong file — and one that would cost this again on every future
             # request for the same prefix.

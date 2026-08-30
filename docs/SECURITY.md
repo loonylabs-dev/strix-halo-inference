@@ -116,6 +116,25 @@ contained prompts at all. Since the server runs as a user service
 Anyone setting it again for debugging should keep in mind that the allow list
 is then the only layer protecting foreign prompts.
 
+**And the reason to set it has largely gone away.** It was switched on twice on
+30.08.2026 — once for a few minutes, once for one measurement — to find out why
+a turn re-reads the previous answer. Both times it came straight off again and
+`/slots` was checked for a `prompt` field afterwards. What came out of that
+investigation is that the switch was not needed for it at all:
+`bench/suites/slot-tail.py` answers the same question from `/slots`
+`n_prompt_tokens`, `/apply-template`, `/tokenize` and the `selected slot by LCP
+similarity` line, which llama-server prints at INFO level in every ordinary
+journal. No debug switch, no restart, and nothing that serves a prompt over
+HTTP.
+
+That is worth stating as a rule rather than an anecdote: **before reaching for
+`LLAMA_SERVER_SLOTS_DEBUG`, check whether the numbers already in the journal
+answer the question.** For prompt-cache work they usually do. The one thing the
+switch still adds is the identity of the tokens either side of a mismatch
+(`server-context.cpp`, the `old:`/`new:` dump) — and if that is what is
+wanted, it is a minutes-long, local-only measurement with the allow list as
+the only remaining layer, never a setting that stays on.
+
 ### Done: the underscore in the hostname
 
 **Do not put an underscore in a tunnel hostname.** The original name used one.

@@ -131,7 +131,7 @@ why, and what SELinux has to do with it.
 ## Checking it
 
 ```bash
-bash tests/run.sh                  # contracts between the parts (975 tests, ~16 s, no GPU)
+bash tests/run.sh                  # contracts between the parts (987 tests, ~12 s, no GPU)
 bash setup/check.sh                # configuration and state
 bash setup/smoketest.sh            # function and protection, all three zones
 bash tests/live_prefix.sh          # prefix saving end to end against the GPU

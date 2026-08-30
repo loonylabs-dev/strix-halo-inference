@@ -198,7 +198,23 @@ function client(r) {
 function tokensOf(r) {
   if (typeof r.tokens === "number") return r.tokens;
   if (typeof r.computed === "number") return r.computed;
-  return "";
+  const p = fromPrewarm(r);
+  return p ? p.tokens : "";
+}
+
+// Records written before 30.08. 19:03 carry the numbers only inside prewarm's
+// console output, because the gateway did not parse them out yet. Fixing the
+// writer does not fix what is already on disk, and a reader that gives up on
+// those keeps showing an empty column for every save in the history — which is
+// exactly the question that was asked: "I still do not see 11005".
+//
+//   saved: NAME.bin — 11005 tokens, 878 MB, 237 ms
+const PREWARM_LINE = /saved:\s+\S+\s+—\s+(\d+) tokens,\s+(\d+) MB,\s+(\d+) ms/;
+function fromPrewarm(r) {
+  const text = r.prewarm_stdout || r.output;
+  if (typeof text !== "string") return null;
+  const m = text.match(PREWARM_LINE);
+  return m ? {tokens: +m[1], mb: +m[2], write_ms: +m[3]} : null;
 }
 
 // For a save: how fast the prefix was read. Same units as a request's read
@@ -207,17 +223,23 @@ function tokensOf(r) {
 // The seconds column on a save row is almost all prefill. Saying so where the
 // number is stops it reading as a slow disk.
 function saveHint(r) {
-  if (r.kind !== "save" || r.write_ms == null) return "";
-  return `davon ${r.write_ms} ms Schreiben — der Rest ist Prefill, `
+  if (r.kind !== "save") return "";
+  const p = fromPrewarm(r);
+  const ms = r.write_ms != null ? r.write_ms : (p && p.write_ms);
+  if (ms == null) return "";
+  return `davon ${ms} ms Schreiben — der Rest ist Prefill, `
        + `also das Rechnen des KV-Zustands`;
 }
 
 function saveRate(r) {
-  if (r.kind !== "save" || !r.computed || !r.saved_s) return "";
-  const write = (r.write_ms || 0) / 1000;
+  if (r.kind !== "save" || !r.saved_s) return "";
+  const p = fromPrewarm(r);
+  const tokens = r.computed || (p && p.tokens);
+  if (!tokens) return "";
+  const write = ((r.write_ms != null ? r.write_ms : (p && p.write_ms)) || 0) / 1000;
   const compute = r.saved_s - write;
   if (compute <= 0.5) return "";
-  return `~${Math.round(r.computed / compute)}·–`;
+  return `~${Math.round(tokens / compute)}·–`;
 }
 
 function row(r, i) {

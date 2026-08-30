@@ -386,3 +386,28 @@ const setInterval = () => {};
         out = self.run_js("console.log(saveHint({kind:'save', write_ms:237}));")
         self.assertIn("Prefill", out[-1])
         self.assertIn("237", out[-1])
+
+    def test_an_old_record_still_shows_its_numbers(self):
+        """The gateway only started parsing prewarm's line at 30.08. 19:03.
+        Every save before that carries the numbers ONLY inside the console
+        output, and a reader that gives up on those shows an empty column for
+        the whole history — which is what was asked about: "I still do not see
+        11005"."""
+        old = json.dumps({"kind": "save", "saved_s": 51.8, "prewarm_stdout":
+                          "precomputing …\\n  done in 51.4 s\\nsaved: x.bin — "
+                          "11005 tokens, 878 MB, 237 ms"})
+        out = self.run_js("const o = %s;\n"
+                          "console.log(tokensOf(o));\n"
+                          "console.log(saveRate(o));\n"
+                          "console.log(saveHint(o).includes('237'));" % old)
+        self.assertEqual(out[-3], "11005")
+        self.assertEqual(out[-2], "~213·–")
+        self.assertEqual(out[-1], "true")
+
+    def test_a_save_without_any_numbers_stays_empty(self):
+        out = self.run_js("console.log(JSON.stringify(tokensOf("
+                          "{kind:'save', saved_s:3})));\n"
+                          "console.log(JSON.stringify(saveRate("
+                          "{kind:'save', saved_s:3})));")
+        self.assertEqual(out[-2], '""')
+        self.assertEqual(out[-1], '""')

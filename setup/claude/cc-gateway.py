@@ -286,6 +286,37 @@ AUTO_MIN_CHARS = int(env("AUTO_MIN_CHARS", "AUTO_MIN_ZEICHEN", 4000))
 # llama-server life. Seeing it fall means the server restarted; seeing it
 # already large when the gateway starts means the server did NOT, whatever the
 # gateway remembers.
+# Move the stable part of mid-conversation system messages to the FRONT of the
+# prompt? 1 = yes, which is what has run since 24.08.2026.
+#
+# WHAT THE HOIST WAS FOR, in its own words: "Claude Code appends a system block
+# BEHIND the user question and glues a counter to its end. Left in place, the
+# counter changes every turn, the prefix id changes with it, and every request
+# runs cold."
+#
+# MEASURED 30.08.2026, AND THAT REASON NO LONGER HOLDS. `system_head()` reads
+# only `body["system"]` (Anthropic) or `messages[0]` (OpenAI), and a
+# mid-conversation system message is in neither — so the counter does not touch
+# the prefix id whether it is hoisted or not. Checked directly: same id across
+# two turns with and without the hoist.
+#
+# What the hoist DOES do is move the front of the prompt whenever a NEW system
+# block appears, and everything behind the front has to be recomputed. Three
+# turns of the same conversation, driven at llama-server
+# (bench/suites/hoist-cost.py):
+#
+#   turn 2, the counter changes    hoisted 33916/33920   left alone 33916/33920
+#   turn 3, a NEW block appears    hoisted     0/34336   left alone 31872/34336
+#                                          203.2 s                    20.4 s
+#
+# So it buys nothing on the case it was built for and costs everything on the
+# case that actually happens — 73,877 tokens and 668.9 s in the live incident
+# of 30.08. 00:12:43.
+#
+# It is nevertheless OPT-IN. This is the mechanism the gateway's cache
+# behaviour has been built on since 24.08., there is history behind it this
+# measurement does not see, and turning it off changes every request.
+HOIST_SYSTEM = env("HOIST_SYSTEM", "SYSTEM_HOCHZIEHEN", "1") == "1"
 RESTORE_ONLY_WHEN_SERVER_COLD = env("RESTORE_ONLY_WHEN_SERVER_COLD",
                                     "RESTORE_NUR_WENN_SERVER_KALT",
                                     "0") == "1"
@@ -1113,7 +1144,22 @@ def blocks_to_text(c):
     return ""
 
 def correct(p, dialect=DIA.ANTHROPIC):
-    """Hoist stable system messages to the front — see dialects.py."""
+    """Hoist stable system messages to the front — see dialects.py.
+
+    HOIST_SYSTEM=0 leaves them where they arrived, which the measurements of
+    30.08.2026 say is the better trade. Still opt-in: this is the mechanism
+    the gateway's cache behaviour has been built on since 24.08., and one
+    afternoon's numbers do not get to overturn that silently.
+    """
+    if not HOIST_SYSTEM:
+        # The volatile fragments are counted the same way, so the log and the
+        # trace keep meaning what they meant.
+        n = 0
+        for _, m in DIA.iter_system_messages(p):
+            text = DIA.blocks_to_text(m.get("content"))
+            for rx in VOLATILE:
+                n += len(rx.findall(text))
+        return p, n
     return DIA.hoist_system_messages(p, dialect, VOLATILE)
 
 def inject_model_kwargs(p, table=None, served=None, modes=None):
@@ -2004,6 +2050,11 @@ def main():
     # this banner could answer. Both states are printed, not just the
     # interesting one: a line that appears only when a setting is active
     # leaves its absence meaning either "off" or "old build".
+    log("  mid-conversation system messages: %s"
+        % ("hoisted to the front — NOTE: a new one then moves the front and "
+           "costs everything behind it, see defect "
+           "hoist-changes-the-prefix-behind-the-id"
+           if HOIST_SYSTEM else "left where they arrive"))
     log("  restore a saved prefix: %s"
         % ("only when llama-server is cold (after fewer than %d tasks, or "
            "when its task counter fell)" % FRESH_TASKS

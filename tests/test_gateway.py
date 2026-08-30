@@ -6,7 +6,7 @@ deterministically against the real stack: the per-access throttle, cancelled
 callers, and above all the contract between the gateway's id and the store on
 disk.
 """
-import asyncio, json, os, shutil, tempfile, unittest
+import asyncio, json, os, re, shutil, tempfile, unittest
 from unittest import mock
 
 import aiohttp
@@ -1966,3 +1966,79 @@ class TestTheBannerAnswersWhatIsOn(unittest.TestCase):
 
     def test_the_off_state_names_the_defect_it_carries(self):
         self.assertIn("restore-blinds-the-ram-cache", self.src)
+
+
+class TestHoistingCostsWhatItWasBuiltToSave(unittest.TestCase):
+    """The hoist moves the stable part of mid-conversation system messages to
+    the FRONT. Its stated reason: without it the counter Claude Code glues to
+    such a block would change the prefix id every turn.
+
+    Measured 30.08.2026, and the reason does not hold. `system_head()` reads
+    only `body["system"]` (Anthropic) or `messages[0]` (OpenAI), and a
+    mid-conversation system message is in neither. What the hoist DOES do is
+    move the front whenever a NEW block appears — and at the prompt level that
+    cost 203.2 s against 20.4 s for leaving them alone
+    (bench/suites/hoist-cost.py).
+
+    These tests pin the ID arithmetic, which is what the reason rested on, and
+    hold the switch to being opt-in.
+    """
+
+    D = common.load("setup/claude/dialects.py", "dialects_hoist")
+    VOL = [re.compile(r"COUNTER \d+")]
+
+    def body(self, counter, extra=False):
+        msgs = [{"role": "user", "content": "Frage"},
+                {"role": "assistant", "content": "Antwort"},
+                {"role": "system", "content": "REMINDER stabil\nCOUNTER %d" % counter}]
+        if extra:
+            msgs.append({"role": "system",
+                         "content": "REMINDER neu\nCOUNTER %d" % counter})
+        msgs.append({"role": "user", "content": "Weiter"})
+        return {"system": "SYSTEM stabil", "tools": [], "messages": msgs}
+
+    def ident(self, body, hoist):
+        if hoist:
+            body = self.D.hoist_system_messages(body, self.D.ANTHROPIC, self.VOL)[0]
+        return self.D.prefix_id(body, self.D.ANTHROPIC)[0]
+
+    def test_the_counter_never_touched_the_id_in_the_first_place(self):
+        """The whole justification for the hoist, and it is not true: the id
+        is built from body["system"], and the counter is in messages."""
+        self.assertEqual(self.ident(self.body(1), hoist=False),
+                         self.ident(self.body(2), hoist=False))
+
+    def test_hoisting_does_not_change_that(self):
+        self.assertEqual(self.ident(self.body(1), hoist=True),
+                         self.ident(self.body(2), hoist=True))
+
+    def test_but_hoisting_makes_a_NEW_block_change_the_id(self):
+        """Which is the defect: a block that appears mid-conversation is
+        carried to the front, and everything behind the front is lost."""
+        self.assertNotEqual(self.ident(self.body(2), hoist=True),
+                            self.ident(self.body(3, extra=True), hoist=True))
+
+    def test_leaving_them_alone_keeps_the_id_still(self):
+        self.assertEqual(self.ident(self.body(2), hoist=False),
+                         self.ident(self.body(3, extra=True), hoist=False))
+
+    def test_the_switch_defaults_to_todays_behaviour(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"SYSTEM_HOCHZIEHEN", "1") == "1"', src)
+
+    def test_off_still_counts_the_volatile_fragments(self):
+        """`volatile_moved` is in the log and the trace. A switch that made it
+        stop counting would make the two settings incomparable in exactly the
+        records used to compare them."""
+        with mock.patch.object(GW, "HOIST_SYSTEM", False), \
+             mock.patch.object(GW, "VOLATILE", self.VOL):
+            body, n = GW.correct(self.body(3, extra=True))
+        self.assertEqual(n, 2, "two counters were in the conversation")
+
+    def test_off_leaves_the_messages_untouched(self):
+        with mock.patch.object(GW, "HOIST_SYSTEM", False), \
+             mock.patch.object(GW, "VOLATILE", self.VOL):
+            before = json.dumps(self.body(3, extra=True), sort_keys=True)
+            body, _ = GW.correct(self.body(3, extra=True))
+        self.assertEqual(json.dumps(body, sort_keys=True), before)

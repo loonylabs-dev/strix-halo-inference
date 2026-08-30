@@ -319,15 +319,43 @@ what llama.cpp PR #28007 describes, and this is an independent reproduction of
 it at a DIFFERENT call site — the speculative draft path rather than prompt
 processing.
 
-**So the approach is dead, not just the patch.** The draft tokens are already
-DECODED when the stop is found: they sit in the KV cache and in the recurrent
-state, and the recurrent state is what cannot be wound back. Inserting fewer
-tokens instead of removing them afterwards does not help for the same reason —
-the memory would still hold them. A real fix has to be lower down: either the
-recurrent memory gains genuine rollback (which is what `n_rs_seq` is for), or
-speculation stops decoding past an end-of-generation token in the first place.
+**Why it was refused, and it is NOT that the model cannot roll back.** Read
+afterwards, and the first two are measured rather than reasoned:
+
+    n_rs_seq on the target context      12      (llama_context logs it at INFO)
+    the rollback this patch asked for    2      (the measured TAIL)
+    LLM_ARCH_QWEN35 in llm_arch_supports_rs_rollback()   yes
+
+So `llama-memory-recurrent.cpp:194` had a ring of 12 and was asked for 2, on
+an architecture that is explicitly allowed to do it. Its condition is
+
+    if (!pending && rollback >= 1 && rollback <= n_rs_seq)
+
+and two of those three are satisfied. What is left is `pending` — the partial
+rollback is SINGLE-USE (`rs_idx[seq_id] != 0`), and the speculative draft
+verification twenty lines up the call stack has already claimed it. Two
+rollbacks in one step; the second one loses. That last step is deduction by
+elimination, not observation: nothing here printed `pending` directly.
+
+**So the approach is narrower than it looked, not dead.** The earlier version
+of this file said "dead", which was one inference too far. The machinery
+exists, this model is allowed to use it, and the budget is not the problem —
+the reservation is. A fix that asks for the rollback where none is pending, or
+that folds the two requests into one, is not ruled out by anything measured
+here. It is also not something to try blind: the same call aborts the process
+on refusal, and `common_context_seq_rm` is what turns a `false` into
+`GGML_ABORT`.
 
 **What this cost:** one crash on a service with `Restart=on-failure`, which
 came back by itself, plus one restart to put the untouched library back.
 Nothing else. The measurement was worth its price — the alternative was
 sending a guess upstream.
+
+**Neighbours upstream** (searched 30.08.2026, none of them this defect):
+`#25004` recurrent: support equal splits for recurrent-state rollback ·
+`#26499` common: add env to override n_rs_seq ·
+`#25592` server: fix checkpoint handling for hybrid/recurrent models ·
+`#28019` asks why qwen4exp is excluded from `llm_arch_supports_rs_rollback` —
+which matters for Flash-Next, since qwen35 IS on that list and qwen4exp is not ·
+`#28007` catches the abort by clearing the sequence and re-processing the whole
+prompt, i.e. it makes this failure safe rather than cheap.

@@ -201,7 +201,7 @@ first one is load-bearing and fails silently, the rest fail loudly.
 
 | Path | What it is | If it is missing |
 |---|---|---|
-| `~/llama.cpp` branch `gfx1151-patched` | **both** patches, as commits — see `setup/patches/README.md` | a `git pull` takes them with it. Without the first, **the server answers WRONG** once a second slot is used; without the second, every turn re-reads the whole previous answer. Neither says anything |
+| `~/llama.cpp` branch `master-2patches` | **both** patches, as commits, on current master — see `setup/patches/README.md`. `gfx1151-patched` is its 22-commit predecessor, kept as the way back | a `git pull` takes them with it. Without the first, **the server answers WRONG** once a second slot is used; without the second, every turn re-reads the whole previous answer. Neither says anything |
 | `~/llama.cpp/build-rocm-patched` | symlink to the active build, the path `LLAMA_BIN` names | the service will not start |
 | `~/llama.cpp/build-rocm-patched-<id>/` | the builds themselves, each with a `.build-stamp` | no way back to a build that worked |
 | `~/.claude/env/<model>.env` | symlinks to `env/*.env`, read by `llama-user@.service` | the service refuses to start (deliberately, no leading `-`) |
@@ -213,10 +213,18 @@ first one is load-bearing and fails silently, the rest fail loudly.
 patch, WHICH build is active, whether the running process comes out of it, and
 who owns the prefix store.
 
-**The patch is a branch, not a diff.** That is the whole point:
+**The patches are a branch, not a diff.** That is the whole point:
 
-    cd ~/llama.cpp && git log --oneline -1 gfx1151-patched
-    e9245f2 gfx1151: do not trust prop.integrated on HIP
+    cd ~/llama.cpp && git log --oneline origin/master..master-2patches
+    c799f10 server: speculation must not keep tokens past an end-of-generation token
+    c92aba9 gfx1151: do not trust prop.integrated on HIP
+
+TWO of them since 30.08.2026, and `build-llama.sh` checks a marker for each
+before it builds — neither fails loudly when it goes missing, so the markers
+are what makes the absence loud. The branch used to be `gfx1151-patched`; that
+one grew to 22 commits carrying a local Flash-Next implementation that upstream
+then merged itself, so the default moved to `master-2patches`, which is master
+plus the two and nothing else. The old branch stays on disk as the way back.
 
 An update is therefore a rebase, and a rebase either replays the patch or says
 it cannot — instead of dropping it in silence. `setup/scripts/build-llama.sh`

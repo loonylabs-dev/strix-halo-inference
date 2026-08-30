@@ -511,10 +511,21 @@
         "how": "In the trace: a request whose `reused` equals the PREVIOUS request's reused+computed (its prompt) while the previous `output` is missing from it, with `msgs_kept` at the full message count. The signature is arithmetic and exact — the loss is the previous answer PLUS FOUR, the checkpoint offset. bench/suites/answer-reuse.py --repeat 4 reproduces the COST in about four minutes. bench/suites/slot-tail.py shows the CAUSE and needs no restart and no debug switch: it reads f_keep out of the ordinary journal, where f_keep < 1.000 is the tail and f_keep = 1.000 is a round that will keep its answer. Neither number may be taken from the tokens the server hands back — those do not contain the tail."
       },
       "suite": "bench/suites/answer-reuse.py",
-      "upstream": [],
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/28007",
+        "https://github.com/ggml-org/llama.cpp/issues/27931"
+      ],
       "status": "open upstream, CAUSE FULLY ESTABLISHED 30.08.2026 and not fixable in this stack. Speculative decoding leaves a draft token in the slot; the hybrid model cannot trim to a common prefix and falls back to a checkpoint from before the answer. Measured A/B/A. Speculation is deliberately LEFT ON: it is 2.09x faster on code even after paying the defect.",
       "first_seen": "2026-08-30",
-      "last_checked": "2026-08-30"
+      "last_checked": "2026-08-30",
+      "upstream_check": {
+        "kind": "source-contains",
+        "path": "tools/server/server-context.cpp",
+        "pattern": "cur\\.pos_max > pos_next",
+        "while_present": "the checkpoint search still rejects every checkpoint newer than the common prefix, so once the slot has a tail the fallback lands before the previous answer. Keep the entry.",
+        "when_gone": "the filter is gone, which means somebody has touched the fallback. That is NOT proof the defect is fixed — re-measure with `python3 bench/suites/slot-tail.py --repeat 4`. TAIL 0 with speculation ON is the answer that retires this.",
+        "note": "THIS PROBE SEES ONE HALF, and says so rather than pretending otherwise — the lesson check_upstream() already carries about gfx1151-hip-integrated, where a probe could only ever reach one of its two answers. The defect has a TRIGGER (speculative decoding leaves an accepted draft token in the slot past the end of the turn, server-context.cpp:3965-3966) and an AMPLIFIER (this filter). Fixing the trigger would end the defect and leave this pattern untouched, so a \"keep\" here is not evidence of anything. The trigger has no watchable pattern of its own, because nobody knows what its fix would look like: it could clean up at the insert, in process_token, or in release(). Only the measurement answers it.\n\nChecked 30.08.2026 against master 9723942ad, 80 commits past this build's 5d5cb4c3: BOTH sites are byte-identical to what runs here, and the gfx1151 patch does not touch this file (git diff against master, 0 changed lines). So the defect is a master defect, not a local one.\n\nThe two upstream entries are NEIGHBOURS, not this defect. PR #28007 (open, 30.08.2026) handles the same hybrid rollback and would make it SAFE rather than cheap — \"clear the sequence and re-process the full prompt\" is exactly the expensive reaction measured here. Issue #27931 is the crash it fixes. A search of 127 speculation issues on 30.08.2026 found nothing describing a draft token left in the slot; that is a search, not a proof of absence."
+      }
     }
   ]
 }

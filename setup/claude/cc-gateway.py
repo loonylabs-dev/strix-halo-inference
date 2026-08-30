@@ -566,6 +566,25 @@ def render_id_of(body, dialect):
         return None
 
 
+def rendering_changed(prev_post, post_id):
+    """Did this prefix render differently than it did last time?
+
+    `ident` is hashed from the body as it ARRIVES and `correct()` rewrites the
+    body afterwards — deliberately, so that a model name resolved later cannot
+    put two prompts on one key. The consequence nobody checked until
+    30.08.2026: the hoist inside correct() moves the stable part of
+    mid-conversation system messages to the FRONT, which is where llama.cpp
+    measures reuse from. One extra system message, and a prefix the gateway
+    calls warm shares nothing with what the server holds.
+
+    NO PREVIOUS RENDERING IS NOT A CHANGE. The first request for a prefix, and
+    the first after a gateway restart, have nothing to compare against —
+    reporting those as rewrites would fire on every cold start and mean
+    nothing.
+    """
+    return bool(prev_post) and bool(post_id) and prev_post != post_id
+
+
 async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
     """Pull a saved prefix into a free slot.
 
@@ -1251,6 +1270,8 @@ async def handler(req):
     cold = False
     streaming = False
     mode_hit = None            # did the incoming slug resolve to a mode?
+    post_id = None             # the prefix hashed AFTER the cache correction
+    rewritten = False          # ... and it differs from last time's
 
     if inference and body:
         try:
@@ -1273,6 +1294,25 @@ async def handler(req):
             ident, head = prefix_id(p, dialect)
             cold = ident not in PREFIXES
             p, n_vol = correct(p, dialect)
+            # THE ID IS TAKEN BEFORE THIS LINE AND THE PROMPT IS REWRITTEN
+            # AFTER IT. That ordering is deliberate — see the comment above —
+            # but until 30.08.2026 nothing then checked that the rewrite left
+            # the prefix alone, and it does not have to: correct() hoists the
+            # stable part of mid-conversation system messages to the FRONT,
+            # which is exactly where llama.cpp measures reuse from.
+            #
+            # Measured that day, prefix 7ff6bcd1f1de, two turns of one session:
+            # volatile_moved 25 -> 26, the hoisted prefix 73404 -> 73738
+            # characters, ONE unchanged id, reused 0, computed 73877, 668.9 s —
+            # and the gateway called it `warm`, because the thing it keys on
+            # had not moved.
+            #
+            # So the prefix is hashed AGAIN, after the correction. Locally: the
+            # true rendered prompt would need /apply-template, and a round trip
+            # per request to improve a log label is not a trade worth making.
+            # This catches what actually happened, because what changed was the
+            # prefix TEXT.
+            post_id = DIA.prefix_id(p, dialect, HEAD_BYTES)[0]
             if MID_SYSTEM_TO_USER:
                 p, _ = mid_system_to_user(p, dialect)
             out = json.dumps(p).encode()
@@ -1364,8 +1404,20 @@ async def handler(req):
             e["cold" if cold else "warm"] += 1
             e["sources"].add(ip)
             e.setdefault("consumers", set()).add(who)
+        # A prefix whose TEXT changed since last time is not warm, whatever
+        # its id says. Saying so is all this does — `cold` itself is
+        # untouched, because it drives the automatic save and a relabelling
+        # must not start writing gigabytes.
+        prev_post = (LAST_SHAPE.get(ident) or {}).get("post") if ident else None
+        rewritten = rendering_changed(prev_post, post_id)
+        if rewritten:
+            log("NOTE        prefix %s renders differently than last time "
+                "(%s -> %s): the cache correction moved the front of the "
+                "prompt, so nothing behind it can be reused"
+                % (ident, prev_post, post_id))
         log("START       %-15s %-6s who=%-12s prefix=%s %s waited=%.1fs queue=%d%s"
-            % (ip, PRIORITY_NAME[prio], who, ident, "COLD" if cold else "warm",
+            % (ip, PRIORITY_NAME[prio], who, ident,
+               "COLD" if cold else ("REWRITTEN" if rewritten else "warm"),
                waited, depth, "  kept-alive" if early is not None else ""))
         was_cold = cold
         # THE SAVE, BEFORE THE ANSWER. The slot is about to be filled with
@@ -1430,7 +1482,7 @@ async def handler(req):
             shape = [h for h, _ in fingers]
             kept = DIA.shapes_agree(prev["shape"], shape) if prev else None
             if ident:
-                LAST_SHAPE[ident] = {"shape": shape,
+                LAST_SHAPE[ident] = {"shape": shape, "post": post_id,
                                      "in": (reuse[0] + reuse[1]) if reuse else None}
                 if len(LAST_SHAPE) > LAST_SHAPE_MAX:
                     LAST_SHAPE.pop(next(iter(LAST_SHAPE)))
@@ -1517,7 +1569,13 @@ async def handler(req):
                         # ~1 KB per request at this level; the full text needs
                         # `text` and is not on by default.
                         "shape": shape,
-                        "msg_chars": [n for _, n in fingers]},
+                        "msg_chars": [n for _, n in fingers],
+                        # The prefix as it was FORWARDED, not as it arrived.
+                        # Two records sharing `prefix` and differing here are
+                        # the defect of 30.08.2026 and cost the whole
+                        # conversation behind them.
+                        "post_id": post_id,
+                        "rewritten": rewritten},
                 text={"system_head": head,
                       "answer_tail": (sniff["tail"] or b"")[-2000:].decode(
                           "utf-8", "ignore"),

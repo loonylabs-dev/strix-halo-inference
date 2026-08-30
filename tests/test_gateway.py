@@ -1825,3 +1825,74 @@ class TestARestoreCanCostMoreThanItSaves(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"RESTORE_MAX_TAIL_ZEICHEN", 0)', src)
         self.assertIn("THE THRESHOLD IS NOT MEASURED", src,
                       "a number nobody derived must say so where it is set")
+
+
+class TestTheIdIsTakenBeforeThePromptIsRewritten(unittest.TestCase):
+    """`ident` is hashed from the body as it ARRIVES; `correct()` then hoists
+    the stable part of mid-conversation system messages to the FRONT, which is
+    exactly where llama.cpp measures reuse from. Nothing checked that the two
+    agreed.
+
+    Measured 30.08.2026, prefix 7ff6bcd1f1de, two turns of one Claude Code
+    session: volatile_moved 25 -> 26, the hoisted prefix 73404 -> 73738
+    characters, ONE unchanged id, reused 0, computed 73877, 668.9 s -- and the
+    gateway logged it as `warm`.
+
+    These tests do not claim the defect is fixed. They hold the gateway to
+    NOTICING it, which is a different and smaller thing.
+    """
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_the_prefix_is_hashed_again_after_the_correction(self):
+        at_correct = self.src.index("p, n_vol = correct(p, dialect)")
+        at_post = self.src.index("post_id = DIA.prefix_id(")
+        self.assertLess(at_correct, at_post,
+                        "hashing before the correction measures the wrong thing")
+
+    def test_it_costs_no_round_trip(self):
+        """render_id_of() would be more faithful and posts to /apply-template.
+        A network call per request to improve a log label is not a trade worth
+        making, and the defect showed up in the prefix TEXT anyway."""
+        start = self.src.index("post_id = DIA.prefix_id(")
+        self.assertNotIn("render_id_of", self.src[start - 1200:start + 200])
+
+    def test_it_fires_when_the_rendering_moved(self):
+        self.assertTrue(GW.rendering_changed("aaaaaaaa", "bbbbbbbb"))
+
+    def test_it_stays_quiet_when_it_did_not(self):
+        self.assertFalse(GW.rendering_changed("aaaaaaaa", "aaaaaaaa"))
+
+    def test_a_first_sighting_is_not_a_rewrite(self):
+        """The first request for a prefix — and the first after a gateway
+        restart — has nothing to compare against. Reporting those would fire
+        on every cold start and mean nothing."""
+        for prev, now in ((None, "bbbbbbbb"), ("", "bbbbbbbb"),
+                          ("aaaaaaaa", None), (None, None)):
+            with self.subTest(prev=prev, now=now):
+                self.assertFalse(GW.rendering_changed(prev, now))
+
+    def test_a_rewritten_prefix_is_not_called_warm(self):
+        self.assertIn('"COLD" if cold else ("REWRITTEN" if rewritten else "warm")',
+                      self.src)
+
+    def test_cold_itself_is_left_alone(self):
+        """`cold` drives the automatic save. A relabelling that also flipped it
+        would answer a 669 s turn by writing a gigabyte to disk."""
+        start = self.src.index("prev_post = (LAST_SHAPE.get(ident)")
+        block = self.src[start:self.src.index('log("START', start)]
+        self.assertNotIn("cold =", block)
+
+    def test_the_previous_rendering_is_remembered_per_prefix(self):
+        self.assertIn('LAST_SHAPE[ident] = {"shape": shape, "post": post_id,',
+                      self.src)
+        self.assertIn('(LAST_SHAPE.get(ident) or {}).get("post")', self.src)
+
+    def test_both_ids_reach_the_trace(self):
+        """The log line is a label; the record is what a later session can
+        compare. Two records sharing `prefix` and differing in `post_id` ARE
+        the defect."""
+        self.assertIn('"post_id": post_id,', self.src)
+        self.assertIn('"rewritten": rewritten', self.src)

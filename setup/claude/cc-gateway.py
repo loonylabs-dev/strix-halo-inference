@@ -421,7 +421,24 @@ def disk_used_gb():
 # discarded — and if too many really do pile up, one is dropped, but with a
 # log line instead of silently.
 SAVE_QUEUE_MAX = int(env("SAVE_QUEUE_MAX", "SICHERN_WARTEN_MAX", 4))
+# How often a save may be attempted again when something took the slot during
+# it. One retry, because the thief measured on 30.08.2026 — llama-probe, which
+# goes straight to llama-server and is therefore invisible to the gateway's own
+# bracket — held the slot for 1.2 s and fires every ten minutes. Two attempts
+# colliding with it would be a coincidence; three would be a different defect,
+# and retrying past that would hide it.
+SAVE_RETRIES = int(env("SAVE_RETRIES", "SICHERN_VERSUCHE", 1))
 _save_pending = set()
+
+def slot_was_stolen(proc_out):
+    """Did prewarm refuse because something took the slot mid-save?
+
+    Matched on prewarm's own wording rather than on an exit code, because it
+    exits non-zero for every refusal and only THIS one is worth retrying: a
+    template that cannot be rendered or a disk that is full will fail again.
+    """
+    return b"refusing to publish" in (proc_out or b"")
+
 
 async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
     """Write the prefix BEFORE the first real message is answered.
@@ -526,13 +543,37 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                 # reading a gigabyte, so instead the WINDOW is watched: if
                 # anything was served while we were writing, the file is not
                 # trustworthy and is dropped. Costs a save, not a wrong answer.
+                # RETRIED, because the thief is not visible to the bracket.
+                # llama-probe.service goes STRAIGHT to llama-server, so
+                # SERVED_COUNT never moves and `foreign` stays empty; only
+                # prewarm's own token-count check catches it, correctly, by
+                # refusing to publish. Measured 30.08.2026, 16:07:47: the
+                # prefix prefill released 10,098 tokens, the probe took the
+                # slot 0.0 s later and released 34, and the save captured those
+                # 34. The theft lasted 1.2 s and the probe fires every ten
+                # minutes, so a second attempt is very likely to land in the
+                # clear — while a save that never happens costs a cold prefill
+                # on every later request for this prefix.
                 served_before = SERVED_COUNT
-                pr = await asyncio.create_subprocess_exec(
-                    sys.executable, PREWARM, "save",
-                    "--body", tmp, "--name", id_,
-                    "--gateway-id", id_, "--dialect", dialect,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                proc_out, _ = await pr.communicate()
+                for attempt in range(SAVE_RETRIES + 1):
+                    served_before = SERVED_COUNT
+                    pr = await asyncio.create_subprocess_exec(
+                        sys.executable, PREWARM, "save",
+                        "--body", tmp, "--name", id_,
+                        "--gateway-id", id_, "--dialect", dialect,
+                        # Explicit rather than inherited: prewarm would read
+                        # the environment, but the gateway's own setting is the
+                        # only one that can be right, and a subprocess started
+                        # from a shell must not be able to disagree with it.
+                        "--hoist", "1" if HOIST_SYSTEM else "0",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT)
+                    proc_out, _ = await pr.communicate()
+                    if (pr.returncode == 0 or attempt == SAVE_RETRIES
+                            or not slot_was_stolen(proc_out)):
+                        break
+                    log("NOTE        save of %s hit a slot theft — trying "
+                        "again (%d of %d)" % (id_, attempt + 1, SAVE_RETRIES))
                 foreign = [i for n, i in SERVED_TRAIL
                            if n > served_before and i != id_]
                 if pr.returncode == 0 and foreign:
@@ -573,8 +614,13 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                                  detail={"prewarm_stdout": (proc_out or b"").decode(
                                      "utf-8", "replace")[-400:].strip()})
                 else:
+                    # NOT truncated to the tail: prewarm's refusal carries its
+                    # numbers in the FIRST line, and cutting to the last 200
+                    # characters kept only the explanation. It cost a
+                    # measurement on 30.08. to notice that the log had thrown
+                    # away the one thing needed to read it.
                     log("NOTE        automatic save of %s failed: %s"
-                        % (id_, (proc_out or b"").decode("utf-8", "replace")[-200:].strip()))
+                        % (id_, (proc_out or b"").decode("utf-8", "replace").strip()))
             except Exception as e:
                 log("NOTE        automatic save: %r" % (e,))
             finally:
@@ -597,7 +643,12 @@ def render_id_of(body, dialect):
     """
     try:
         b = json.loads(json.dumps(body))
-        b, _ = DIA.hoist_system_messages(b, dialect, VOLATILE)
+        # The SAME correction the request gets. Hoisting here while the
+        # request is sent unhoisted would compare a hash of one prompt against
+        # a file holding another, and every restore would be refused as a
+        # mismatch — for a defect that lived in this line.
+        if HOIST_SYSTEM:
+            b, _ = DIA.hoist_system_messages(b, dialect, VOLATILE)
         payload = DIA.template_payload(b, dialect)
         req = urllib.request.Request(
             LLAMA + "/apply-template", data=json.dumps(payload).encode(),

@@ -71,16 +71,29 @@ def blocks_to_text(c):
                        if isinstance(b, dict) and b.get("type") == "text")
     return ""
 
-def build_prefix(body, dialect=DIA.ANTHROPIC):
+def build_prefix(body, dialect=DIA.ANTHROPIC, hoist=None):
     """Render the part up to <user> — the way the gateway produces it.
 
     Mirrors its correction via the shared module: stable system messages are
     hoisted to the front, volatile ones (the <total_tokens> counter) are
     dropped, because they do not belong in the stable prefix anyway. Works
     for both dialects; the tool block is converted where needed.
+
+    `hoist` MUST match what the gateway does, or this writes a file holding a
+    prefix no request ever sends. Since 30.08.2026 the gateway can be told to
+    leave mid-conversation system messages alone (HOIST_SYSTEM=0), and for a
+    few minutes that day this function did not know: it would have saved the
+    hoisted rendering while the gateway sent the other one, the restore would
+    have matched nothing, and the file would have been quarantined for a
+    defect that was in this line. None = read the same environment variable
+    the gateway reads, so a hand-run and a gateway-run agree by default; the
+    gateway passes it explicitly anyway.
     """
+    if hoist is None:
+        hoist = os.environ.get("HOIST_SYSTEM", "1") == "1"
     body = json.loads(json.dumps(body))          # never mutate the caller's
-    body, _ = DIA.hoist_system_messages(body, dialect, VOLATILE)
+    if hoist:
+        body, _ = DIA.hoist_system_messages(body, dialect, VOLATILE)
     full = req("/apply-template",
                DIA.template_payload(body, dialect), t=300)["prompt"]
     cut = full.find("<user>")
@@ -134,7 +147,7 @@ def save(a):
     with open(a.body, encoding="utf-8") as f:
         body = json.load(f)
     dialect = getattr(a, "dialect", DIA.ANTHROPIC)
-    prefix = build_prefix(body, dialect)
+    prefix = build_prefix(body, dialect, hoist=getattr(a, "hoist", None))
     h = render_hash(prefix)
     n_tok = len(req("/tokenize", {"content": prefix}, t=300)["tokens"])
     print("prefix: %d characters, %d tokens, id %s" % (len(prefix), n_tok, h))
@@ -500,6 +513,12 @@ def parse_args(argv=None):
 
     s1.add_argument("--gateway-id", default=None, dest="gateway_id",
                     help="take the gateway's id instead of recomputing it")
+    s1.add_argument("--hoist", default=None, choices=("0", "1"),
+                    type=lambda v: v == "1",
+                    help="hoist mid-conversation system messages to the front, "
+                         "as the gateway's HOIST_SYSTEM does. It MUST match, or "
+                         "this writes a prefix no request ever sends. Default: "
+                         "read HOIST_SYSTEM from the environment.")
     s1.add_argument("--dialect", default=DIA.ANTHROPIC,
                     choices=(DIA.ANTHROPIC, DIA.OPENAI),
                     help="which shape the body has (the gateway passes the "

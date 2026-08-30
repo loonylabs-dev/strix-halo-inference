@@ -2113,3 +2113,84 @@ class TestAServerThatRestartedUnderUsIsCold(unittest.TestCase):
         start = src.index("if not cold and ident and ident in SAVED:")
         block = src[start:src.index("if cold and ident in SAVED:", start)]
         self.assertIn("except Exception", block)
+
+
+class TestTheSaveSurvivesAThiefItCannotSee(unittest.TestCase):
+    """The bracket around a save watches traffic THROUGH the gateway.
+    llama-probe.service goes straight to llama-server, so SERVED_COUNT never
+    moves and `foreign` stays empty — only prewarm's own token-count check
+    catches it, correctly, by refusing to publish.
+
+    Measured 30.08.2026, 16:07:47: the prefix prefill released 10,098 tokens,
+    the probe took the slot 0.0 s later and released 34, and the save captured
+    those 34. The file was refused, so there was nothing on disk, so the
+    cold-server test of the restore guard failed for a reason that had nothing
+    to do with the guard.
+    """
+
+    def test_a_refusal_is_recognised_as_a_theft(self):
+        self.assertTrue(GW.slot_was_stolen(
+            b"refusing to publish x.bin: 34 tokens were written where the "
+            b"prefix is 10098."))
+
+    def test_other_failures_are_not_retried(self):
+        """A template that cannot be rendered or a full disk will fail again;
+        retrying those only delays the log line that says so."""
+        for other in (b"server did not become ready in time",
+                      b"disk at 101.0 of 100 GB", b"", None):
+            with self.subTest(out=other):
+                self.assertFalse(GW.slot_was_stolen(other))
+
+    def test_it_matches_the_wording_prewarm_actually_uses(self):
+        """Matched on the message rather than an exit code, so the two must
+        stay pinned together."""
+        pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        self.assertIn("refusing to publish", pw)
+
+    def test_one_retry_and_the_reason_for_the_number(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('SAVE_RETRIES = int(env("SAVE_RETRIES", "SICHERN_VERSUCHE", 1))',
+                      src)
+        self.assertIn("three would be a different defect", src)
+
+    def test_the_failure_log_is_not_truncated_to_its_tail(self):
+        """prewarm's refusal carries its numbers in the FIRST line. Cutting to
+        the last 200 characters kept only the explanation, and it cost a
+        measurement to notice the log had thrown away the one thing needed to
+        read it."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index('log("NOTE        automatic save of %s failed')
+        self.assertNotIn("[-200:]", src[start:start + 300])
+
+
+class TestPrewarmAndTheGatewayHoistTheSameWay(unittest.TestCase):
+    """Three places render the prefix: cc-gateway's correct(), its
+    render_id_of(), and prewarm's build_prefix(). HOIST_SYSTEM was added to
+    the first only, and for a few minutes on 30.08.2026 the other two still
+    hoisted — so a save would have written the hoisted rendering while the
+    request sent the other one, every restore would have matched nothing, and
+    the file would have been quarantined for a defect that was in the renderer.
+    """
+
+    def test_prewarm_reads_the_same_switch(self):
+        pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("HOIST_SYSTEM", "1") == "1"', pw)
+
+    def test_the_gateway_passes_it_explicitly_rather_than_inheriting(self):
+        """Inheriting works until somebody runs prewarm from a shell."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"--hoist", "1" if HOIST_SYSTEM else "0",', src)
+
+    def test_the_render_id_follows_it_too(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("def render_id_of(")
+        block = src[start:src.index("def ", start + 10)]
+        self.assertIn("if HOIST_SYSTEM:", block)
+
+    def test_prewarm_can_be_told_either_way(self):
+        pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        self.assertIn('s1.add_argument("--hoist"', pw)

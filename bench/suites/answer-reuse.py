@@ -57,6 +57,10 @@ def main():
     ap.add_argument("--ask", default="Nenne drei Primzahlen und begruende kurz.")
     a = ap.parse_args()
 
+    # THE ANTHROPIC ROUTE, because that is where the loss was measured. The
+    # OpenAI route returns `reasoning_content` as a flat string; Claude Code
+    # gets `thinking` BLOCKS and sends them back as blocks, and the whole
+    # question is what happens to those on the way back in.
     kwargs = {"enable_thinking": True, "reasoning_effort": a.effort}
     first = {"model": a.model, "max_tokens": 900, "chat_template_kwargs": kwargs,
              "messages": [{"role": "user", "content": a.ask}]}
@@ -64,17 +68,22 @@ def main():
     print(__doc__.split("\n")[0])
     print("  1/4 generating an answer (thinking %s)" % a.effort)
     t0 = time.time()
-    d = post(a.url, "/v1/chat/completions", dict(
-        first, messages=first["messages"]))
+    d = post(a.url, "/v1/messages", first)
     took = time.time() - t0
-    msg = d["choices"][0]["message"]
-    answer = msg.get("content") or ""
-    reasoning = msg.get("reasoning_content") or ""
-    print("      %.1f s, %d characters of answer, %d of reasoning"
-          % (took, len(answer), len(reasoning)))
+    blocks = d.get("content") or []
+    reasoning = "".join(b.get("thinking", "") for b in blocks
+                        if b.get("type") == "thinking")
+    answer = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    print("      %.1f s, blocks: %s"
+          % (took, "  ".join("%s:%d" % (b.get("type"),
+                                        len(json.dumps(b, ensure_ascii=False)))
+                             for b in blocks)))
+    print("      usage: %s" % json.dumps(d.get("usage") or {}))
+    print("      %d characters of thinking, %d of answer text"
+          % (len(reasoning), len(answer)))
 
     print("  2/4 rendering prompt + that answer as history")
-    hist = list(first["messages"]) + [dict(msg)] + [
+    hist = list(first["messages"]) + [{"role": "assistant", "content": blocks}] + [
         {"role": "user", "content": "Danke."}]
     rendered = post(a.url, "/apply-template",
                     {"messages": hist, "chat_template_kwargs": kwargs})["prompt"]
@@ -98,13 +107,16 @@ def main():
         print("      generated: %r" % produced[max(0, n - 60):n + 60])
 
     print("  4/4 what it costs in tokens")
-    d2 = post(a.url, "/v1/chat/completions",
+    d2 = post(a.url, "/v1/messages",
               {"model": a.model, "max_tokens": 8, "chat_template_kwargs": kwargs,
                "messages": hist})
-    tm = d2.get("timings") or {}
-    print("      cache_n=%s prompt_n=%s" % (tm.get("cache_n"), tm.get("prompt_n")))
-    print("      (cache_n at roughly the size of the FIRST prompt means the "
-          "answer was worthless to this turn)")
+    u = d2.get("usage") or {}
+    print("      usage: %s" % json.dumps(u))
+    generated = (d.get("usage") or {}).get("output_tokens")
+    print("      the first answer was %s tokens; if the reuse below is about "
+          "the size of the FIRST prompt, none of them helped" % generated)
+    print("      cache_read=%s  input=%s"
+          % (u.get("cache_read_input_tokens"), u.get("input_tokens")))
     return 0
 
 

@@ -155,9 +155,48 @@ def round_redundant(url, tag, conv_words, prefix_words):
             "conv_tokens": d["total"], "final": d, "file": None}
 
 
+def round_persistence(url, tag, rounds, conv_words, prefix_words):
+    """How long does the RAM cache keep a prefix across slot takeovers?
+
+    This is the number the proposed fix stands on. If the gateway stops
+    restoring while llama-server is warm, the prefix has to survive in the RAM
+    cache between turns — otherwise the penalty is paid on every turn instead
+    of once per server life, and the fix is worse than the defect.
+
+    Each round: an unrelated tiny prompt takes the slot, then the prefix comes
+    back with a slightly different tail. `cache_n` is what the cache returned.
+
+    MODELS THE WATCHDOG, not a second project. The takeover here is 30 tokens,
+    which is what llama-probe does every ten minutes. A large foreign
+    conversation is a different and harsher test; it is not this one.
+    """
+    prefix = filler(tag + "P", prefix_words)
+    print("    round %s — %d takeovers, does the prefix survive them?"
+          % (tag, rounds))
+    p = send(url, prefix, "0 prefill PREFIX")
+    kept = []
+    for i in range(rounds):
+        send(url, "Etwas ganz anderes, Durchgang %d." % i, "  takeover %d" % i)
+        d = send(url, prefix + " " + filler(tag + "T%d" % i, 40),
+                 "  prefix + tail %d" % i)
+        kept.append(d["cache_n"] or 0)
+    want = p["total"] or 0
+    ok = sum(1 for k in kept if abs(k - want) <= 8)
+    print("      -> the prefix came back %d of %d times (cache_n %s of %d)"
+          % (ok, rounds, kept, want))
+    if ok < rounds:
+        print("      -> IT DOES NOT SURVIVE RELIABLY. Skipping the restore "
+              "would cost the prefix on every turn it fails.")
+    return {"tag": tag, "restore": None, "prefix_tokens": want,
+            "conv_tokens": want, "final": {"cache_n": min(kept) if kept else None,
+                                           "took_s": None}, "file": None,
+            "kept": kept}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--mode", choices=("blinds", "redundant"), default="blinds",
+    ap.add_argument("--mode", choices=("blinds", "redundant", "persistence"),
+                    default="blinds",
                     help="blinds: A/B on the restore with the conversation "
                          "cached. redundant: does the file add anything when "
                          "only the prefix is cached?")
@@ -183,6 +222,10 @@ def main():
     print("  server: %s" % a.url)
     results, written = [], []
     try:
+        if a.mode == "persistence":
+            results.append(round_persistence(
+                a.url, "P%s" % a.salt, a.rounds, a.conv_words, a.prefix_words))
+            return 0
         if a.mode == "redundant":
             for i in range(a.rounds):
                 results.append(round_redundant(

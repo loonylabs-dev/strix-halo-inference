@@ -1752,32 +1752,82 @@ class TestTheSaveHappensBeforeTheAnswer(GatewayOnTheWire):
         self.assertEqual(r.status, 200, "a stuck save must not hang the answer")
 
 
-class TestARestoreCanCostMoreThanItSaves(unittest.IsolatedAsyncioTestCase):
+class TestTheRestoreOnlyEarnsItsKeepOnAColdServer(unittest.IsolatedAsyncioTestCase):
     """Putting the prefix into the slot makes the slot a PERFECT prefix of the
     incoming request, and llama.cpp consults its RAM prompt cache only when
-    `f_keep < 0.5` — so the restore switches that lookup off. When the cache
-    was holding the whole conversation, the restore costs everything behind
-    the prefix.
+    `f_keep < 0.5` — so the restore switches that lookup off. Measured
+    30.08.2026 on the production server:
 
-    Measured 30.08.2026 on the production server, same request, only the
-    restore differing: 56.4 s against 1.0 s. bench/suites/restore-blinds-cache.py
+        the cache holds the conversation   restore 56.4 s   without it 1.0 s
+        the cache holds only the prefix    redundant — the cache returned the
+                                           prefix by itself, 5 of 5 takeovers
+        the cache holds nothing            the restore saves one prefill
 
-    The guard is OFF by default, so these tests must arm it explicitly — and
-    one of them checks that the default really is inert, because a threshold
-    that silently starts skipping restores would trade a rare tail risk for a
-    75 s prefix prefill on every cold start.
+    So the file helps in exactly one situation, and the gateway's own `cold`
+    flag does not identify it: `cold` means "I have not served this since I
+    started", while the cache belongs to llama-server, which restarts
+    separately. On 29.08. the gateway restarted at 23:38 beside a server up
+    since 09:48, every prefix looked cold, and the first restore hid a
+    69,939-token state for 506 s.
+
+    The guard is OFF by default, so these tests arm it — and one of them holds
+    the default inert, because switching this on by accident trades a rare tail
+    risk for a 92 s prefill on every genuine cold start.
     """
 
-    def body(self, chars):
-        return {"messages": [{"role": "user", "content": "x" * chars}]}
+    def setUp(self):
+        GW.MAX_TASK_ID = None
+        self.addCleanup(setattr, GW, "MAX_TASK_ID", None)
 
-    async def _run(self, limit, body):
+    def slots(self, id_task, busy=False):
+        return [{"id": 0, "is_processing": busy, "n_prompt_tokens": 0,
+                 "id_task": id_task}]
+
+    # --- the reading itself ------------------------------------------------
+    def test_a_fresh_server_is_cold(self):
+        cold, seen, why = GW.server_is_cold(self.slots(2))
+        self.assertTrue(cold)
+        self.assertIn("fresh", why)
+
+    def test_a_working_server_is_not(self):
+        cold, seen, why = GW.server_is_cold(self.slots(12365))
+        self.assertFalse(cold)
+        self.assertEqual(seen, 12365)
+
+    def test_a_counter_that_fell_means_it_restarted(self):
+        GW.server_is_cold(self.slots(12365))
+        cold, seen, why = GW.server_is_cold(self.slots(7))
+        self.assertTrue(cold)
+        self.assertIn("restarted", why)
+
+    def test_the_high_water_mark_follows_the_restart_down(self):
+        """Otherwise every reading after a restart looks like another one."""
+        GW.server_is_cold(self.slots(12365))
+        GW.server_is_cold(self.slots(7))
+        cold, _, _ = GW.server_is_cold(self.slots(9))
+        self.assertFalse(cold, "9 > 7 is the same server still working")
+
+    def test_a_gateway_that_restarts_beside_a_warm_server_sees_it(self):
+        """The 29.08. incident in one assertion: no memory at all, and the
+        server's own counter still says it has been working."""
+        self.assertIsNone(GW.MAX_TASK_ID)
+        cold, _, _ = GW.server_is_cold(self.slots(9999))
+        self.assertFalse(cold)
+
+    def test_no_counter_decides_as_before(self):
+        """An unknown must not silently become a new policy."""
+        cold, seen, why = GW.server_is_cold([{"id": 0, "is_processing": False}])
+        self.assertTrue(cold)
+        self.assertIsNone(seen)
+        self.assertIn("as before", why)
+
+    # --- and what it does to the restore -----------------------------------
+    async def _run(self, guard, id_task):
         self.seen = []
         async def llama(request):
             self.seen.append(request.path_qs)
             if request.path == "/slots":
-                return web.json_response(
-                    [{"id": 0, "is_processing": False, "n_prompt_tokens": 0}])
+                return web.json_response(self.slots(id_task))
             return web.json_response({"n_restored": 5})
         lapp = web.Application()
         lapp.router.add_route("*", "/{tail:.*}", llama)
@@ -1790,41 +1840,33 @@ class TestARestoreCanCostMoreThanItSaves(unittest.IsolatedAsyncioTestCase):
                                    str(server.make_url("")).rstrip("/")), \
                  mock.patch.object(GW, "SLOT_PATH", d), \
                  mock.patch.object(GW, "SAVED", {"id1": "n1"}), \
-                 mock.patch.object(GW, "RESTORE_MAX_TAIL_CHARS", limit), \
+                 mock.patch.object(GW, "RESTORE_ONLY_WHEN_SERVER_COLD", guard), \
                  mock.patch.object(GW, "log", lambda *a: None):
                 try:
-                    return await GW.restore_from_disk("id1", body=body)
+                    return await GW.restore_from_disk("id1")
                 finally:
                     await server.close()
 
-    async def test_a_long_conversation_is_left_to_the_servers_own_cache(self):
-        ok = await self._run(5000, self.body(20000))
+    async def test_a_warm_server_is_left_to_its_own_cache(self):
+        ok = await self._run(True, 12365)
         self.assertFalse(ok)
         self.assertFalse([p for p in self.seen if "action=restore" in p])
 
-    async def test_a_short_one_is_still_restored(self):
-        """The restore is not the enemy. With little behind the prefix it
-        risks little and wins the whole prefix."""
-        ok = await self._run(5000, self.body(100))
+    async def test_a_cold_one_still_gets_the_file(self):
+        ok = await self._run(True, 1)
         self.assertTrue(ok)
         self.assertTrue([p for p in self.seen if "action=restore" in p])
 
-    async def test_zero_means_off_and_off_is_what_ships(self):
-        ok = await self._run(0, self.body(10 ** 6))
-        self.assertTrue(ok, "a limit of 0 must not skip anything")
+    async def test_off_is_what_ships(self):
+        ok = await self._run(False, 12365)
+        self.assertTrue(ok, "the guard must be inert until it is switched on")
 
-    async def test_without_a_body_it_cannot_judge_and_does_not_pretend_to(self):
-        """prewarm and the cleanup path call this with no body. Guessing
-        'probably long' there would skip every restore they need."""
-        ok = await self._run(5000, None)
-        self.assertTrue(ok)
-
-    def test_the_default_is_off(self):
+    def test_the_default_is_off_and_the_number_says_it_is_untuned(self):
         src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
             encoding="utf-8")
-        self.assertIn('"RESTORE_MAX_TAIL_ZEICHEN", 0)', src)
-        self.assertIn("THE THRESHOLD IS NOT MEASURED", src,
-                      "a number nobody derived must say so where it is set")
+        self.assertIn('"RESTORE_NUR_WENN_SERVER_KALT"', src)
+        self.assertRegex(src, r'RESTORE_NUR_WENN_SERVER_KALT",\s*\n\s*"0"\) == "1"')
+        self.assertIn("INSENSITIVE BY DESIGN, NOT TUNED", src)
 
 
 class TestTheIdIsTakenBeforeThePromptIsRewritten(unittest.TestCase):

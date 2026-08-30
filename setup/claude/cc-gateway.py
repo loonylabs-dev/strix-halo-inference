@@ -255,33 +255,48 @@ AUTO_MAX_GB  = float(os.environ.get("AUTO_MAX_GB", 20))
 # of SEVEN tokens in there, which on the next start would have occupied one of
 # the two slots that a real project belongs in.
 AUTO_MIN_CHARS = int(env("AUTO_MIN_CHARS", "AUTO_MIN_ZEICHEN", 4000))
-# Skip the prefix restore when the conversation behind the prefix is longer
-# than this many characters. 0 = off, and off is what runs today.
+# Restore a prefix from disk ONLY when llama-server is cold. 0 = off, and off
+# is what runs today.
 #
 # WHY A RESTORE CAN COST RATHER THAN SAVE. It puts the prefix into the slot,
 # which makes the slot a PERFECT prefix of the incoming request — and
 # llama.cpp consults its own RAM prompt cache only `if (f_keep < 0.5f)`
 # (server-context.cpp:1595). So a restore switches that lookup off, and a
 # longer state of the same conversation sitting in the cache is never found.
-# Measured 30.08.2026, same request, only the restore differing: 56.4 s
-# against 1.0 s. See bench/reports/2026-08-30_restore-blinds-cache/.
 #
-# The trade, and why the threshold is on the TAIL rather than the prefix:
+# Three measurements, 30.08.2026, all in
+# bench/reports/2026-08-30_restore-blinds-cache/:
 #
-#   restore, cache warm     loses everything behind the prefix
-#   restore, cache cold     saves the prefix
-#   no restore, cache warm  saves everything
-#   no restore, cache cold  loses the prefix — but that request was going to
-#                           be expensive anyway, so it is a fraction of it
+#   the cache holds the conversation   restore 56.4 s   without it 1.0 s
+#   the cache holds only the prefix    the file is redundant — the cache
+#                                      returned the prefix by itself, and
+#                                      survived 5 of 5 slot takeovers
+#   the cache holds nothing            the restore saves one prefix prefill:
+#                                      8.9 s for 1890 tokens here, 91.7 s for
+#                                      the 17784-token production prefix
 #
-# Nothing exposes the cache, so the gateway cannot know which branch it is in.
-# What it can see is how much is at stake: with a short tail the restore risks
-# little and wins the prefix; with a long one it risks the whole conversation
-# to win a fraction. THE THRESHOLD IS NOT MEASURED — no number here is derived
-# from traffic yet, which is why the default is off rather than a guess
-# dressed as a default.
-RESTORE_MAX_TAIL_CHARS = int(env("RESTORE_MAX_TAIL_CHARS",
-                                 "RESTORE_MAX_TAIL_ZEICHEN", 0))
+# So the disk store earns its keep in exactly one situation, and the gateway's
+# own `cold` flag does not identify it: `cold` means "I have not served this
+# since I started", and the cache belongs to llama-server, which restarts
+# independently. On 29.08. the gateway was restarted at 23:38 while the server
+# had been up since 09:48 — every prefix looked cold, the first restore hid a
+# 69,939-token state, and the turn took 506 s.
+#
+# THE SIGNAL is /slots' `id_task`, a counter that only ever rises within one
+# llama-server life. Seeing it fall means the server restarted; seeing it
+# already large when the gateway starts means the server did NOT, whatever the
+# gateway remembers.
+RESTORE_ONLY_WHEN_SERVER_COLD = env("RESTORE_ONLY_WHEN_SERVER_COLD",
+                                    "RESTORE_NUR_WENN_SERVER_KALT",
+                                    "0") == "1"
+# How many tasks a llama-server may have run and still count as fresh. A
+# server this young has had no chance to accumulate a cache worth protecting.
+# INSENSITIVE BY DESIGN, NOT TUNED: the failure it guards against is a gateway
+# that starts alongside a server which has already served a few large
+# requests, and the cost of being wrong is one prefix prefill.
+FRESH_TASKS = int(env("FRESH_TASKS", "FRISCHE_TASKS", 4))
+# The highest id_task seen from this llama-server. Falling means it restarted.
+MAX_TASK_ID = None
 PREWARM   = env("PREWARM", "VORWAERMEN",
                 os.path.expanduser("~/.claude/bin/prewarm.py"))
 _save_lock = None          # asyncio.Lock, can only be created inside the loop
@@ -566,6 +581,44 @@ def render_id_of(body, dialect):
         return None
 
 
+def server_is_cold(slots):
+    """Has llama-server (re)started since we last looked? (cold, id_task, why)
+
+    The RAM prompt cache dies with the server and with nothing else, so this
+    is the whole question a restore decision turns on — and neither /props nor
+    /health answers it: no uptime, no boot id. What does is `id_task` in
+    /slots, a counter that only rises within one server life.
+
+    Two ways to be cold, and the second is the one that matters:
+
+      * the counter FELL since we last looked — the server restarted under a
+        gateway that kept running;
+      * the counter is still tiny — the server started recently, which is the
+        case after switch-model.sh restarts both.
+
+    And one way to be warm that the gateway's own `cold` flag gets wrong: a
+    gateway that restarts beside a server which did not. On 29.08. that cost
+    506 s. Here it resolves correctly, because a large id_task says the server
+    has been working whatever this process remembers.
+    """
+    global MAX_TASK_ID
+    ids = [x.get("id_task") for x in (slots or [])
+           if isinstance(x.get("id_task"), int)]
+    if not ids:
+        # Nothing to judge by. Restoring is what happens today, so an unknown
+        # must not silently become a new policy.
+        return True, None, "no id_task in /slots — deciding as before"
+    now = max(ids)
+    was, MAX_TASK_ID = MAX_TASK_ID, (now if MAX_TASK_ID is None
+                                     else max(MAX_TASK_ID, now))
+    if was is not None and now < was:
+        MAX_TASK_ID = now
+        return True, now, "llama-server restarted (id_task %d after %d)" % (now, was)
+    if now <= FRESH_TASKS:
+        return True, now, "llama-server has run %d tasks — still fresh" % now
+    return False, now, "llama-server has run %d tasks since it started" % now
+
+
 def rendering_changed(prev_post, post_id):
     """Did this prefix render differently than it did last time?
 
@@ -603,19 +656,6 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
         name = refresh_saved(force=True).get(id_)
     if not name:
         return None
-    # IS THIS RESTORE WORTH THE CACHE IT WOULD HIDE? See
-    # RESTORE_MAX_TAIL_CHARS. Checked before the sidecar hash, because it is
-    # cheaper and because a skipped restore needs no file validation.
-    if RESTORE_MAX_TAIL_CHARS and body is not None:
-        tail = sum(n for _, n in DIA.message_fingerprints(body, dialect))
-        if tail > RESTORE_MAX_TAIL_CHARS:
-            log("NOTE        not restoring %s: %d characters of conversation "
-                "behind the prefix, and a restore would hide llama.cpp's own "
-                "cache from it" % (name, tail))
-            TRACE.record("restore-skipped",
-                         summary={"prefix": id_, "file": name, "tail": tail,
-                                  "limit": RESTORE_MAX_TAIL_CHARS})
-            return None
     # THE SIDECAR'S OWN HASH, read at last. prewarm has written `render_id`
     # into every sidecar since the store existed and no line of code ever read
     # it back — which is how a file holding another prefix's state kept its
@@ -656,6 +696,19 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
             if any(x.get("is_processing") for x in slots):
                 log("NOTE        restore of %s deferred: server busy" % name)
                 return None
+            # IS THE SERVER COLD? Only then does the file add anything — see
+            # RESTORE_ONLY_WHEN_SERVER_COLD. Decided here because /slots has
+            # just been fetched and carries the counter.
+            if RESTORE_ONLY_WHEN_SERVER_COLD:
+                fresh, seen, why = server_is_cold(slots)
+                if not fresh:
+                    log("NOTE        not restoring %s: %s — llama.cpp's own "
+                        "cache is the better source and a restore would hide "
+                        "it" % (name, why))
+                    TRACE.record("restore-skipped",
+                                 summary={"prefix": id_, "file": name,
+                                          "id_task": seen, "why": why})
+                    return None
     # Prefer EMPTY slots. Otherwise the reload overwrites a prefix that was
     # just fetched — in testing projB evicted projA from slot 0, and the next
     # request for projA ran cold.

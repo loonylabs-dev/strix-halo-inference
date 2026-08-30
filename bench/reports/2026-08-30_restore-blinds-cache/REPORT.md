@@ -175,8 +175,47 @@ it is small in units of real sessions, and nothing warns when it fills. The
 suite's docstring now says so, and the honest place to run it is a side server
 or an idle machine.
 
+## The fix, measured through the real gateway
+
+Everything above drives llama-server's slot API by hand. `restore-guard-live.py`
+drives **cc-gateway** instead, so what is measured is the decision code that
+would ship — the `cold` flag, the prefix ledger, the /slots reading.
+
+It reproduces the 29.08. situation deliberately: warm the prefix, put a
+conversation behind it, **restart the gateway** (so its ledger is empty and the
+next request takes the restore path), then send the next turn.
+
+    guard   after the gateway restart              took
+    off     cached  7 298   computed 28 936      187.4 s
+    on      cached 36 211   computed     22        1.6 s
+
+**117x**, and the trace shows the decision itself:
+
+    08:32:43  restore-skipped  c90c269ce2b2
+    08:32:44  request          reused 36211  took 1.59
+
+`RESTORE_ONLY_WHEN_SERVER_COLD` reads `id_task` from /slots — a counter that
+only rises within one llama-server life. It restores when the counter fell (the
+server restarted under a running gateway) or is still tiny (both restarted
+together), and skips otherwise. That is the case the gateway's own `cold` flag
+gets wrong: `cold` means "I have not served this since I started", and on
+29.08. the gateway had started at 23:38 beside a server up since 09:48.
+
+WHAT IT COSTS WHEN IT IS WRONG. If the server is warm but its cache no longer
+holds the conversation — an eviction, 26 of them in eight days — the skipped
+restore means the prefix is prefilled too: measured 8.9 s for 1890 tokens,
+91.7 s for the 17,784-token production prefix. That is the whole downside, it
+is bounded, and it is one turn.
+
+It ships OFF. Turning it on is one line in `~/.config/cc-gateway.env`:
+
+    RESTORE_ONLY_WHEN_SERVER_COLD=1
+
 ## Reproduce
 
     python3 bench/suites/restore-blinds-cache.py                  # A then B
     python3 bench/suites/restore-blinds-cache.py --salt X --restore-first 0
+    python3 bench/suites/restore-blinds-cache.py --mode persistence --rounds 5
     python3 bench/suites/restore-cost.py 8                        # the history
+    python3 bench/suites/restore-guard-live.py --guard off         # the fix,
+    python3 bench/suites/restore-guard-live.py --guard on          # end to end

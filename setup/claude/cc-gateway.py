@@ -1999,6 +1999,17 @@ def main():
     SAVED = refresh_saved(force=True)
     log("cc-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))
     log("  saved prefixes on disk: %d (%.1f GB)" % (len(SAVED), disk_used_gb()))
+    # A switch that does not announce itself cannot be verified, and the first
+    # question asked of this one was "is it actually on?" — which nothing in
+    # this banner could answer. Both states are printed, not just the
+    # interesting one: a line that appears only when a setting is active
+    # leaves its absence meaning either "off" or "old build".
+    log("  restore a saved prefix: %s"
+        % ("only when llama-server is cold (after fewer than %d tasks, or "
+           "when its task counter fell)" % FRESH_TASKS
+           if RESTORE_ONLY_WHEN_SERVER_COLD else
+           "whenever this process has not served it yet — NOTE: that can hide "
+           "llama.cpp's own cache, see defect restore-blinds-the-ram-cache"))
     if TRACE.refresh() != "off":
         log("  TRACE IS ON at level %s -> %s%s" % (
             TRACE.level, TRACE.dir,

@@ -1938,3 +1938,31 @@ class TestTheIdIsTakenBeforeThePromptIsRewritten(unittest.TestCase):
         the defect."""
         self.assertIn('"post_id": post_id,', self.src)
         self.assertIn('"rewritten": rewritten', self.src)
+
+
+class TestTheBannerAnswersWhatIsOn(unittest.TestCase):
+    """The first question asked of RESTORE_ONLY_WHEN_SERVER_COLD after it was
+    switched on was "is it actually on?", and nothing in the startup banner
+    could answer it. A switch that does not announce itself cannot be
+    verified."""
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_the_restore_policy_is_printed(self):
+        self.assertIn('log("  restore a saved prefix: %s"', self.src)
+
+    def test_both_states_are_printed_not_only_the_interesting_one(self):
+        """A line that appears only when a setting is active leaves its
+        absence meaning either `off` or `old build`."""
+        start = self.src.index('log("  restore a saved prefix: %s"')
+        block = self.src[start:start + 700]
+        self.assertIn("only when llama-server is cold", block)
+        self.assertIn("whenever this process has not served it yet", block)
+        self.assertNotIn("if RESTORE_ONLY_WHEN_SERVER_COLD:\n        log",
+                         self.src[start - 200:start + 200],
+                         "printed conditionally, so silence is ambiguous")
+
+    def test_the_off_state_names_the_defect_it_carries(self):
+        self.assertIn("restore-blinds-the-ram-cache", self.src)

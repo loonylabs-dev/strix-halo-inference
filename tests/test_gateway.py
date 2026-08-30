@@ -2383,3 +2383,65 @@ class TestTheTwoPhasesAreSeparableWithoutTheServersHelp(unittest.TestCase):
         record for whoever wants the difference."""
         self.assertIn("carries the queue wait with it", self.src)
         self.assertIn('"waited_s": round(waited, 2)', self.src)
+
+
+class TestARestartingServerIsNotAStackTrace(unittest.IsolatedAsyncioTestCase):
+    """switch-model.sh stops and starts llama-server as a matter of course, and
+    every one of those windows reached aiohttp as an unhandled
+    ConnectionRefusedError — a bare 500 for the client and a stack trace in the
+    log that tells a reader nothing to act on. Seen 30.08.2026 while the
+    operator restarted the server to change reasoning mode."""
+
+    async def _run(self, prepared=False):
+        # A port nothing listens on: the connection is refused for real, which
+        # is the case under test. Mocking the exception would test the mock.
+        with mock.patch.object(GW, "LLAMA", "http://127.0.0.1:1"), \
+             mock.patch.object(GW, "log", lambda *a: None):
+            app = web.Application()
+            async def handler(request):
+                return await GW.forward(request, b"{}", b"{}")
+            app.router.add_route("*", "/{tail:.*}", handler)
+            server = TestServer(app)
+            await server.start_server()
+            try:
+                async with aiohttp.ClientSession() as c:
+                    async with c.post(str(server.make_url("/v1/messages")),
+                                      json={}) as r:
+                        return r.status, r.headers.get("Retry-After"), await r.json()
+            finally:
+                await server.close()
+
+    async def test_it_answers_503_rather_than_raising(self):
+        status, retry, body = await self._run()
+        self.assertEqual(status, 503)
+        self.assertEqual(retry, "5")
+        self.assertEqual(body["error"]["type"], "service_unavailable")
+
+    async def test_the_message_says_what_to_do(self):
+        _, _, body = await self._run()
+        self.assertIn("restarting", body["error"]["message"])
+
+    def test_it_is_caught_where_it_happens_not_probed_for(self):
+        """A /health call before every request would put a round trip in the
+        hot path to describe a state that is rare, and the connection attempt
+        answers the same question for free."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("async def forward(")
+        block = src[start:src.index("\nasync def status(", start)]
+        self.assertNotIn('"/health"', block,
+                         "a probe per request describes a rare state at the "
+                         "cost of every common one")
+        self.assertIn("except (OSError, aiohttp.ClientConnectionError)", block)
+
+    def test_a_cancelled_request_is_not_swallowed(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("async def forward(")
+        block = src[start:src.index("\nasync def status(", start)]
+        at = block.index("except (OSError, aiohttp.ClientConnectionError)")
+        self.assertIn("except asyncio.CancelledError:\n            raise",
+                      block[:at],
+                      "CancelledError is not an error here — it is a client "
+                      "that left, and swallowing it would turn an abort into "
+                      "a 503 nobody asked for")

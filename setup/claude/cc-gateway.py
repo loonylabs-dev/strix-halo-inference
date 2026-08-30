@@ -39,6 +39,7 @@ Environment variables
                      (default 900; a cold start needs ~100 s)
 """
 import asyncio, heapq, ipaddress, json, os, re, sys, time
+import aiohttp
 from aiohttp import web, ClientSession, ClientTimeout
 import hashlib, urllib.request
 
@@ -2072,42 +2073,68 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None):
     hdrs = {k: v for k, v in req.headers.items() if k.lower() not in HOP}
     timeout = ClientTimeout(total=None, sock_read=SILENCE_MAX, sock_connect=30)
     async with ClientSession(timeout=timeout, auto_decompress=False) as s:
-        async with s.request(req.method, LLAMA + req.path_qs,
-                             data=(out if out is not None else body),
-                             headers=hdrs, allow_redirects=False) as up:
-            if resp is None:
-                rh = {k: v for k, v in up.headers.items()
-                      if k.lower() not in HOP and k.lower() != "content-encoding"}
-                resp = web.StreamResponse(status=up.status, headers=rh)
-                await resp.prepare(req)
-            elif up.status != 200:
-                log("NOTE        upstream %d after the headers were already out"
-                    % up.status)
-                await resp.write(sse_error(up.status, (await up.text())))
+        # A SERVER THAT IS RESTARTING IS NOT A BUG IN THIS PROCESS.
+        # switch-model.sh stops and starts llama-server as a matter of course,
+        # and every one of those windows reached aiohttp as an unhandled
+        # ConnectionRefusedError — a bare 500 for the client and a stack trace
+        # in the log that tells a reader nothing to act on. Seen 30.08.2026
+        # while the operator restarted the server to change reasoning mode.
+        #
+        # Caught around the request rather than probed for: a /health call
+        # before every request would put a round trip in the hot path to
+        # describe a state that is rare, and the connection attempt answers the
+        # same question for free.
+        try:
+            async with s.request(req.method, LLAMA + req.path_qs,
+                                 data=(out if out is not None else body),
+                                 headers=hdrs, allow_redirects=False) as up:
+                if resp is None:
+                    rh = {k: v for k, v in up.headers.items()
+                          if k.lower() not in HOP and k.lower() != "content-encoding"}
+                    resp = web.StreamResponse(status=up.status, headers=rh)
+                    await resp.prepare(req)
+                elif up.status != 200:
+                    log("NOTE        upstream %d after the headers were already out"
+                        % up.status)
+                    await resp.write(sse_error(up.status, (await up.text())))
+                    await resp.write_eof()
+                    return resp
+                async for ch in up.content.iter_any():   # no buffering -> SSE stays intact
+                    await resp.write(ch)
+                    if sniff is not None:
+                        # THE FIRST GENERATED TOKEN, not the first chunk. A stream
+                        # opens with headers and a message_start, and a queued one
+                        # gets keep-alive pings before that — timing from any of
+                        # those would put the prefill in the wrong column. A delta
+                        # event only exists once tokens are being produced.
+                        if sniff.get("first_token_at") is None and (
+                                b"content_block_delta" in ch or b'"delta"' in ch):
+                            sniff["first_token_at"] = time.time()
+                        # A rolling window, not a copy of the answer. The caller
+                        # reads it once the response is done; nothing here waits
+                        # for it or parses it, so a malformed chunk cannot delay
+                        # or break the proxying.
+                        if len(sniff["head"]) < SNIFF_BYTES:
+                            sniff["head"] += ch[:SNIFF_BYTES - len(sniff["head"])]
+                        sniff["tail"] = (sniff["tail"] + ch)[-SNIFF_BYTES:]
+                if answered is not None:
+                    answered["ok"] = True    # the model is done; the slot holds it
                 await resp.write_eof()
                 return resp
-            async for ch in up.content.iter_any():   # no buffering -> SSE stays intact
-                await resp.write(ch)
-                if sniff is not None:
-                    # THE FIRST GENERATED TOKEN, not the first chunk. A stream
-                    # opens with headers and a message_start, and a queued one
-                    # gets keep-alive pings before that — timing from any of
-                    # those would put the prefill in the wrong column. A delta
-                    # event only exists once tokens are being produced.
-                    if sniff.get("first_token_at") is None and (
-                            b"content_block_delta" in ch or b'"delta"' in ch):
-                        sniff["first_token_at"] = time.time()
-                    # A rolling window, not a copy of the answer. The caller
-                    # reads it once the response is done; nothing here waits
-                    # for it or parses it, so a malformed chunk cannot delay
-                    # or break the proxying.
-                    if len(sniff["head"]) < SNIFF_BYTES:
-                        sniff["head"] += ch[:SNIFF_BYTES - len(sniff["head"])]
-                    sniff["tail"] = (sniff["tail"] + ch)[-SNIFF_BYTES:]
-            if answered is not None:
-                answered["ok"] = True    # the model is done; the slot holds it
-            await resp.write_eof()
-            return resp
+        except asyncio.CancelledError:
+            raise
+        except (OSError, aiohttp.ClientConnectionError) as e:
+            log("NOTE        llama-server unreachable (%s) — 503 to %s"
+                % (type(e).__name__, req.remote))
+            msg = ("llama-server is not reachable. It is probably restarting; "
+                   "try again in a few seconds.")
+            if resp is not None:
+                await resp.write(sse_error(503, msg))
+                await resp.write_eof()
+                return resp
+            return web.json_response(
+                {"error": {"type": "service_unavailable", "message": msg}},
+                status=503, headers={"Retry-After": "5"})
 
 async def status(req):
     if zone(req) != 0:

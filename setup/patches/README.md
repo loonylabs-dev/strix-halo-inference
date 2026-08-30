@@ -285,47 +285,49 @@ Until all three are measured, `-np 1` and the patch both stay.
 
 ## draft-tail-past-stop.patch
 
-**NOT APPLIED, AND NOT MEASURED.** It is here because it compiles, because it
-is small, and because the next person to look at
-`the-previous-answer-is-sometimes-not-reused` should not have to derive it
-again. `build-llama.sh` names `hip-integrated-off.patch` explicitly and does
-not scan this directory, so nothing picks this up by accident. Do not activate
-it on the strength of this file.
+**MEASURED AND REFUTED, 30.08.2026.** It is kept, unapplied, because being
+wrong for a reason is worth more here than being deleted: the next person to
+reach for this fix should find out in one minute that it has already been
+tried and why it cannot work.
 
-**What it does:** removes the accepted draft tokens that sit BEHIND the stop
-token. When speculation is on, all accepted tokens are inserted into the slot
-in one block, and only then are they walked one by one to find where the turn
-ends. The walk returns early at the stop and nothing removes what came after
-it, so the slot keeps 1-2 tokens that no re-rendered history will ever
-contain.
+**What it tried:** the accepted draft tokens that sit BEHIND the stop token are
+inserted into the slot in one block and never removed, so the slot keeps 1-2
+tokens no re-rendered history contains. The patch removed them again.
 
-**Why that is expensive rather than cosmetic:** the slot then stops being a
-prefix of the next prompt (f_keep 0.993 instead of 1.000). On a hybrid model
-the memory cannot be trimmed to the common part, so llama.cpp falls back to a
-context checkpoint — and checkpoints are made during prompt processing only,
-never for an answer. The newest usable one sits four tokens before the end of
-the PREVIOUS prompt, so the whole answer is re-prefilled. Measured 30.08.2026:
-two tokens, one entire answer, every time.
+**What happened:** the server aborted on the second round.
 
-**Why it might be safe:** the rollback is bounded exactly the way partial
-draft rejection is bounded twenty lines above it — by the recurrent snapshot
-ring, `llama_n_rs_seq()`. With `--spec-draft-n-max 12` that ring is 12 and the
-rollback is 1-2, so it fits. If it does not fit the patch leaves the slot
-alone rather than desynchronise the token list from the memory.
+    common.cpp:1628: failed to remove sequence 0 with p0=324, p1=-1
+    ggml_abort -> SIGABRT, code=dumped, status=6/ABRT
 
-**What is actually known about it, and it is not much:**
+**Two things were wrong, and only the first one was mine.**
 
-    compiles against 6b39dd5d5 and applies cleanly to master   yes
-    the rollback path is ever entered                          UNKNOWN
-    the tail is gone afterwards                                UNKNOWN
-    nothing else broke                                         UNKNOWN
+1. The guard read `COMMON_CONTEXT_SEQ_RM_TYPE_FULL` as permission. It is the
+   opposite: "can seq_rm full sequences ONLY", i.e. no partial rollback at
+   all. The code twenty lines above uses the same field correctly, to decide
+   that a CHECKPOINT is needed. An inverted predicate, caused by a name that
+   reads like a capability.
 
-The build was made and the binary kept as
-`build-rocm-patched-b10631/bin/libllama-server-impl.so.patched`; starting a
-production service from a self-built binary was where this stopped. To finish
-it: put that library in place, restart, and run
+2. That was not the cause here. Measured afterwards with `-lv 4`: the line
+   "speculative decoding will use checkpoints", which is printed only for
+   FULL, DOES NOT APPEAR. So the type is PART or RS — a partial rollback is
+   advertised — and `seq_rm` refused anyway.
 
-    python3 bench/suites/slot-tail.py --repeat 6
+**Which makes the failure the interesting part.** `common_context_can_seq_rm()`
+promises a capability the recurrent half then declines at runtime, and
+`common_context_seq_rm` turns that refusal into `GGML_ABORT`. That is exactly
+what llama.cpp PR #28007 describes, and this is an independent reproduction of
+it at a DIFFERENT call site — the speculative draft path rather than prompt
+processing.
 
-TAIL 0 in every round with speculation ON is the result that would make this
-worth reporting upstream. Anything less and it is a wrong guess that compiled.
+**So the approach is dead, not just the patch.** The draft tokens are already
+DECODED when the stop is found: they sit in the KV cache and in the recurrent
+state, and the recurrent state is what cannot be wound back. Inserting fewer
+tokens instead of removing them afterwards does not help for the same reason —
+the memory would still hold them. A real fix has to be lower down: either the
+recurrent memory gains genuine rollback (which is what `n_rs_seq` is for), or
+speculation stops decoding past an end-of-generation token in the first place.
+
+**What this cost:** one crash on a service with `Restart=on-failure`, which
+came back by itself, plus one restart to put the untouched library back.
+Nothing else. The measurement was worth its price — the alternative was
+sending a guess upstream.

@@ -264,6 +264,33 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
             [d for d in os.listdir(self.src) if d.startswith("build-")],
             "it must refuse in preflight, before anything is built")
 
+    def test_use_succeeds_and_says_so_with_an_exit_code(self):
+        """The POSITIVE half of --use, which was missing.
+
+        --use is the rollback path: the thing you reach for when a build is
+        wrong and the machine has to go back, under time pressure. On
+        30.08.2026 it moved the symlink correctly and then exited 2, because
+        the closing hint interpolated $BUILD_ID — a variable only the BUILD
+        path sets. Everything worked and the exit code said it had not.
+
+        The negative case below was tested and this one was not, which is why
+        it survived: a check that can only ever reach one of its two answers
+        is the shape this repository keeps finding.
+        """
+        d = os.path.join(self.src, "build-rocm-patched-goodone")
+        os.makedirs(os.path.join(d, "bin"))
+        b = os.path.join(d, "bin", "llama-server")
+        with open(b, "w") as f:
+            f.write("#!/bin/sh\necho 'version: 0.0.0 (build 1, commit deadbeef)'\n")
+        os.chmod(b, 0o755)
+        with open(os.path.join(d, ".build-stamp"), "w") as f:
+            f.write("build_id=goodone\npatched=yes\n")
+        r = self.build("--use", "goodone")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(
+            os.path.basename(os.readlink(os.path.join(self.src, "build-rocm-patched"))),
+            "build-rocm-patched-goodone")
+
     def test_use_refuses_a_directory_whose_stamp_says_unpatched(self):
         """Belt and braces beside the name: activate() only looks in the
         patched family, so an unpatched id cannot be found — but a directory

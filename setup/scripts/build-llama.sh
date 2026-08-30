@@ -414,8 +414,13 @@ $(printf '%s' "$ERR" | sed 's/^/      /')
   say "instead of being hoped about — 10 of 10 corrupt without the patch, 0 of"
   say "10 with it, on the same upstream commit:"
   say
+  # $id, not $BUILD_ID. This function is reached from BOTH paths and only the
+  # build path sets BUILD_ID, so `--use` died here under `set -u` AFTER moving
+  # the symlink correctly: the rollback worked and exited 2 saying it had not.
+  # Found 30.08.2026 by using it; the test that would have caught it existed
+  # only for the refusal case.
   say "    python3 bench/suites/slot-corruption.py par-two-prefixes \\"
-  say "        --binary $BUILD_ID --starts 3"
+  say "        --binary $id --starts 3"
   say
   say "  It runs on a side server (port 8081) and leaves production alone."
   say

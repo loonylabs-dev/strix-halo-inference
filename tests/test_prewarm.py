@@ -5,7 +5,7 @@ possible to check everything that would otherwise only show during a real
 save — and that shows late, because a wrongly stored prefix produces no error,
 it is simply never restored again.
 """
-import json, os, shutil, tempfile, time, types, unittest
+import json, os, re, shutil, tempfile, time, types, unittest
 from unittest import mock
 
 import common
@@ -400,3 +400,59 @@ class TestQuarantinedFilesAreAccountedFor(WithStore):
         self.quarantine("a")
         self.clean(dry_run=True)
         self.assertTrue(os.path.exists(os.path.join(self.dir, "a.bin.unusable")))
+
+
+class TestTheSaveCommandAcceptsWhatTheGatewayPassesIt(unittest.TestCase):
+    """The gateway spawns `prewarm.py save` with the flags it needs. If
+    argparse rejects one of them, EVERY automatic save fails — and it fails
+    with a usage message, which reads like a caller mistake rather than a
+    defect in the flag definition.
+
+    That happened on 30.08.2026 within minutes of adding --hoist: it was
+    declared as `choices=("0","1")` together with `type=lambda v: v == "1"`,
+    and argparse applies the type conversion BEFORE checking choices, so "0"
+    became False and False is not in ("0","1"). Live, on every save, until a
+    failing measurement led back to it.
+    """
+
+    def setUp(self):
+        self.script = str(common.REPO / "tools" / "prewarm.py")
+
+    def parse(self, *extra):
+        """Run the real CLI far enough to see whether argparse is happy."""
+        import subprocess, sys
+        r = subprocess.run(
+            [sys.executable, self.script, "save", "--body", "/nonexistent-body",
+             "--name", "x", *extra],
+            capture_output=True, text=True)
+        return r.stderr
+
+    def test_every_flag_the_gateway_sends_is_accepted(self):
+        """Read out of cc-gateway.py rather than listed here, so a flag added
+        there without one here cannot pass."""
+        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = gw.index('PREWARM, "save",')
+        block = gw[start:gw.index("stdout=asyncio.subprocess.PIPE", start)]
+        flags = re.findall(r'"(--[a-z-]+)"', block)
+        self.assertIn("--hoist", flags, "the test is reading the wrong block")
+        sample = {"--body": "/nonexistent-body", "--name": "x",
+                  "--gateway-id": "x", "--dialect": "anthropic", "--hoist": "0"}
+        extra = []
+        for f in flags:
+            if f in ("--body", "--name"):
+                continue
+            self.assertIn(f, sample, "unknown flag %s — add it here" % f)
+            extra += [f, sample[f]]
+        err = self.parse(*extra)
+        self.assertNotIn("usage:", err,
+                         "argparse rejected what the gateway sends: %s" % err)
+
+    def test_both_values_of_hoist_survive_argparse(self):
+        for v in ("0", "1"):
+            with self.subTest(value=v):
+                self.assertNotIn("usage:", self.parse("--hoist", v))
+
+    def test_the_trap_is_named_where_it_was_set(self):
+        src = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
+        self.assertIn("argparse applies type conversion BEFORE checking", src)

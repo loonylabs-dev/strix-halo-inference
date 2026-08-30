@@ -147,7 +147,9 @@ def save(a):
     with open(a.body, encoding="utf-8") as f:
         body = json.load(f)
     dialect = getattr(a, "dialect", DIA.ANTHROPIC)
-    prefix = build_prefix(body, dialect, hoist=getattr(a, "hoist", None))
+    told = getattr(a, "hoist", None)
+    prefix = build_prefix(body, dialect,
+                          hoist=None if told is None else told == "1")
     h = render_hash(prefix)
     n_tok = len(req("/tokenize", {"content": prefix}, t=300)["tokens"])
     print("prefix: %d characters, %d tokens, id %s" % (len(prefix), n_tok, h))
@@ -513,8 +515,12 @@ def parse_args(argv=None):
 
     s1.add_argument("--gateway-id", default=None, dest="gateway_id",
                     help="take the gateway's id instead of recomputing it")
+    # NO `type=` HERE. argparse applies type conversion BEFORE checking
+    # choices, so `type=lambda v: v == "1"` turned "0" into False and then
+    # rejected False as an invalid choice — every automatic save failed with a
+    # usage message, live, until it was noticed 30.08.2026. The string is
+    # converted where it is used instead.
     s1.add_argument("--hoist", default=None, choices=("0", "1"),
-                    type=lambda v: v == "1",
                     help="hoist mid-conversation system messages to the front, "
                          "as the gateway's HOIST_SYSTEM does. It MUST match, or "
                          "this writes a prefix no request ever sends. Default: "

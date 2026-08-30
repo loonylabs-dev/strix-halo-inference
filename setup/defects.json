@@ -455,6 +455,26 @@
       "status": "open, proven 30.08.2026; a switch exists, its threshold does not",
       "first_seen": "2026-08-30",
       "last_checked": "2026-08-30"
+    },
+    {
+      "id": "hoist-changes-the-prefix-behind-the-id",
+      "title": "The cache correction rewrites the prefix AFTER the id was taken",
+      "applies_to": {
+        "component": "cc-gateway"
+      },
+      "shows_as": "slow",
+      "symptom": "A request the gateway calls `warm`, on a prefix it has served for hours, reuses NOTHING -- not even the prefix -- and recomputes the entire conversation. The message history is untouched, so `msgs_kept` exonerates the client, and the prefix id is unchanged, so nothing in the gateway's own bookkeeping disagrees with itself. The only visible trace is that `prefix_chars` and `volatile_moved` moved.",
+      "measured": "30.08.2026, 00:12:43, qwen38, live Claude Code traffic, prefix 7ff6bcd1f1de. Two consecutive turns of one session: 00:01:32 volatile_moved 25, prefix_chars 73404, tools 21, reused 17784. 00:12:43 volatile_moved 26, prefix_chars 73738, tools 21, reused 0, computed 73877, took 668.9 s, cold=False. The shape says 72 of the 74 previous messages were unchanged and the first divergence is at message 72 (804 -> 767 characters), i.e. right at the end -- so the history is not the cause. CAUSE, cc-gateway.py around line 1273: `ident, head = prefix_id(p, dialect)` runs BEFORE `p, n_vol = correct(p, dialect)`. The id is keyed on what ARRIVES; the hoist that follows moves the stable part of mid-conversation system messages to the FRONT of the prompt, and that is what llama-server actually tokenises. One further system message appeared in this turn (volatile_moved 25 -> 26), the hoist put it at the front, the rendered prefix grew by 334 characters at its start, and the longest common prefix against everything the server held fell to zero. The ordering is deliberate and documented in the source -- the id must not depend on the correction -- but nothing then checks that the correction left the rendered prefix alone.",
+      "mitigation": "None. The gateway already computes `render_id_of(body)`, the hash of the RENDERED prefix, and compares it against a saved file's sidecar on restore. The same value is not compared between consecutive requests, which is all this needs to become visible: a render_id that changes while the prefix id does not IS this defect, and the gateway could at least stop calling such a request warm. Whether the hoist should also be made stable across a growing conversation is a separate and larger question -- it exists because Claude Code puts a changing counter behind the user question, and turning it off trades this defect for that one.",
+      "detect": {
+        "kind": "manual",
+        "how": "In the trace at `detail`: two consecutive requests with the SAME `prefix` but different `prefix_chars` or `volatile_moved`, where `reused` collapses while `msgs_kept` is near the message count. `python3 tools/tracelog.py diff` shows the message side; the prefix side has to be read from the two records. No suite reproduces it yet -- it needs a client that adds a system message mid-conversation."
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "open, found 30.08.2026 in the live trace",
+      "first_seen": "2026-08-30",
+      "last_checked": "2026-08-30"
     }
   ]
 }

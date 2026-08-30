@@ -1,0 +1,38 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a9edbd7be..0e7e7c8a9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3800,6 +3800,33 @@ private:
+ 
+                 GGML_ASSERT(accepted.size() >= 1);
+ 
++                // Do not keep anything past an end-of-generation token. The turn
++                // is over there, and the accepted tokens behind it can never
++                // appear in the next prompt — they leave the slot no longer a
++                // prefix of it. On a model whose memory cannot be trimmed to the
++                // common part that costs the ENTIRE previous answer, because the
++                // fallback is a context checkpoint and checkpoints are made
++                // during prompt processing only, never for an answer.
++                //
++                // Cutting HERE, before n_rollback is computed, is the whole
++                // point. The one rollback this step is allowed simply becomes
++                // larger and covers these tokens too. Removing them afterwards
++                // needs a SECOND rollback, and that is refused — the recurrent
++                // snapshot index is single-use. Measured 30.08.2026, which is
++                // what a previous attempt at this cost:
++                //   partial rollback REFUSED: rollback=3, n_rs_seq=12,
++                //                             pending=1 (rs_idx=6)
++                //
++                // The last element is the token sampled from the target and is
++                // allowed to be EOG — there is nothing behind it to drop.
++                for (size_t k = 0; k + 1 < accepted.size(); ++k) {
++                    if (llama_vocab_is_eog(vocab, accepted[k])) {
++                        SLT_DBG(slot, "dropping %zu accepted token(s) past EOG\n", accepted.size() - (k + 1));
++                        accepted.resize(k + 1);
++                        break;
++                    }
++                }
++
+                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+ 
+                 const bool use_ckpt_tgt =

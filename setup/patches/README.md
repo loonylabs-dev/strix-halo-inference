@@ -359,3 +359,60 @@ sending a guess upstream.
 which matters for Flash-Next, since qwen35 IS on that list and qwen4exp is not ·
 `#28007` catches the abort by clearing the sequence and re-processing the whole
 prompt, i.e. it makes this failure safe rather than cheap.
+
+---
+
+## speculation-stops-at-eog.patch
+
+**THE FIX, measured and working. NOT APPLIED** — activating a self-built
+binary in production is the operator's call, not this file's.
+`build-llama.sh` names `hip-integrated-off.patch` explicitly and does not scan
+this directory, so nothing picks it up by itself.
+
+**What it does:** cuts the accepted draft tokens at the first
+end-of-generation token, BEFORE `n_rollback` is computed. Seven lines.
+
+**Why there and not later.** The tokens behind the stop are already decoded —
+they are in the KV cache and in the recurrent state. Removing them afterwards
+needs a SECOND rollback in the same step, and that is refused, because the
+recurrent snapshot index is single-use. The earlier
+`draft-tail-past-stop.patch` tried exactly that and aborted the server;
+the diagnostic it left behind says why in one line:
+
+    partial rollback REFUSED: rollback=3, n_rs_seq=12, pending=1 (rs_idx=6)
+
+The ring was 12 and the request was 3 — the budget was never the problem. A
+rollback of 6 was already outstanding, claimed by the draft verification
+higher up the same call stack. Cutting before `n_rollback` means that ONE
+rollback simply becomes larger and covers these tokens too.
+
+**Measured, 30.08.2026, against the same build without it:**
+
+                                      without          with
+    slot-tail.py, TAIL                2 (9 of 9)       0 (19 of 19)
+    answer-reuse.py, answer kept      0 of 8           12 of 13
+    decode, code                      20.89 t/s        21.17 t/s
+    decode, prose                      8.52 t/s         8.48 t/s
+    draft acceptance                  0.3347 (n=34)    0.3334 (n=27)
+    aborts / refusals                 --               none
+
+So the tail is gone and the speculation is untouched: the acceptance rate and
+both decode rates are inside noise. The one lost round out of thirteen did not
+reproduce over the following nine and is the interference
+`bench/suites/answer-reuse.py` warns about in its own `--repeat` help.
+
+**A real conversation, four turns, thinking on:** every answer coherent and on
+topic, no degeneration, and the reuse climbing the way it should —
+`reused 30 / 637 / 1367 / 1391`. Without the patch the third and fourth turns
+would each have re-read the whole previous answer.
+
+## recurrent-rollback-says-why.patch
+
+A diagnostic, seven lines, worth having on its own: when
+`llama_memory_recurrent::seq_rm` refuses a partial rollback it returns a bare
+`false`, and the caller turns that into `GGML_ABORT`. The reason dies with the
+process. This prints which of the three conditions refused, with the numbers.
+
+It is what turned "the recurrent memory cannot roll back" — wrong — into "the
+rollback is already taken" — right — in one run. Independent of the fix, and
+useful to anyone else hitting `failed to remove sequence`.

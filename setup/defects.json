@@ -495,6 +495,26 @@
       "status": "open by nature — recorded so the cost is attributable, not fixable here",
       "first_seen": "2026-08-30",
       "last_checked": "2026-08-30"
+    },
+    {
+      "id": "the-previous-answer-is-sometimes-not-reused",
+      "title": "A turn re-prefills exactly the previous answer, and only sometimes",
+      "applies_to": {
+        "component": "llama.cpp + client"
+      },
+      "shows_as": "slow",
+      "symptom": "A turn reuses everything up to the end of the previous PROMPT and nothing of the previous ANSWER, so the cost is the answer's own length, paid again. The message history is a clean append and the client does send the thinking back, so nothing in the trace disagrees with itself.",
+      "measured": "30.08.2026, live Claude Code: 17:27:45 lost 16,791 tokens where the previous answer was 16,787; 17:30:01 lost 12,045 where it was 12,041; 17:39:09 lost 1,503 where it was 1,499. Two turns in the same session did NOT lose it — the previous answers there were 64 and 305 tokens. REPRODUCED, and reproduced as NON-DETERMINISTIC: bench/suites/answer-reuse.py --repeat 4, one prompt, no tools, thinking low, four identical rounds against the same server -- slot 288 reused 287 KEPT, slot 324 reused 323 KEPT, slot 376 reused 47 LOST, slot 293 reused 47 LOST. On a loss the reuse is 47 both times, which is the shared template head and nothing else. The cause is NOT established. During that run the RAM prompt cache was evicting (`removing oldest entry, 1381.606 MiB`), which is a candidate and untested.",
+      "mitigation": "None, and no direction that has survived a measurement. FOUR HYPOTHESES WERE TESTED AND ALL FAILED on the way here: that the thinking is dropped by the client (it is not -- 54,973 characters of it came back), that answers with a `text` block behave differently (they do not), that a tool_use block is the trigger (the same configuration gave opposite results on two runs), and that the template's re-render differs from the generation (it does not, once the reconstruction stops adding a `<think>` the generation prompt already carries). What the suite is good for now is the CONTRAST: it runs the pair N times and reports how many rounds kept the answer, because a single shot of this measures the run's own luck.",
+      "detect": {
+        "kind": "manual",
+        "how": "In the trace: a request whose `reused` equals the PREVIOUS request's reused+computed (its prompt) while the previous `output` is missing from it, with `msgs_kept` at the full message count. bench/suites/answer-reuse.py --repeat 4 reproduces it on demand in about four minutes; expect it to fail on some rounds and not others, and treat a run that is all one way as too short."
+      },
+      "suite": "bench/suites/answer-reuse.py",
+      "upstream": [],
+      "status": "open, cause unknown; reproducible but not deterministic",
+      "first_seen": "2026-08-30",
+      "last_checked": "2026-08-30"
     }
   ]
 }

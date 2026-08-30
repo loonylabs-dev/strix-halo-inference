@@ -1,14 +1,14 @@
 # 04 · Building llama.cpp
 
-You need a build from source on this GPU, and it needs one patch. This is the
-chapter with the longest wait and the shortest explanation.
+You need a build from source on this GPU, and it needs two patches. This is
+the chapter with the longest wait and the shortest explanation.
 
 ## Why not a package or a container
 
 Both are reasonable elsewhere. Here:
 
-* the **patch below is not upstream**, and without it a second slot corrupts
-  every answer with nothing in any log;
+* the **patches below are not upstream**, and without the first one a second
+  slot corrupts every answer with nothing in any log;
 * the flags that matter changed during 2026, and a build from a few months ago
   fails or silently loses performance;
 * `bench/` measures builds against each other, which needs more than one.
@@ -16,9 +16,9 @@ Both are reasonable elsewhere. Here:
 There are prebuilt Toolbx containers for exactly this hardware
 (`kyuz0/amd-strix-halo-toolboxes`) rebuilt on every llama.cpp update, and
 decoupling the inference stack from the host is a real stability argument. If
-you take that route you still have to get the patch in.
+you take that route you still have to get the patches in.
 
-## The patch, and why it is not optional
+## Patch 1, and why it is not optional
 
     setup/patches/hip-integrated-off.patch
 
@@ -71,10 +71,31 @@ ways that are not obvious:
 3. **gfx1151 collects regressions.** A new build that is slower or wrong has
    to be undoable in one command, with the old binary still on disk.
 
+## Patch 2, and why it is not optional either
+
+    setup/patches/speculation-stops-at-eog.patch
+
+Seven lines, and it costs nothing measurable. Without it, every turn of a
+conversation re-reads the whole PREVIOUS ANSWER before it can start — about a
+tenth of generation time on this hardware, and more the longer the answers get.
+
+The cause is the same shape as patch 1: it does not fail, it degrades. When
+speculative decoding accepts a draft token past the end of a turn, that token
+stays in the slot, the slot stops being a prefix of the next prompt, and on a
+hybrid model like Qwen 3.8 the memory cannot be trimmed to the common part —
+so llama.cpp falls back to a checkpoint from before the answer.
+
+Reported upstream as
+[#28049](https://github.com/ggml-org/llama.cpp/issues/28049); the full
+measurement is `the-previous-answer-is-sometimes-not-reused` in
+`setup/defects.json`. It applies only to hybrid models with a draft head — on
+this machine, qwen38, and Flash-Next once it has one.
+
 By hand, if you insist:
 
     cd ~/llama.cpp
     git apply "$REPO/setup/patches/hip-integrated-off.patch"
+    git apply "$REPO/setup/patches/speculation-stops-at-eog.patch"
 
     cmake -S . -B build-rocm-patched -DCMAKE_BUILD_TYPE=Release \
           -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON \
@@ -107,9 +128,11 @@ per-model and it is written down per profile — `LLAMA_BIN` in
 
     bash setup/preflight.sh          # says whether a patched build is present
 
-    # is the patch still in the source?
+    # are BOTH patches still in the source? Each must print at least 1.
     grep -c "gfx1151/ROCm: trusting prop.integrated" \
       ~/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu
+    grep -c "accepted token(s) past EOG" \
+      ~/llama.cpp/tools/server/server-context.cpp
 
     python3 setup/lib/defects.py     # is this build exposed to a known defect?
 

@@ -201,7 +201,7 @@ first one is load-bearing and fails silently, the rest fail loudly.
 
 | Path | What it is | If it is missing |
 |---|---|---|
-| `~/llama.cpp` branch `gfx1151-patched` | the gfx1151 patch, **as a commit** | a `git pull` takes the patch with it and **the server answers WRONG** once a second slot is used |
+| `~/llama.cpp` branch `gfx1151-patched` | **both** patches, as commits — see `setup/patches/README.md` | a `git pull` takes them with it. Without the first, **the server answers WRONG** once a second slot is used; without the second, every turn re-reads the whole previous answer. Neither says anything |
 | `~/llama.cpp/build-rocm-patched` | symlink to the active build, the path `LLAMA_BIN` names | the service will not start |
 | `~/llama.cpp/build-rocm-patched-<id>/` | the builds themselves, each with a `.build-stamp` | no way back to a build that worked |
 | `~/.claude/env/<model>.env` | symlinks to `env/*.env`, read by `llama-user@.service` | the service refuses to start (deliberately, no leading `-`) |

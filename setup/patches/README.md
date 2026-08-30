@@ -364,7 +364,12 @@ prompt, i.e. it makes this failure safe rather than cheap.
 
 ## speculation-stops-at-eog.patch
 
-**THE FIX, measured and LIVE since 30.08.2026.** It is the second patch this
+**THE FIX, measured and LIVE since 30.08.2026, and reported upstream as
+[#28049](https://github.com/ggml-org/llama.cpp/issues/28049).** That report is
+what would eventually retire this patch — an issue rather than a PR, for the
+reasons llama.cpp's own AGENTS.md gives.
+
+ It is the second patch this
 stack carries, and it is carried the same way as the first: as a commit on
 `gfx1151-patched` (418fe05c2), with a marker in `PATCH_MARKERS` in
 `build-llama.sh` so that a build which lost it refuses to start rather than

@@ -45,6 +45,55 @@ Turn 2 is the case the hoist was built for, and **both keep 100 %** — because
 the counter sits at the end of the prompt either way. Turn 3 is a new system
 block appearing mid-conversation, and hoisting loses everything: 10x.
 
+## The same three turns through cc-gateway
+
+`bench/suites/hoist-live.py` sets the switch each way with a systemd drop-in,
+restarts the gateway and runs the same three turns as Claude-Code-shaped
+Anthropic bodies — so the gateway's own correction, id and restore logic are
+all in the measurement:
+
+                           turn 1         turn 2         turn 3
+    hoist on             0 cached    4278 cached       0 cached   31.3 s
+    hoist off            0 cached    4278 cached    4278 cached   12.3 s
+
+Turn 2 is identical, again. Turn 3 is 2.5x at these small sizes and 10x at the
+prompt-level sizes above; the ratio grows with the conversation, because what
+is lost is everything behind the front.
+
+## How often the front actually moved
+
+Read out of the trace for `who=martin-pc2`, one day, main prompt type only
+(the toolless second type alternates and is a separate strand):
+
+    90 turns, 6 of them with a moved front
+
+    07:57:13   35811 -> 60006   reused 14483  computed   233     76.0 s
+    08:14:44   60006 -> 60428   reused 12435  computed 10253    119.7 s
+    10:03:08   60428 -> 60006   reused 14483  computed   224      4.1 s
+    10:26:05   60006 -> 60428   reused     0  computed 44072    305.9 s
+    00:01:32   60428 -> 73404   reused 17784  computed 55856    655.8 s
+    00:12:43   73404 -> 73738   reused     0  computed 73877    668.9 s
+
+    184,515 tokens recomputed on six turns
+
+TWO OF THE SIX ARE NOT THE HOIST. 07:57:13 and 00:01:32 are tool-count changes
+(25 -> 13 and 13 -> 21) — the client sent a different tool list, which moves
+the front whatever the gateway does. The other four are consistent with the
+hoist: the prefix moves by 422 or 334 characters and back, which is the size
+of a system block appearing and disappearing. `consistent with`, not proven —
+the trace records the prefix's LENGTH and hash, not its text, so which block
+moved cannot be read out of it.
+
+Note also what the middle two rows are: 60428 -> 60006 -> 60428, a block that
+comes and goes. The return trip cost 44,072 tokens.
+
+A FIRST READING OF THIS TABLE WAS WRONG and is worth recording. Counting
+`volatile_moved` increments gave "55 of 93 turns moved the front" — but that
+field counts volatile fragments left INSIDE the conversation, and it rises
+whenever another system message appears, whether or not the hoisted set
+changed. `prefix_chars` is the field that says the front moved. The wrong
+reading inflated the frequency by nine times.
+
 ## The live incident this predicts
 
 30.08. 00:12:43, one Claude Code session, prefix 7ff6bcd1f1de:

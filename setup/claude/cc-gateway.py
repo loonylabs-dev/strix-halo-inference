@@ -449,6 +449,32 @@ SAVE_QUEUE_MAX = int(env("SAVE_QUEUE_MAX", "SICHERN_WARTEN_MAX", 4))
 SAVE_RETRIES = int(env("SAVE_RETRIES", "SICHERN_VERSUCHE", 1))
 _save_pending = set()
 
+def prewarm_numbers(proc_out):
+    """The token count, size and write time out of prewarm's own last line.
+
+        saved: NAME.bin — 11005 tokens, 878 MB, 237 ms
+
+    Parsed rather than passed back structurally because prewarm is a CLI whose
+    contract with this process is its output, and a second channel would be one
+    more thing to keep in step. The line is written by tools/prewarm.py and
+    pinned by a test on both sides.
+
+    Everything is optional: a missing number becomes None, never a guess. A
+    save whose numbers cannot be read is still a save.
+    """
+    out = {}
+    try:
+        text = (proc_out or b"").decode("utf-8", "replace")
+        m = re.search(r"saved:\s+\S+\s+—\s+(\d+) tokens,\s+(\d+) MB,\s+(\d+) ms",
+                      text)
+        if m:
+            out = {"tokens": int(m.group(1)), "mb": int(m.group(2)),
+                   "write_ms": int(m.group(3))}
+    except Exception:
+        pass
+    return out
+
+
 def slot_was_stolen(proc_out):
     """Did prewarm refuse because something took the slot mid-save?
 
@@ -621,9 +647,25 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                             % id_)
                     log("SAVED       prefix %s automatically, %.1f s, disk now %.1f GB"
                         % (id_, time.time() - t0, disk_used_gb()))
+                    # WHAT A SAVE ACTUALLY DID, in numbers rather than in a
+                    # paragraph of console text. Asked 30.08.2026, reading a
+                    # `save` row that showed 51.8 seconds and nothing else:
+                    # "that cannot be the SSD". It is not — those seconds are a
+                    # PREFILL. Saving a prefix means having its KV state, and
+                    # having it means running the tokens through the model; the
+                    # write itself was 237 ms of the 51.8 s. A row that shows
+                    # only the total reads as a slow disk.
+                    got = prewarm_numbers(proc_out)
                     TRACE.record("save",
                                  summary={"prefix": id_,
                                           "saved_s": round(time.time() - t0, 1),
+                                          # The same names the request rows
+                                          # use, so one column means one thing
+                                          # across kinds.
+                                          "reused": None,
+                                          "computed": got.get("tokens"),
+                                          "write_ms": got.get("write_ms"),
+                                          "mb": got.get("mb"),
                                           "disk_gb": round(disk_used_gb(), 1)},
                                  # NOT `output`: that name means written
                                  # tokens everywhere else since 29.08., and a

@@ -153,7 +153,7 @@ function rates(r) {
   if (r.read_tps != null || r.write_tps != null)
     return `${f(r.read_tps)}·${f(r.write_tps)}`;
   if (r.write_tps_derived != null) return `–·~${f(r.write_tps_derived)}`;
-  return "";
+  return saveRate(r);
 }
 
 // The reading that separates a lost state from a rewritten history. Both look
@@ -190,8 +190,34 @@ function client(r) {
 // prewarm's console output under `output`, which is how a paragraph of text
 // ended up in a number column on screen. Everything else the row does not
 // understand stays in the detail view, where it is labelled.
+// `restore` events carry `tokens`; `save` events carry `computed`, under the
+// same name a request uses, because it is the same thing: tokens run through
+// the model. A save row that showed only its duration read as a slow disk —
+// asked 30.08.2026, "that cannot be the SSD". It is not: the seconds are a
+// prefill and the write was 237 ms of them.
 function tokensOf(r) {
-  return typeof r.tokens === "number" ? r.tokens : "";
+  if (typeof r.tokens === "number") return r.tokens;
+  if (typeof r.computed === "number") return r.computed;
+  return "";
+}
+
+// For a save: how fast the prefix was read. Same units as a request's read
+// rate, and marked derived like the others, since it comes from this
+// gateway's clock around a subprocess.
+// The seconds column on a save row is almost all prefill. Saying so where the
+// number is stops it reading as a slow disk.
+function saveHint(r) {
+  if (r.kind !== "save" || r.write_ms == null) return "";
+  return `davon ${r.write_ms} ms Schreiben — der Rest ist Prefill, `
+       + `also das Rechnen des KV-Zustands`;
+}
+
+function saveRate(r) {
+  if (r.kind !== "save" || !r.computed || !r.saved_s) return "";
+  const write = (r.write_ms || 0) / 1000;
+  const compute = r.saved_s - write;
+  if (compute <= 0.5) return "";
+  return `~${Math.round(r.computed / compute)}·–`;
 }
 
 function row(r, i) {
@@ -210,7 +236,7 @@ function row(r, i) {
     <td class=dim>${mode}</td>
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
     <td>${cold}</td>
-    <td class=num>${r.took_s ?? r.saved_s ?? ""}</td>
+    <td class=num title="${saveHint(r)}">${r.took_s ?? r.saved_s ?? ""}</td>
     <td class=num>${req ? (inTok(r) ?? "") : tokensOf(r)}</td>
     <td class=num>${req ? share(r) : ""}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>

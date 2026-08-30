@@ -11,7 +11,7 @@ no script — partly because this machine's whole point is running without one,
 and partly because a debugging tool that breaks when the network does is not a
 debugging tool.
 """
-import json, os, re, shutil, tempfile, unittest
+import json, os, re, shutil, subprocess, tempfile, unittest
 
 import common
 
@@ -292,8 +292,97 @@ class TestADerivedRateIsMarkedAsOne(unittest.TestCase):
         self.assertIn('return `–·~${f(r.write_tps_derived)}`;', self.html)
 
     def test_nothing_at_all_stays_empty(self):
-        """An empty column is the honest answer when neither exists."""
-        self.assertRegex(self.html, r"write_tps_derived != null\) return[\s\S]{0,60}return \"\";")
+        """An empty column is the honest answer when neither exists. A save row
+        falls through to saveRate, which returns "" unless it has both a token
+        count and a duration — so the guarantee is there, one function later."""
+        self.assertIn("return saveRate(r);", self.html)
+        self.assertRegex(self.html,
+                         r"function saveRate\(r\) \{[\s\S]{0,200}return \"\";")
 
     def test_the_column_title_says_which_is_which(self):
         self.assertIn("mit ~ vom Gateway", self.html)
+
+    def test_a_save_row_says_where_its_seconds_went(self):
+        """51.8 in the seconds column and nothing else reads as a slow disk.
+        Asked 30.08.2026 in exactly those words; the write was 237 ms of it and
+        the rest is a prefill."""
+        self.assertIn("function saveHint(r)", self.html)
+        self.assertIn("der Rest ist Prefill", self.html)
+
+    def test_a_save_shows_the_tokens_it_computed(self):
+        self.assertIn('if (typeof r.computed === "number") return r.computed;',
+                      self.html)
+
+
+class TestTheseFunctionsActuallyRun(unittest.TestCase):
+    """Every other test in this file greps the HTML for a string. That proves
+    the source contains something, not that it computes anything — and on
+    30.08.2026 a table cell was wrong for an hour while a test asserting its
+    presence stayed green.
+
+    So the script is extracted and its pure functions are CALLED. Node is used
+    because the code is JavaScript; nothing is installed and no package manager
+    is involved, which is the rule this repo keeps. Where node is absent the
+    test skips and says why — a skip that names its reason is honest, a grep
+    standing in for an execution is not.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = shutil.which("node")
+
+    def run_js(self, calls):
+        if not self.node:
+            self.skipTest("node is not on PATH — these functions are not "
+                          "exercised here, only their presence elsewhere")
+        html = PAGE.read_text(encoding="utf-8")
+        js = html[html.index("<script>") + 8:html.rindex("</script>")]
+        stub = """
+const stub = new Proxy({}, {get: (t,k) => (k === 'style' || k === 'classList')
+  ? new Proxy({}, {get: () => () => {}, set: () => true})
+  : (k === 'value' || k === 'innerHTML' || k === 'textContent') ? "" : () => stub,
+  set: () => true});
+const document = {querySelector: () => stub, addEventListener: () => {},
+                  documentElement: {style: {setProperty: () => {}}},
+                  createElementNS: () => stub, title: ""};
+const window = {scrollY: 0}; const addEventListener = () => {};
+const ResizeObserver = class { observe() {} };
+const fetch = () => Promise.resolve({json: () => ({days: [], records: [], offset: 0})});
+const setInterval = () => {};
+"""
+        src = stub + js.replace("days(); poll(true); setInterval(poll, 2000);", "") + calls
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(src)
+            path = f.name
+        try:
+            r = subprocess.run([self.node, path], capture_output=True, text=True,
+                               timeout=60)
+            self.assertEqual(r.returncode, 0,
+                             "the page's script did not run: %s" % r.stderr[-600:])
+            return r.stdout.strip().splitlines()
+        finally:
+            os.unlink(path)
+
+    def test_a_save_reports_the_tokens_it_computed(self):
+        out = self.run_js("console.log(tokensOf({kind:'save', computed:11005}));")
+        self.assertEqual(out[-1], "11005")
+
+    def test_a_restore_still_reports_its_own_field(self):
+        out = self.run_js("console.log(tokensOf({kind:'restore', tokens:8077}));")
+        self.assertEqual(out[-1], "8077")
+
+    def test_the_save_rate_is_the_prefill_rate(self):
+        """11,005 tokens in 51.8 s minus a 237 ms write is ~213 a second, which
+        is what prewarm's own line says it did."""
+        out = self.run_js("console.log(saveRate({kind:'save', write_ms:237,"
+                          " computed:11005, saved_s:51.8}));")
+        self.assertEqual(out[-1], "~213·–")
+
+    def test_a_request_without_rates_stays_empty(self):
+        out = self.run_js("console.log(JSON.stringify(rates({kind:'request'})));")
+        self.assertEqual(out[-1], '""')
+
+    def test_the_hint_explains_the_seconds(self):
+        out = self.run_js("console.log(saveHint({kind:'save', write_ms:237}));")
+        self.assertIn("Prefill", out[-1])
+        self.assertIn("237", out[-1])

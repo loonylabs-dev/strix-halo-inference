@@ -1847,10 +1847,21 @@ class TestTheRestoreOnlyEarnsItsKeepOnAColdServer(unittest.IsolatedAsyncioTestCa
                 finally:
                     await server.close()
 
-    async def test_a_warm_server_is_left_to_its_own_cache(self):
+    async def test_a_prefix_this_server_already_holds_is_left_alone(self):
+        """A WARM SERVER IS NOT ENOUGH, and the first version of this test said
+        it was. Live DeepSeek-harness traffic on 30.08. at 16:20:57: the server
+        had run 41 tasks of benchmark, the conversation's prefix had not been
+        near it, the restore was skipped and cost 74 s. The ledger entry is
+        what makes the skip legitimate."""
+        GW.SEEN["id1"] = 9000
+        self.addCleanup(GW.SEEN.clear)
         ok = await self._run(True, 12365)
         self.assertFalse(ok)
         self.assertFalse([p for p in self.seen if "action=restore" in p])
+
+    async def test_a_warm_server_alone_does_not_block_the_restore(self):
+        ok = await self._run(True, 12365)          # no ledger entry
+        self.assertTrue(ok, "41 tasks of somebody else's traffic prove nothing")
 
     async def test_a_cold_one_still_gets_the_file(self):
         ok = await self._run(True, 1)
@@ -1958,7 +1969,7 @@ class TestTheBannerAnswersWhatIsOn(unittest.TestCase):
         absence meaning either `off` or `old build`."""
         start = self.src.index('log("  restore a saved prefix: %s"')
         block = self.src[start:start + 700]
-        self.assertIn("only when llama-server is cold", block)
+        self.assertIn("only when THIS prefix has not run", block)
         self.assertIn("whenever this process has not served it yet", block)
         self.assertNotIn("if RESTORE_ONLY_WHEN_SERVER_COLD:\n        log",
                          self.src[start - 200:start + 200],
@@ -2194,3 +2205,92 @@ class TestPrewarmAndTheGatewayHoistTheSameWay(unittest.TestCase):
     def test_prewarm_can_be_told_either_way(self):
         pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
         self.assertIn('s1.add_argument("--hoist"', pw)
+
+
+class TestWhetherThisPrefixRanOnThisServer(unittest.TestCase):
+    """"Is the server cold" and "does the server's cache hold THIS prefix" are
+    different questions, and the difference was measured on 30.08.2026 at
+    16:20:57 in live DeepSeek-harness traffic: the server had run 41 tasks, so
+    it was not cold, but all 41 were a benchmark and the conversation's own
+    prefix had not been near it since the restart. The restore was skipped and
+    8,278 tokens were prefilled where an 8,077-token file lay ready. 74 s.
+
+    The counter only rises within one llama-server life, so `now >= seen`
+    means "the same life that already had this prefix" — and nothing else has
+    to be remembered, neither a boot id nor a timestamp, both of which the
+    server withholds.
+    """
+
+    def setUp(self):
+        GW.MAX_TASK_ID = None
+        GW.SEEN.clear()
+        self.addCleanup(GW.SEEN.clear)
+        self.addCleanup(setattr, GW, "MAX_TASK_ID", None)
+
+    def slots(self, id_task):
+        return [{"id": 0, "is_processing": False, "id_task": id_task}]
+
+    def test_a_prefix_this_server_never_saw_is_cold(self):
+        cold, _, why = GW.prefix_is_cold_on_this_server("p", self.slots(41))
+        self.assertTrue(cold, "41 tasks of somebody else's traffic prove nothing")
+        self.assertIn("has not been served", why)
+
+    def test_a_prefix_served_in_this_life_is_not(self):
+        GW.SEEN["p"] = 8842
+        cold, _, why = GW.prefix_is_cold_on_this_server("p", self.slots(9100))
+        self.assertFalse(cold)
+        self.assertIn("its own cache is the better source", why)
+
+    def test_a_counter_below_the_mark_means_the_server_restarted(self):
+        """The 29.08. incident inverted: the gateway restarted beside a warm
+        server and every prefix looked new. Here the SERVER restarted and the
+        ledger notices, because the counter went backwards."""
+        GW.SEEN["p"] = 8842
+        cold, _, why = GW.prefix_is_cold_on_this_server("p", self.slots(41))
+        self.assertTrue(cold)
+        self.assertIn("restarted", why)
+
+    def test_an_unreadable_counter_decides_as_before(self):
+        cold, seen, why = GW.prefix_is_cold_on_this_server("p", [{"id": 0}])
+        self.assertTrue(cold)
+        self.assertIsNone(seen)
+        self.assertIn("as before", why)
+
+    def test_the_ledger_survives_a_gateway_restart(self):
+        """The 29.08. incident needs it to: the gateway had restarted at 23:38
+        beside a server up since 09:48, so anything held only in memory was
+        gone exactly when it was needed."""
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "seen.json")
+            GW.SEEN.update({"a": 12, "b": 34})
+            GW.save_seen(path)
+            self.assertEqual(GW.load_seen(path), {"a": 12, "b": 34})
+
+    def test_a_missing_or_broken_ledger_is_not_an_error(self):
+        """Nothing known means restore, which is what ran before this existed."""
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(GW.load_seen(os.path.join(d, "nope.json")), {})
+            bad = os.path.join(d, "bad.json")
+            open(bad, "w").write("{not json")
+            self.assertEqual(GW.load_seen(bad), {})
+
+    def test_non_integer_entries_are_dropped(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "seen.json")
+            json.dump({"a": 12, "b": "later", "c": None}, open(path, "w"))
+            self.assertEqual(GW.load_seen(path), {"a": 12})
+
+    def test_the_mark_is_set_by_the_measurement_not_the_intention(self):
+        """Marking a prefix "the server has it" because we chose not to restore
+        would make one wrong skip permanent. Zero reuse says otherwise, and
+        forgetting the entry makes the next request restore."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("if reuse[0] > 0:\n                    SEEN[ident] = MAX_TASK_ID",
+                      src)
+        self.assertIn("SEEN.pop(ident, None)", src)
+
+    def test_the_ledger_is_read_at_startup(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn('globals()["SEEN"] = load_seen()', src)

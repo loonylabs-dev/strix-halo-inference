@@ -328,6 +328,24 @@ RESTORE_ONLY_WHEN_SERVER_COLD = env("RESTORE_ONLY_WHEN_SERVER_COLD",
 FRESH_TASKS = int(env("FRESH_TASKS", "FRISCHE_TASKS", 4))
 # The highest id_task seen from this llama-server. Falling means it restarted.
 MAX_TASK_ID = None
+# Per prefix, the task counter at which it was last served WELL. Persisted,
+# because the gateway restarts independently of llama-server and the whole
+# point is to survive exactly that.
+#
+# WHY PER PREFIX RATHER THAN PER SERVER. "Is the server cold" and "does the
+# server's cache hold THIS prefix" are not the same question, and the
+# difference cost 74 s on 30.08. at 16:20:57: the server had run 41 tasks — so
+# not cold — but all 41 were a benchmark, and the conversation's own prefix had
+# not been near it since the restart. The restore was skipped and 8,278 tokens
+# were prefilled where a 8,077-token file was ready.
+#
+# The counter only rises within one llama-server life, so `now >= seen` means
+# "the same life that already had this prefix" and nothing else has to be
+# remembered — not a boot id, not a timestamp, both of which the server
+# withholds.
+SEEN_PATH = env("SEEN_PATH", "GESEHEN_PFAD",
+                os.path.expanduser("~/.cache/cc-gateway-seen.json"))
+SEEN = {}
 PREWARM   = env("PREWARM", "VORWAERMEN",
                 os.path.expanduser("~/.claude/bin/prewarm.py"))
 _save_lock = None          # asyncio.Lock, can only be created inside the loop
@@ -663,6 +681,54 @@ def render_id_of(body, dialect):
         return None
 
 
+def load_seen(path=None):
+    """The per-prefix task counters, or an empty ledger. Never raises: a
+    missing or corrupt file means "nothing is known", which is the safe
+    reading — it makes the gateway restore, i.e. behave as it did before."""
+    try:
+        with open(path or SEEN_PATH, encoding="utf-8") as f:
+            d = json.load(f)
+        return {k: v for k, v in d.items() if isinstance(v, int)}
+    except Exception:
+        return {}
+
+
+def save_seen(path=None):
+    """Best effort. A ledger that cannot be written costs a restore, never an
+    answer, so nothing here may reach the request path as an exception."""
+    try:
+        p = path or SEEN_PATH
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(SEEN, f)
+        os.replace(tmp, p)
+        os.chmod(p, 0o600)
+    except Exception as e:
+        log("NOTE        could not write %s: %r" % (path or SEEN_PATH, e))
+
+
+def prefix_is_cold_on_this_server(id_, slots):
+    """Would a restore add anything? (cold, id_task, why)
+
+    Cold means: this prefix has not been served WELL in the llama-server life
+    that is running now, so llama.cpp's RAM cache cannot be holding it and the
+    file on disk is the only source.
+    """
+    now, restarted, why = server_life(slots)
+    if now is None:
+        # Nothing to judge by. Restoring is what happened before this existed,
+        # so an unknown must not silently become a new policy.
+        return True, None, why + " — deciding as before"
+    seen = SEEN.get(id_)
+    if seen is None:
+        return True, now, "this prefix has not been served since the server started"
+    if now < seen:
+        return True, now, ("llama-server restarted (id_task %d after %d)"
+                           % (now, seen))
+    return False, now, ("this prefix was served at task %d and the server is at "
+                        "%d — its own cache is the better source" % (seen, now))
+
+
 def server_life(slots):
     """(id_task, restarted, why) from /slots, updating the high-water mark.
 
@@ -801,7 +867,7 @@ async def restore_from_disk(id_, body=None, dialect=DIA.ANTHROPIC):
             # RESTORE_ONLY_WHEN_SERVER_COLD. Decided here because /slots has
             # just been fetched and carries the counter.
             if RESTORE_ONLY_WHEN_SERVER_COLD:
-                fresh, seen, why = server_is_cold(slots)
+                fresh, seen, why = prefix_is_cold_on_this_server(id_, slots)
                 if not fresh:
                     log("NOTE        not restoring %s: %s — llama.cpp's own "
                         "cache is the better source and a restore would hide "
@@ -1681,6 +1747,19 @@ async def handler(req):
                                      "in": (reuse[0] + reuse[1]) if reuse else None}
                 if len(LAST_SHAPE) > LAST_SHAPE_MAX:
                     LAST_SHAPE.pop(next(iter(LAST_SHAPE)))
+            # THE LEDGER, UPDATED BY THE MEASUREMENT RATHER THAN BY THE
+            # INTENTION. Marking a prefix "the server has it" because we chose
+            # not to restore would make one wrong skip permanent. Reuse of zero
+            # says the opposite happened, and forgetting the entry makes the
+            # next request restore — so the rule corrects itself in one turn.
+            if ident and ident in SAVED and MAX_TASK_ID is not None and reuse:
+                before = SEEN.get(ident)
+                if reuse[0] > 0:
+                    SEEN[ident] = MAX_TASK_ID
+                else:
+                    SEEN.pop(ident, None)
+                if SEEN.get(ident) != before:
+                    save_seen()
             if ident and reuse:
                 e = PREFIXES.setdefault(ident, {})
                 e["reused_sum"] = e.get("reused_sum", 0) + reuse[0]
@@ -2139,6 +2218,7 @@ def main():
             "service once the model is up.")
     TOKENS = load_tokens()
     SAVED = refresh_saved(force=True)
+    globals()["SEEN"] = load_seen()
     log("cc-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))
     log("  saved prefixes on disk: %d (%.1f GB)" % (len(SAVED), disk_used_gb()))
     # A switch that does not announce itself cannot be verified, and the first
@@ -2152,8 +2232,8 @@ def main():
            "hoist-changes-the-prefix-behind-the-id"
            if HOIST_SYSTEM else "left where they arrive"))
     log("  restore a saved prefix: %s"
-        % ("only when llama-server is cold (after fewer than %d tasks, or "
-           "when its task counter fell)" % FRESH_TASKS
+        % ("only when THIS prefix has not run in the current llama-server life "
+           "(%d prefixes remembered in %s)" % (len(SEEN), SEEN_PATH)
            if RESTORE_ONLY_WHEN_SERVER_COLD else
            "whenever this process has not served it yet — NOTE: that can hide "
            "llama.cpp's own cache, see defect restore-blinds-the-ram-cache"))

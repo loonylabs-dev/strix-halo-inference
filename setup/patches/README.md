@@ -280,3 +280,52 @@ The open sequence, in order:
    earning its keep (it costs 6 % prefill).
 
 Until all three are measured, `-np 1` and the patch both stay.
+
+---
+
+## draft-tail-past-stop.patch
+
+**NOT APPLIED, AND NOT MEASURED.** It is here because it compiles, because it
+is small, and because the next person to look at
+`the-previous-answer-is-sometimes-not-reused` should not have to derive it
+again. `build-llama.sh` names `hip-integrated-off.patch` explicitly and does
+not scan this directory, so nothing picks this up by accident. Do not activate
+it on the strength of this file.
+
+**What it does:** removes the accepted draft tokens that sit BEHIND the stop
+token. When speculation is on, all accepted tokens are inserted into the slot
+in one block, and only then are they walked one by one to find where the turn
+ends. The walk returns early at the stop and nothing removes what came after
+it, so the slot keeps 1-2 tokens that no re-rendered history will ever
+contain.
+
+**Why that is expensive rather than cosmetic:** the slot then stops being a
+prefix of the next prompt (f_keep 0.993 instead of 1.000). On a hybrid model
+the memory cannot be trimmed to the common part, so llama.cpp falls back to a
+context checkpoint — and checkpoints are made during prompt processing only,
+never for an answer. The newest usable one sits four tokens before the end of
+the PREVIOUS prompt, so the whole answer is re-prefilled. Measured 30.08.2026:
+two tokens, one entire answer, every time.
+
+**Why it might be safe:** the rollback is bounded exactly the way partial
+draft rejection is bounded twenty lines above it — by the recurrent snapshot
+ring, `llama_n_rs_seq()`. With `--spec-draft-n-max 12` that ring is 12 and the
+rollback is 1-2, so it fits. If it does not fit the patch leaves the slot
+alone rather than desynchronise the token list from the memory.
+
+**What is actually known about it, and it is not much:**
+
+    compiles against 6b39dd5d5 and applies cleanly to master   yes
+    the rollback path is ever entered                          UNKNOWN
+    the tail is gone afterwards                                UNKNOWN
+    nothing else broke                                         UNKNOWN
+
+The build was made and the binary kept as
+`build-rocm-patched-b10631/bin/libllama-server-impl.so.patched`; starting a
+production service from a self-built binary was where this stopped. To finish
+it: put that library in place, restart, and run
+
+    python3 bench/suites/slot-tail.py --repeat 6
+
+TAIL 0 in every round with speculation ON is the result that would make this
+worth reporting upstream. Anything less and it is a wrong guess that compiled.

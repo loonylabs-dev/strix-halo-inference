@@ -1,0 +1,43 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index a9edbd7be..68093c09c 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3888,6 +3888,38 @@ private:
+                 slot.stats.n_gen += 1;
+ 
+                 if (!process_token(result, slot)) {
++                    // The accepted draft tokens BEHIND the stop are not part of
++                    // the answer. They were inserted above, before this loop
++                    // could know where the turn ends, and nothing removes them
++                    // again: the slot keeps 1-2 tokens the re-rendered history
++                    // will never contain, so the next turn's prompt is no
++                    // longer a prefix of it. On a model whose memory cannot be
++                    // trimmed that costs the whole previous answer, because the
++                    // fallback is a context checkpoint and checkpoints exist
++                    // only for prompts, never for answers.
++                    //
++                    // The rollback is bounded the same way partial draft
++                    // rejection is bounded twenty lines above: by the recurrent
++                    // snapshot ring. If it does not fit, leave the slot alone
++                    // rather than desynchronise the token list from the memory.
++                    const size_t n_inserted = ids.size() - 1;
++                    if (i + 1 < n_inserted) {
++                        const size_t n_extra = n_inserted - (i + 1);
++
++                        const bool can_rollback =
++                            ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
++                            (ctx_tgt_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS &&
++                             n_extra <= llama_n_rs_seq(ctx_tgt));
++
++                        if (can_rollback) {
++                            slot.prompt.tokens.keep_first(slot.prompt.n_tokens() - n_extra);
++                            slot.mem.seq_rm(slot.id, slot.prompt.tokens.pos_next(), -1);
++                            SLT_INF(slot, "dropped %zu accepted draft token(s) past the stop\n", n_extra);
++                        } else {
++                            SLT_WRN(slot, "%zu accepted draft token(s) past the stop cannot be rolled back\n", n_extra);
++                        }
++                    }
++
+                     slot.print_timings();
+                     send_final_response(slot);
+                     slot.release();

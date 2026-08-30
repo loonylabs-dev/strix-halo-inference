@@ -612,6 +612,35 @@ def render_id_of(body, dialect):
         return None
 
 
+def server_life(slots):
+    """(id_task, restarted, why) from /slots, updating the high-water mark.
+
+    Split out of server_is_cold because two callers want opposite defaults
+    from the same reading. Deciding whether to RESTORE, an unreadable counter
+    means "carry on as before"; deciding whether to FORGET the prefix ledger,
+    it means "change nothing". A single boolean cannot serve both without one
+    of them being wrong in the dangerous direction.
+    """
+    global MAX_TASK_ID
+    ids = [x.get("id_task") for x in (slots or [])
+           if isinstance(x.get("id_task"), int)]
+    if not ids:
+        return None, False, "no id_task in /slots"
+    now = max(ids)
+    was, MAX_TASK_ID = MAX_TASK_ID, (now if MAX_TASK_ID is None
+                                     else max(MAX_TASK_ID, now))
+    if was is not None and now < was:
+        MAX_TASK_ID = now
+        return now, True, "llama-server restarted (id_task %d after %d)" % (now, was)
+    # -1 is what llama.cpp puts in a slot that has never run a task, so a
+    # freshly started server reports it before it has served anything. The two
+    # cases are kept apart because a log that says which one happened is worth
+    # the extra return value.
+    if now <= FRESH_TASKS:
+        return now, True, "llama-server has run %d tasks — still fresh" % now
+    return now, False, "llama-server has run %d tasks since it started" % now
+
+
 def server_is_cold(slots):
     """Has llama-server (re)started since we last looked? (cold, id_task, why)
 
@@ -632,22 +661,12 @@ def server_is_cold(slots):
     506 s. Here it resolves correctly, because a large id_task says the server
     has been working whatever this process remembers.
     """
-    global MAX_TASK_ID
-    ids = [x.get("id_task") for x in (slots or [])
-           if isinstance(x.get("id_task"), int)]
-    if not ids:
+    now, restarted, why = server_life(slots)
+    if now is None:
         # Nothing to judge by. Restoring is what happens today, so an unknown
         # must not silently become a new policy.
-        return True, None, "no id_task in /slots — deciding as before"
-    now = max(ids)
-    was, MAX_TASK_ID = MAX_TASK_ID, (now if MAX_TASK_ID is None
-                                     else max(MAX_TASK_ID, now))
-    if was is not None and now < was:
-        MAX_TASK_ID = now
-        return True, now, "llama-server restarted (id_task %d after %d)" % (now, was)
-    if now <= FRESH_TASKS:
-        return True, now, "llama-server has run %d tasks — still fresh" % now
-    return False, now, "llama-server has run %d tasks since it started" % now
+        return True, None, why + " — deciding as before"
+    return restarted, now, why
 
 
 def rendering_changed(prev_post, post_id):
@@ -1483,6 +1502,32 @@ async def handler(req):
         # Exception, and CancelledError is not one — an abort during the
         # restore (up to 300 s) used to make the gate slot seep away, and
         # MAX_INFLIGHT dropped by one for the rest of the service's life.
+        # A SERVER THAT RESTARTED UNDER US IS COLD, WHATEVER WE REMEMBER.
+        # `cold` means "this process has not served this prefix", and the
+        # slots belong to llama-server, which restarts separately. watch_server
+        # notices that — every 15 seconds. Measured 30.08.2026: a restart took
+        # 5 s and the next request arrived 2 s later, so it fell entirely
+        # between two polls; the request was called warm, the restore path was
+        # never entered, and 8,711 tokens were prefilled with the file ready on
+        # disk. The second detector ("all slots empty") missed it too, because
+        # by the time it looked the slot held that very request.
+        #
+        # One localhost GET, and only when there is a file this would change
+        # the fate of.
+        if not cold and ident and ident in SAVED:
+            try:
+                async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
+                    async with s_.get(LLAMA + "/slots") as r_:
+                        _, restarted, why = server_life(await r_.json())
+                if restarted:
+                    log("NOTE        %s although this prefix was served before "
+                        "— bookkeeping reset, %s loads from disk" % (why, ident))
+                    PREFIXES.pop(ident, None)
+                    cold = True
+            except Exception as e:
+                # Never fatal: the worst case is the behaviour that ran before
+                # this check existed.
+                log("NOTE        could not read the server's task counter: %r" % (e,))
         if cold and ident in SAVED:
             # The window this request's verdict will be judged in, captured
             # BEFORE the restore. The write side got this on 28.08. and the

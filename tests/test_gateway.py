@@ -2042,3 +2042,74 @@ class TestHoistingCostsWhatItWasBuiltToSave(unittest.TestCase):
             before = json.dumps(self.body(3, extra=True), sort_keys=True)
             body, _ = GW.correct(self.body(3, extra=True))
         self.assertEqual(json.dumps(body, sort_keys=True), before)
+
+
+class TestAServerThatRestartedUnderUsIsCold(unittest.TestCase):
+    """`cold` means "this process has not served this prefix". The slots
+    belong to llama-server, which restarts separately, and watch_server
+    notices that every 15 seconds.
+
+    Measured 30.08.2026 with bench/suites/restore-guard-cold.py: the restart
+    took 5 s and the next request arrived 2 s later, so it fell ENTIRELY
+    between two polls. The request was logged `warm`, the restore path was
+    never entered, and 8,711 tokens were prefilled with the file ready on
+    disk. The second detector ("all slots empty") missed it too, because by
+    the time it looked the slot held that very request.
+    """
+
+    def setUp(self):
+        GW.MAX_TASK_ID = None
+        self.addCleanup(setattr, GW, "MAX_TASK_ID", None)
+
+    def slots(self, id_task):
+        return [{"id": 0, "is_processing": False, "id_task": id_task}]
+
+    def test_a_counter_that_fell_says_restarted(self):
+        GW.server_life(self.slots(14645))
+        now, restarted, why = GW.server_life(self.slots(2))
+        self.assertEqual((now, restarted), (2, True))
+        self.assertIn("restarted", why)
+
+    def test_minus_one_is_what_a_fresh_slot_reports(self):
+        """llama.cpp puts -1 in a slot that has never run a task, which is
+        what /slots answers in the seconds after a restart — and what the
+        failing run of 30.08. actually showed."""
+        GW.server_life(self.slots(14645))
+        self.assertEqual(GW.server_life(self.slots(-1))[:2], (-1, True))
+
+    def test_it_says_cold_even_with_no_earlier_reading(self):
+        """The gateway had never read the counter when this happened, so a
+        check that only works after a baseline would not have helped."""
+        self.assertEqual(GW.server_life(self.slots(-1))[:2], (-1, True))
+
+    def test_a_working_server_is_not_restarted(self):
+        self.assertEqual(GW.server_life(self.slots(14645))[:2], (14645, False))
+
+    def test_the_second_reading_does_not_report_it_again(self):
+        """The request path reads the counter and restore_from_disk reads it
+        again a moment later. Reporting the restart twice would reset the
+        ledger a second time for no reason."""
+        GW.server_life(self.slots(14645))
+        GW.server_life(self.slots(900))
+        self.assertEqual(GW.server_life(self.slots(900))[:2], (900, False))
+
+    def test_an_unreadable_counter_changes_nothing(self):
+        """Two callers want opposite defaults from the same reading: for the
+        RESTORE decision unknown means "carry on as before", for FORGETTING
+        the ledger it means "change nothing"."""
+        self.assertEqual(GW.server_life([{"id": 0}])[:2], (None, False))
+        self.assertTrue(GW.server_is_cold([{"id": 0}])[0])
+
+    def test_the_check_runs_only_where_it_can_change_something(self):
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        self.assertIn("if not cold and ident and ident in SAVED:", src)
+
+    def test_it_cannot_break_the_request(self):
+        """A gateway that dies over its own bookkeeping is worse than one that
+        cannot label a request."""
+        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+        start = src.index("if not cold and ident and ident in SAVED:")
+        block = src[start:src.index("if cold and ident in SAVED:", start)]
+        self.assertIn("except Exception", block)

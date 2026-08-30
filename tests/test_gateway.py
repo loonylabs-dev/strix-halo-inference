@@ -2294,3 +2294,42 @@ class TestWhetherThisPrefixRanOnThisServer(unittest.TestCase):
         src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('globals()["SEEN"] = load_seen()', src)
+
+
+class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
+    """save_prefix_first runs BEFORE the answer, so its cost is the operator's
+    wait, not a background task's. Measured 30.08.2026: 80.9 s for a
+    16,252-token prefix, on a turn that then took another 454 s.
+
+    Claude Code's tool list changed three times in one session, and each new
+    prefix was saved again — three near-identical 16k files, 18.4 GB on disk,
+    each made worthless by the next change. The gateway already WARNED that
+    the heads collide, a few lines before it paid for the file anyway.
+    """
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_a_rival_already_on_disk_stops_the_save(self):
+        self.assertIn("if saved_rivals:", self.src)
+        self.assertIn('"save-skipped"', self.src)
+
+    def test_only_rivals_ON_DISK_count(self):
+        """A collision with a prefix merely SEEN is the normal state of two
+        prompt types in one session; refusing there would stop the store from
+        ever filling."""
+        start = self.src.index("saved_rivals = [k for k in SAVED")
+        self.assertIn("for k in SAVED", self.src[start:start + 120])
+
+    def test_it_survives_a_body_that_did_not_parse(self):
+        """`head` is assigned beside `ident` inside the try. Without an
+        initialiser a malformed body would reach this line with the name
+        unbound — a NameError in the request path, for a bookkeeping decision."""
+        self.assertIn("head = None                # set with ident", self.src)
+        start = self.src.index("saved_rivals = [k for k in SAVED")
+        self.assertIn("if (ident and head) else []",
+                      self.src[start:start + 300])
+
+    def test_the_reason_names_what_it_measured(self):
+        self.assertIn("80.9 s", self.src)

@@ -2333,3 +2333,53 @@ class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
 
     def test_the_reason_names_what_it_measured(self):
         self.assertIn("80.9 s", self.src)
+
+
+class TestTheTwoPhasesAreSeparableWithoutTheServersHelp(unittest.TestCase):
+    """The Anthropic route carries no `timings`, so `read_tps` and `write_tps`
+    are empty for Claude Code and prefill and generation hide inside one
+    `took_s`. Asked on 30.08.2026 where a "12 tokens/s" figure came from, the
+    honest answer was "llama-server's journal, not the trace".
+
+    The gateway sees every chunk go past, so it can time the changeover itself.
+    """
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_it_times_the_first_DELTA_not_the_first_chunk(self):
+        """A stream opens with headers and a message_start, and a queued one
+        gets keep-alive pings before that. Timing any of those would put the
+        prefill in the wrong column."""
+        self.assertIn('b"content_block_delta" in ch or b\'"delta"\' in ch',
+                      self.src)
+
+    def test_it_stops_looking_once_it_has_one(self):
+        self.assertIn('if sniff.get("first_token_at") is None and (', self.src)
+
+    def test_the_derived_rate_says_it_is_derived(self):
+        """It includes the network hop and this process's scheduling, and it
+        must never be mistaken for llama.cpp's own accounting — which is what
+        read_tps/write_tps carry when the route provides them."""
+        self.assertIn('"write_tps_derived"', self.src)
+        self.assertIn('"read_tps": rates[0] if rates else None', self.src)
+        self.assertIn('"write_tps": rates[1] if rates else None', self.src)
+
+    def test_it_refuses_to_divide_by_almost_nothing(self):
+        """A turn that answers in under half a second of generation would
+        produce a rate of several thousand tokens per second and put it in a
+        column next to real ones."""
+        self.assertIn("(took - ttft) > 0.5", self.src)
+
+    def test_took_is_not_measured_a_second_time(self):
+        """Re-measuring here would move `took_s` by however long the trace
+        block takes — a number quietly worse than the one it replaced."""
+        self.assertEqual(self.src.count("took = time.time() - t_start"), 1)
+
+    def test_the_wait_is_named_rather_than_subtracted(self):
+        """ttft is measured from admission, so it carries the queue wait.
+        Subtracting it here would hide a queue; `waited_s` is in the same
+        record for whoever wants the difference."""
+        self.assertIn("carries the queue wait with it", self.src)
+        self.assertIn('"waited_s": round(waited, 2)', self.src)

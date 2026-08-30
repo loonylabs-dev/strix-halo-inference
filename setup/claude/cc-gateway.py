@@ -1611,7 +1611,14 @@ async def handler(req):
     answered = {"ok": False}
     # What a restore CLAIMED, and room for what the server then did with it.
     restored = None
-    sniff = {"head": b"", "tail": b""}
+    # `first_token_at` is the moment the answer starts arriving, and it is the
+    # only way to separate reading from writing on the Anthropic route: that
+    # route carries no `timings`, so read_tps and write_tps stay empty for
+    # Claude Code and the two phases hide inside one `took_s`. Asked on
+    # 30.08.2026 where a 12 t/s figure came from, the honest answer was
+    # "llama-server's journal, not the trace" — which is a gap the gateway can
+    # close without anyone telling it anything.
+    sniff = {"head": b"", "tail": b"", "first_token_at": None}
     was_cold = False
     t_start = time.time()
     try:
@@ -1764,6 +1771,10 @@ async def handler(req):
                 log("NOTE        reuse not read: %r" % (e,))
             # WHAT CHANGED SINCE LAST TIME, for this prefix. Computed here,
             # after the answer, so nothing is added to the request path.
+            # `took` is already measured above; re-measuring it here would
+            # move `took_s` by however long this block runs.
+            ttft = (round(sniff["first_token_at"] - t_start, 2)
+                    if sniff.get("first_token_at") else None)
             prev = LAST_SHAPE.get(ident) if ident else None
             fingers = DIA.message_fingerprints(p, dialect) if p else []
             shape = [h for h, _ in fingers]
@@ -1837,6 +1848,21 @@ async def handler(req):
                          # duration would be neither phase.
                          "read_tps": rates[0] if rates else None,
                          "write_tps": rates[1] if rates else None,
+                         # DERIVED, and named so. `ttft_s` is the gateway's own
+                         # clock from admission to the first delta, so it
+                         # carries the queue wait with it — `waited_s` is
+                         # beside it for subtracting. `write_tps_derived` is
+                         # output over what remained, and it is NOT llama.cpp's
+                         # accounting: it includes the network hop and this
+                         # process's own scheduling. It exists because the
+                         # Anthropic route reports nothing, and an approximate
+                         # number that says it is approximate beats reading the
+                         # server's journal by hand.
+                         "ttft_s": ttft,
+                         "write_tps_derived": (
+                             round(wrote / (took - ttft), 1)
+                             if (wrote and ttft is not None
+                                 and (took - ttft) > 0.5) else None),
                          # The two readings that separate a lost state from a
                          # rewritten history. `msgs_kept` is how many leading
                          # messages came back unchanged; `prev_in` what the
@@ -2063,6 +2089,14 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None):
             async for ch in up.content.iter_any():   # no buffering -> SSE stays intact
                 await resp.write(ch)
                 if sniff is not None:
+                    # THE FIRST GENERATED TOKEN, not the first chunk. A stream
+                    # opens with headers and a message_start, and a queued one
+                    # gets keep-alive pings before that — timing from any of
+                    # those would put the prefill in the wrong column. A delta
+                    # event only exists once tokens are being produced.
+                    if sniff.get("first_token_at") is None and (
+                            b"content_block_delta" in ch or b'"delta"' in ch):
+                        sniff["first_token_at"] = time.time()
                     # A rolling window, not a copy of the answer. The caller
                     # reads it once the response is done; nothing here waits
                     # for it or parses it, so a malformed chunk cannot delay

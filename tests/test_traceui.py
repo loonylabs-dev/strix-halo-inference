@@ -269,3 +269,31 @@ class TestAWholeRequestIsNotATableCell(unittest.TestCase):
         recs, _ = UI.read_since(self.path, 0)
         self.assertEqual(recs[0]["shape"], ["aaaaaaaa"])
         self.assertEqual(recs[0]["msg_chars"], [42])
+
+
+class TestADerivedRateIsMarkedAsOne(unittest.TestCase):
+    """llama.cpp reports rates on the OpenAI route and nothing on the
+    Anthropic one, so the column stood empty for Claude Code and a "12 tokens
+    per second" had to be read out of the server journal by hand — which is
+    exactly what happened on 30.08. and prompted the question "where does that
+    number come from?".
+
+    The gateway now times the first delta, which separates the two phases
+    itself. That value is not llama.cpp's accounting and must never look like
+    it."""
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_the_measured_pair_still_wins(self):
+        self.assertIn("if (r.read_tps != null || r.write_tps != null)", self.html)
+
+    def test_the_derived_one_carries_a_tilde(self):
+        self.assertIn('return `–·~${f(r.write_tps_derived)}`;', self.html)
+
+    def test_nothing_at_all_stays_empty(self):
+        """An empty column is the honest answer when neither exists."""
+        self.assertRegex(self.html, r"write_tps_derived != null\) return[\s\S]{0,60}return \"\";")
+
+    def test_the_column_title_says_which_is_which(self):
+        self.assertIn("mit ~ vom Gateway", self.html)

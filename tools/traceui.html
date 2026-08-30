@@ -141,10 +141,19 @@ function share(r) {
 // Anthropic route carries no timings, so Claude Code rows stay empty here —
 // an empty cell is the honest answer. A rate computed from the total duration
 // would be neither the prefill nor the decode.
+// llama.cpp measures these itself on the OpenAI route and reports nothing on
+// the Anthropic one, so for Claude Code the column stood empty and a rate had
+// to be read out of the server journal by hand. Since 30.08. the gateway times
+// the first delta of the stream, which separates reading from writing without
+// the server saying anything — that value is DERIVED and shown with a leading
+// ~, because it carries the network hop, this process scheduling, and (unless
+// waited_s is subtracted) the queue wait.
 function rates(r) {
-  if (r.read_tps == null && r.write_tps == null) return "";
   const f = v => v == null ? "–" : Math.round(v);
-  return `${f(r.read_tps)}·${f(r.write_tps)}`;
+  if (r.read_tps != null || r.write_tps != null)
+    return `${f(r.read_tps)}·${f(r.write_tps)}`;
+  if (r.write_tps_derived != null) return `–·~${f(r.write_tps_derived)}`;
+  return "";
 }
 
 // The reading that separates a lost state from a rewritten history. Both look
@@ -205,7 +214,7 @@ function row(r, i) {
     <td class=num>${req ? (inTok(r) ?? "") : tokensOf(r)}</td>
     <td class=num>${req ? share(r) : ""}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
-    <td class=num title="gemessen vom Server; die Anthropic-Route liefert keine Zeiten">${rates(r)}</td>
+    <td class=num title="lesen·schreiben. Ohne ~ vom Server gemessen; mit ~ vom Gateway aus der Zeit bis zum ersten Token abgeleitet">${rates(r)}</td>
     <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>
     <td>${bar(r)}</td></tr>` +
     (openAt === r._at ? `<tr><td colspan=15><pre id=detail>lädt …</pre></td></tr>` : "");

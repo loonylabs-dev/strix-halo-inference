@@ -53,7 +53,15 @@ cd "$(dirname "$0")/../.."
 REPO="$PWD"
 
 SRC="${LLAMA_SRC:-$HOME/llama.cpp}"
-PATCH_BRANCH="${PATCH_BRANCH:-gfx1151-patched}"
+# WHY NOT `gfx1151-patched` ANY MORE. That branch still exists and still
+# carries 22 commits over master: the gfx1151 patch, the EOG fix, and twenty
+# more that were the local qwen4exp/Flash-Next implementation. Upstream merged
+# its own on 27.08.2026 (#27742), one day after this stack's previous build,
+# so those twenty are dead weight — and MAX_REPLAY refuses a 22-commit replay,
+# correctly. `master-2patches` is the same two patches on current master and
+# nothing else. Keep the old branch until Flash-Next has served from a master
+# build in anger; it is the way back if upstream's version turns out to differ.
+PATCH_BRANCH="${PATCH_BRANCH:-master-2patches}"
 # One marker per patch the branch has to carry, as `file:text`. Both are
 # checked before a build, because a patch that goes missing does not fail —
 # it degrades, silently and in a different way each time:

@@ -29,6 +29,12 @@ REPO = common.REPO
 SCRIPT = str(REPO / "setup" / "scripts" / "build-llama.sh")
 MARKER = "gfx1151/ROCm: trusting prop.integrated"
 CUDA = "ggml/src/ggml-cuda/ggml-cuda.cu"
+# THE STACK CARRIES TWO PATCHES since 30.08.2026, and build-llama.sh checks a
+# marker for each. The fixture has to carry both or the checks cannot pass —
+# and a fixture that carries only one would let a second patch go missing
+# unnoticed, which is the exact failure these markers exist to prevent.
+MARKER2 = "accepted token(s) past EOG"
+SERVER = "tools/server/server-context.cpp"
 
 
 def git(cwd, *args):
@@ -51,22 +57,25 @@ class TestItLooksAtWhatWouldBeReplayed(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         git(self.tmp, "init", "-q", "-b", "master")
         os.makedirs(os.path.join(self.tmp, os.path.dirname(CUDA)))
-        self.commit("base", CUDA, "int x;\n")
-        # the patch, as it really is: ONE commit carrying the marker
+        self.commit("base", CUDA, "int x;\n", SERVER, "int y;\n")
+        # the patches, as they really are: ONE commit carrying both markers
         git(self.tmp, "checkout", "-q", "-b", "patch")
-        self.commit("the patch", CUDA, "// %s\nint x;\n" % MARKER)
+        self.commit("the patch", CUDA, "// %s\nint x;\n" % MARKER,
+                    SERVER, "// %s\nint y;\n" % MARKER2)
         # a branch that has drifted, the way gfx1151-patched had
         git(self.tmp, "checkout", "-q", "-b", "fat")
         for i in range(5):
             self.commit("somebody else's work %d" % i, "other%d.txt" % i, "x")
         git(self.tmp, "checkout", "-q", "master")
 
-    def commit(self, msg, path, body):
-        full = os.path.join(self.tmp, path)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as f:
-            f.write(body)
-        git(self.tmp, "add", path)
+    def commit(self, msg, *pairs):
+        """(path, body) pairs, all in ONE commit — the patch really is one."""
+        for path, body in zip(pairs[::2], pairs[1::2]):
+            full = os.path.join(self.tmp, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write(body)
+            git(self.tmp, "add", path)
         git(self.tmp, "commit", "-q", "-m", msg)
 
     def build(self, patch_branch, ref, **env):
@@ -142,13 +151,14 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
         self.src = os.path.join(self.tmp, "src")
         os.makedirs(os.path.join(self.src, os.path.dirname(CUDA)))
         git(self.src, "init", "-q", "-b", "master")
-        self.commit("base", CUDA, "int x;\n")
+        self.commit("base", CUDA, "int x;\n", SERVER, "int y;\n")
         # llama.cpp ignores its build directories, and the preflight's
         # "working tree clean" check would otherwise see the build this script
         # just made and refuse the next one. Fixture fidelity, not decoration.
         self.commit("ignore builds", ".gitignore", "build*/\n")
         git(self.src, "checkout", "-q", "-b", "patch")
-        self.commit("the patch", CUDA, "// %s\nint x;\n" % MARKER)
+        self.commit("the patch", CUDA, "// %s\nint x;\n" % MARKER,
+                    SERVER, "// %s\nint y;\n" % MARKER2)
         git(self.src, "checkout", "-q", "master")
         # step 1 fetches from `origin` even when the ref is local. Point it at
         # the fixture itself: no network, and the step is exercised rather
@@ -177,12 +187,14 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
                 'chmod +x "$B/bin/llama-server"\n' % self.src)
         os.chmod(fake, 0o755)
 
-    def commit(self, msg, path, body):
-        full = os.path.join(self.src, path)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as f:
-            f.write(body)
-        git(self.src, "add", path)
+    def commit(self, msg, *pairs):
+        """(path, body) pairs, all in ONE commit — the patch really is one."""
+        for path, body in zip(pairs[::2], pairs[1::2]):
+            full = os.path.join(self.src, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w") as f:
+                f.write(body)
+            git(self.src, "add", path)
         git(self.src, "commit", "-q", "-m", msg)
 
     def build(self, *args, **env):

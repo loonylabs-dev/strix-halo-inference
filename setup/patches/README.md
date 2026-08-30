@@ -364,10 +364,18 @@ prompt, i.e. it makes this failure safe rather than cheap.
 
 ## speculation-stops-at-eog.patch
 
-**THE FIX, measured and working. NOT APPLIED** — activating a self-built
-binary in production is the operator's call, not this file's.
-`build-llama.sh` names `hip-integrated-off.patch` explicitly and does not scan
-this directory, so nothing picks it up by itself.
+**THE FIX, measured and LIVE since 30.08.2026.** It is the second patch this
+stack carries, and it is carried the same way as the first: as a commit on
+`gfx1151-patched` (418fe05c2), with a marker in `PATCH_MARKERS` in
+`build-llama.sh` so that a build which lost it refuses to start rather than
+quietly serving the defect again. That guard is the point — neither patch
+fails loudly when it goes missing.
+
+The serving library was amended in place rather than rebuilt: it is
+`patch_commit` of build b10631 plus this one patch and nothing else, which is
+exactly the binary the numbers below were measured on. `.build-stamp` records
+that, and says what the next full `--activate` will additionally pick up (two
+qwen4exp commits that have not been measured here).
 
 **What it does:** cuts the accepted draft tokens at the first
 end-of-generation token, BEFORE `n_rollback` is computed. Seven lines.

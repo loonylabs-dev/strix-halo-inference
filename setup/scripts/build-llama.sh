@@ -54,14 +54,24 @@ REPO="$PWD"
 
 SRC="${LLAMA_SRC:-$HOME/llama.cpp}"
 PATCH_BRANCH="${PATCH_BRANCH:-gfx1151-patched}"
-PATCH_MARKER="gfx1151/ROCm: trusting prop.integrated"
+# One marker per patch the branch has to carry, as `file:text`. Both are
+# checked before a build, because a patch that goes missing does not fail —
+# it degrades, silently and in a different way each time:
+#   hip-integrated-off      wrong ANSWERS once a second slot is used
+#   speculation-stops-at-eog  the previous answer re-prefilled every turn
+# setup/patches/README.md carries both stories.
+PATCH_MARKERS=(
+  "ggml/src/ggml-cuda/ggml-cuda.cu:gfx1151/ROCm: trusting prop.integrated"
+  "tools/server/server-context.cpp:accepted token(s) past EOG"
+)
 BACKEND=rocm
 REF=""
 JOBS="${JOBS:-$(( $(nproc) > 8 ? $(nproc) - 8 : 2 ))}"
 DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; NOPATCH=0; KEEP="${KEEP:-1}"
 # How many commits the patch branch may carry over the ref being built.
-# The patch is ONE commit; three leaves room for it to become a short
-# series without an override every time. See step 2 for why this exists.
+# TWO patches since 30.08.2026 — hip-integrated-off and
+# speculation-stops-at-eog — so three is now one spare rather than two. See
+# step 2 for why this exists at all.
 MAX_REPLAY="${MAX_REPLAY:-3}"
 
 while [ $# -gt 0 ]; do
@@ -464,12 +474,16 @@ git_ rev-parse --verify -q "$PATCH_BRANCH" >/dev/null \
 # at the first match, git gets SIGPIPE, and pipefail reports the pipeline as
 # failed — a hit would look like a miss. setup/check.sh carries the same note
 # about journalctl, and this is the second time it has bitten.
-if [ "$(git_ show "$PATCH_BRANCH:ggml/src/ggml-cuda/ggml-cuda.cu" | grep -c "$PATCH_MARKER")" = 0 ]; then
-  die "branch '$PATCH_BRANCH' does not carry the patch marker.
-    Expected in ggml/src/ggml-cuda/ggml-cuda.cu:  $PATCH_MARKER
+for entry in "${PATCH_MARKERS[@]}"; do
+  marker_file="${entry%%:*}"
+  marker_text="${entry#*:}"
+  if [ "$(git_ show "$PATCH_BRANCH:$marker_file" | grep -c "$marker_text")" = 0 ]; then
+    die "branch '$PATCH_BRANCH' does not carry a patch marker.
+    Expected in $marker_file:  $marker_text
     See setup/patches/README.md."
-fi
-ok "patch branch $PATCH_BRANCH carries the marker"
+  fi
+done
+ok "patch branch $PATCH_BRANCH carries all ${#PATCH_MARKERS[@]} markers"
 fi
 
 [ -z "$(git_ status --porcelain)" ] \
@@ -544,14 +558,19 @@ if [ "$NOPATCH" = 1 ]; then
     # the source I am about to compile" is the fact. If upstream ever adopts
     # the same change, this fires and says so — which is good news and must
     # not be reported as an unpatched build.
-    if [ "$(grep -c "$PATCH_MARKER" "$SRC/ggml/src/ggml-cuda/ggml-cuda.cu")" != "0" ]; then
-      die "the marker is PRESENT in $BUILD_ID and --no-patch was asked for:
-      $PATCH_MARKER
+    for entry in "${PATCH_MARKERS[@]}"; do
+      marker_file="${entry%%:*}"
+      marker_text="${entry#*:}"
+      [ -f "$SRC/$marker_file" ] || continue
+      if [ "$(grep -c "$marker_text" "$SRC/$marker_file")" != "0" ]; then
+        die "a marker is PRESENT in $BUILD_ID and --no-patch was asked for:
+      $marker_file:  $marker_text
     Either the checkout did not take, or upstream now does this itself. The
     second would be good news — setup/patches/README.md, 'When can this be
     dropped?' — but it is not an unpatched build either way."
-    fi
-    ok "marker absent — this is upstream $BUILD_ID as it stands"
+      fi
+    done
+    ok "markers absent — this is upstream $BUILD_ID as it stands"
   else
     say "  would: git checkout --detach $TARGET, then verify the marker is ABSENT"
   fi
@@ -613,7 +632,7 @@ if [ "$DRY" = 0 ]; then
     which case the patch and '-np 1' can both go, after remeasuring with
       python3 bench/suites/np2-candidates.py rocm+cram+mmproj"
   fi
-  grep -q "$PATCH_MARKER" "$SRC/ggml/src/ggml-cuda/ggml-cuda.cu" \
+  grep -q "${PATCH_MARKERS[0]#*:}" "$SRC/${PATCH_MARKERS[0]%%:*}" \
     || die "the rebase succeeded but the marker is GONE from the source.
     Most likely the commit became empty because upstream now does the same
     thing. Check by hand — and if so, this is good news: setup/patches/README.md,

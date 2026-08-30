@@ -246,6 +246,8 @@ many cells the variant file holds).
 | `suites/slot-corruption.py` | Which ingredient makes this build emit `////` — one variable per case, fresh server each |
 | `suites/np2-candidates.py` | Backend and flag combinations on a SIDE server (port 8081), so production keeps running while the question "can we have two slots yet?" gets measured |
 | `suites/restore-safety.py` | Whether a slot restore is safe in a given state — and with `--binary`, whether an upstream change fixes it. Every cell is recorded, including the one that is KNOWN to hang, so the cells after it are still measured |
+| `suites/answer-reuse.py` | What a turn pays to read the previous ANSWER again. Measures the cost; expect it to fail on some rounds and not others |
+| `suites/slot-tail.py` | Why it pays: whether the slot is still a prefix of the next prompt. Reads `f_keep` out of the ordinary journal — no restart, no `LLAMA_SERVER_SLOTS_DEBUG`. The tokens the server hands back do NOT contain the tail, so nothing here may be derived from them |
 | `compare.py` | The decision table across the variants of one sweep |
 | `run.py` | The cache suites (cold/warm, tool turns, multi-project) |
 

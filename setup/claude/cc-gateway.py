@@ -1693,21 +1693,29 @@ async def handler(req):
         # THE SAVE, BEFORE THE ANSWER. The slot is about to be filled with
         # this prefix anyway; saving it first is a write, saving it afterwards
         # is a recomputation. See save_prefix_first.
-        # A PREFIX THAT IS CHURNING IS NOT WORTH 80 SECONDS OF SOMEBODY'S
-        # WAIT. save_prefix_first runs BEFORE the answer, so its cost is the
-        # operator's, not a background task's — measured 30.08.2026 at 80.9 s
-        # for a 16,252-token prefix, on top of a turn that then took 454 s.
-        #
-        # The gateway already knows when a prefix is a near-duplicate: it warns
-        # a few lines above that the head collides. That warning fired three
+        # A PREFIX THAT IS CHURNING IS NOT WORTH THE DISK. The gateway warns
+        # a few lines above that the head collides; that warning fired three
         # times in one session as Claude Code's tool list changed, and each
-        # time a third near-identical 16k file was written — 18.4 GB on disk,
-        # and the next tool change made it worthless again.
+        # time another near-identical 16k file was written. 20.6 GB in the
+        # store, and the next tool change made each of them worthless.
         #
-        # So a colliding head with something ALREADY ON DISK means: do not pay
-        # for it again. A collision with a prefix merely SEEN is not enough —
-        # that is the normal state of two prompt types in one session, and
-        # refusing there would stop the store from ever filling.
+        # WHAT IT COSTS IS SPACE, NOT TIME, and an earlier version of this
+        # comment had that wrong — it said "80 seconds of somebody's wait",
+        # which is what the save's own log line shows and not what the save
+        # ADDS. Read together, 30.08. 17:46:
+        #
+        #   with the save     80.9 s prefix + 454.6 s turn (~197 s of prefill)
+        #   without it        53,638 tokens in one pass at ~190 t/s ~= 282 s
+        #                     plus the same generation
+        #
+        # The same 535 seconds either way. save_prefix_first exists precisely
+        # because the first request has to compute the prefix anyway: doing it
+        # first and writing the result costs the write, measured at 237 ms for
+        # 878 MB. What a useless file wastes is a gigabyte, not a minute.
+        #
+        # A collision with a prefix merely SEEN is not enough — that is the
+        # normal state of two prompt types in one session, and refusing there
+        # would stop the store from ever filling.
         saved_rivals = [k for k in SAVED if k != ident
                         and (PREFIXES.get(k) or {}).get("head") == head] \
             if (ident and head) else []

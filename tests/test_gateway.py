@@ -2297,14 +2297,17 @@ class TestWhetherThisPrefixRanOnThisServer(unittest.TestCase):
 
 
 class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
-    """save_prefix_first runs BEFORE the answer, so its cost is the operator's
-    wait, not a background task's. Measured 30.08.2026: 80.9 s for a
-    16,252-token prefix, on a turn that then took another 454 s.
+    """Claude Code's tool list changed three times in one session, and each
+    new prefix was saved again — near-identical 16k files, 20.6 GB in the
+    store, each made worthless by the next change. The gateway already WARNED
+    that the heads collide, a few lines before it wrote the file anyway.
 
-    Claude Code's tool list changed three times in one session, and each new
-    prefix was saved again — three near-identical 16k files, 18.4 GB on disk,
-    each made worthless by the next change. The gateway already WARNED that
-    the heads collide, a few lines before it paid for the file anyway.
+    WHAT THAT WASTES IS DISK, NOT TIME, and the first version of this test said
+    otherwise. The save's log line reads "80.9 s", but that is the prefix being
+    computed — work the first request has to do regardless, moved in front of
+    it. Measured 30.08. 17:46: 80.9 + 454.6 with the save, and ~539 s for the
+    same turn computing 53,638 tokens in one pass without it. What the save
+    ADDS is the write: 237 ms for 878 MB.
     """
 
     def setUp(self):
@@ -2331,8 +2334,12 @@ class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
         self.assertIn("if (ident and head) else []",
                       self.src[start:start + 300])
 
-    def test_the_reason_names_what_it_measured(self):
-        self.assertIn("80.9 s", self.src)
+    def test_the_reason_does_not_bill_the_prefill_to_the_save(self):
+        """The prefix has to be computed for the first request either way. A
+        comment that charges those seconds to the save invites removing the
+        save to get them back, and they do not come back."""
+        self.assertIn("WHAT IT COSTS IS SPACE, NOT TIME", self.src)
+        self.assertIn("237 ms", self.src)
 
 
 class TestTheTwoPhasesAreSeparableWithoutTheServersHelp(unittest.TestCase):

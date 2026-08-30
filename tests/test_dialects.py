@@ -298,3 +298,55 @@ class TestWhatEachMessageWeighs(unittest.TestCase):
 
     def test_no_messages_is_an_empty_list_not_an_error(self):
         self.assertEqual(D.message_fingerprints({}), [])
+
+
+class TestACacheHintIsNotARewrittenHistory(unittest.TestCase):
+    """`cache_control` is Anthropic's own cache breakpoint, and Claude Code
+    MOVES it forward as a conversation grows. It never reaches the rendered
+    prompt — but `message_shape` hashed the whole message JSON, so a message
+    whose text had not changed by one character read as a rewrite.
+
+    Measured 30.08.2026, two consecutive live turns: message 1 identical in all
+    5,100 characters of its text and differing ONLY by the presence of
+    {"cache_control": {"type": "ephemeral"}}. `msgs_kept` was logged as 4 of 5;
+    recomputed without the hint it is 5 of 5, a pure append. The instrument
+    whose entire purpose is telling "the state was lost" from "the client
+    rewrote its history" was answering the second when the truth was neither.
+    """
+
+    def msg(self, text, hint=False):
+        block = {"type": "text", "text": text}
+        if hint:
+            block["cache_control"] = {"type": "ephemeral"}
+        return {"role": "user", "content": [block]}
+
+    def test_a_moved_breakpoint_is_not_a_change(self):
+        a = D.message_shape({"messages": [self.msg("gleich", hint=True)]})
+        b = D.message_shape({"messages": [self.msg("gleich")]})
+        self.assertEqual(a, b)
+
+    def test_a_changed_text_still_is(self):
+        a = D.message_shape({"messages": [self.msg("eins", hint=True)]})
+        b = D.message_shape({"messages": [self.msg("zwei", hint=True)]})
+        self.assertNotEqual(a, b)
+
+    def test_it_is_stripped_at_the_top_level_too(self):
+        a = D.renderable({"role": "user", "content": "x",
+                          "cache_control": {"type": "ephemeral"}})
+        self.assertNotIn("cache_control", a)
+
+    def test_the_original_is_not_mutated(self):
+        """The body is on its way to llama-server; dropping the hint from it
+        would change what Claude Code asked for."""
+        m = self.msg("x", hint=True)
+        D.renderable(m)
+        self.assertIn("cache_control", m["content"][0])
+
+    def test_only_fields_known_not_to_render_are_dropped(self):
+        """Conservative on purpose: a field wrongly kept costs a false
+        `rewritten`, a field wrongly dropped HIDES a real one."""
+        self.assertEqual(D.IGNORED_IN_SHAPE, ("cache_control",))
+
+    def test_an_unserialisable_message_still_does_not_raise(self):
+        shape = D.message_shape({"messages": [{"role": "user", "content": object()}]})
+        self.assertEqual(len(shape), 1)

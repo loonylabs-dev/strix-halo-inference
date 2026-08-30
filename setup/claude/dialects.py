@@ -515,13 +515,52 @@ def message_fingerprints(body, dialect=ANTHROPIC):
     out = []
     for m in (body.get("messages") or []):
         try:
-            canon = json.dumps(m, sort_keys=True, separators=(",", ":"),
-                               ensure_ascii=False)
+            canon = json.dumps(renderable(m), sort_keys=True,
+                               separators=(",", ":"), ensure_ascii=False)
         except Exception:
             canon = repr(m)
         out.append((hashlib.sha1(canon.encode("utf-8", "replace")).hexdigest()[:8],
                     len(canon)))
     return out
+
+
+# Fields that ride along in a request and never reach the rendered prompt.
+# `cache_control` is Anthropic's own cache breakpoint, and Claude Code MOVES it
+# forward as a conversation grows — so a message whose text has not changed by
+# one character arrives with a different JSON on the next turn.
+#
+# Measured 30.08.2026: two consecutive turns, message 1 identical in all 5,100
+# characters of its text, differing ONLY by the presence of
+# {"cache_control": {"type": "ephemeral"}}. The shape reported a rewritten
+# history, `msgs_kept` fell to 1 of 2, and the reading pointed at the wrong
+# message for the re-prefill that had actually happened at the assistant turn.
+# An instrument that says "the client rewrote its history" because a cache hint
+# moved is worse than no instrument: it is confidently wrong, in a comparison
+# whose entire purpose is to tell two causes apart.
+IGNORED_IN_SHAPE = ("cache_control",)
+
+
+def renderable(message):
+    """A message stripped of what the chat template never sees.
+
+    Conservative on purpose: only fields KNOWN not to render are dropped. A
+    field wrongly kept costs a false "rewritten"; a field wrongly dropped hides
+    a real one, and that is the worse mistake of the two.
+    """
+    try:
+        m = json.loads(json.dumps(message))
+    except Exception:
+        return message
+    if isinstance(m, dict):
+        for k in IGNORED_IN_SHAPE:
+            m.pop(k, None)
+        c = m.get("content")
+        if isinstance(c, list):
+            for bl in c:
+                if isinstance(bl, dict):
+                    for k in IGNORED_IN_SHAPE:
+                        bl.pop(k, None)
+    return m
 
 
 def shapes_agree(old, new):

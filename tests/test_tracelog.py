@@ -600,3 +600,57 @@ class TestAChangedHeadIsItsOwnFailure(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.CLI._head_changes(rows)
         self.assertEqual(buf.getvalue().count("NEVER SEEN"), 2)
+
+
+class TestAReaderMustNotInheritTheWritersMistake(unittest.TestCase):
+    """A record carries the shape its gateway computed at the time, and until
+    30.08.2026 that shape hashed `cache_control` — which never reaches the
+    rendered prompt. Fixing the gateway does not fix the records already
+    written, and `tracelog.py diff` went on reporting a rewritten history on
+    EVERY line of a session running at 99 % cache. The operator asked why, and
+    that is the right question to have had to ask.
+
+    So the reader recomputes from `body_full` where it is there, and says so
+    where it is not.
+    """
+
+    CLI = common.load("tools/tracelog.py", "tracelog_cli_shape")
+
+    def rec(self, texts, hint=False, with_body=True, stored=None):
+        msgs = []
+        for t in texts:
+            block = {"type": "text", "text": t}
+            if hint:
+                block["cache_control"] = {"type": "ephemeral"}
+            msgs.append({"role": "user", "content": [block]})
+        r = {"kind": "request", "prefix": "p", "shape": stored or ["stale"],
+             "msg_chars": [999]}
+        if with_body:
+            r["body_full"] = {"messages": msgs}
+        return r
+
+    def test_the_hint_no_longer_splits_two_identical_turns(self):
+        a, _, _ = self.CLI.shape_of(self.rec(["gleich"], hint=True))
+        b, _, _ = self.CLI.shape_of(self.rec(["gleich"], hint=False))
+        self.assertEqual(a, b)
+
+    def test_a_recomputed_record_is_not_flagged_stale(self):
+        _, _, stale = self.CLI.shape_of(self.rec(["x"]))
+        self.assertFalse(stale)
+
+    def test_without_a_body_the_stored_shape_is_used_and_flagged(self):
+        sh, ch, stale = self.CLI.shape_of(
+            self.rec(["x"], with_body=False, stored=["aaaa"]))
+        self.assertEqual(sh, ["aaaa"])
+        self.assertEqual(ch, [999])
+        self.assertTrue(stale, "silently trusting it is how the wrong answer "
+                               "outlives the defect that caused it")
+
+    def test_a_real_change_still_shows(self):
+        a, _, _ = self.CLI.shape_of(self.rec(["eins"], hint=True))
+        b, _, _ = self.CLI.shape_of(self.rec(["zwei"], hint=True))
+        self.assertNotEqual(a, b)
+
+    def test_the_stale_count_is_printed(self):
+        src = (common.REPO / "tools" / "tracelog.py").read_text(encoding="utf-8")
+        self.assertIn("carry a shape computed by an older", src)

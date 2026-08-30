@@ -27,6 +27,33 @@ from collections import defaultdict
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "setup", "claude"))
 import tracelog as TR                                            # noqa: E402
+try:
+    import dialects as DIA                                       # noqa: E402
+except Exception:                                                # pragma: no cover
+    DIA = None
+
+
+def shape_of(rec):
+    """(shape, sizes) for a record, RECOMPUTED where that is possible.
+
+    A record carries the shape its gateway computed at the time, and until
+    30.08.2026 that shape hashed `cache_control` — Anthropic's cache
+    breakpoint, which Claude Code moves forward as a conversation grows and
+    which never reaches the rendered prompt. Every turn then read as a
+    rewritten history while the cache was running at 99 %, and the tool said so
+    on every line.
+
+    Fixing the gateway does not fix the records already written, and a reader
+    that trusts them keeps repeating the wrong answer for as long as they are
+    kept. So where `body_full` is present — that is, at `text` level — the
+    shape is computed again from the body with today's rule. Where it is not,
+    the stored one is used and `_stale` says the reading may be the old one.
+    """
+    body = rec.get("body_full")
+    if DIA is not None and isinstance(body, dict) and body.get("messages"):
+        fp = DIA.message_fingerprints(body)
+        return [h for h, _ in fp], [n for _, n in fp], False
+    return rec.get("shape") or [], rec.get("msg_chars") or [], True
 
 
 def _tr():
@@ -165,12 +192,15 @@ def cmd_diff(a):
     shorter is a truncation, longer an edit. With the trace at `text` the two
     versions of the message itself are printed underneath.
     """
-    per, requests = defaultdict(list), 0
+    per, requests, stale = defaultdict(list), 0, 0
     for r in _load(a):
         if r.get("kind") != "request" or not r.get("prefix"):
             continue
         requests += 1
-        if r.get("shape"):
+        sh, ch, old = shape_of(r)
+        if sh:
+            r["_shape"], r["_chars"], r["_stale"] = sh, ch, old
+            stale += 1 if old else 0
             per[r["prefix"]].append(r)
     pairs = sum(max(len(v) - 1, 0) for v in per.values())
     if not pairs:
@@ -183,11 +213,16 @@ def cmd_diff(a):
               "`shape`.\n  The trace has to be at `detail` or higher WHEN the "
               "request runs;\n  it cannot be added afterwards." % requests)
         return
+    if stale:
+        print("  NOTE %d of %d records carry a shape computed by an older "
+              "gateway and no body to recompute it from. Those readings may "
+              "still count `cache_control`, which never reaches the prompt — "
+              "see shape_of()." % (stale, requests))
     hits = 0
     for pid, rows in per.items():
         rows.sort(key=lambda r: r.get("t", 0))
         for prev, cur in zip(rows, rows[1:]):
-            old, new = prev.get("shape") or [], cur.get("shape") or []
+            old, new = prev["_shape"], cur["_shape"]
             kept = 0
             for x, y in zip(old, new):
                 if x != y:
@@ -208,8 +243,8 @@ def cmd_diff(a):
                 print("      the history agrees — a drop here is the SERVER's "
                       "state, not the client's history")
                 continue
-            oc = (prev.get("msg_chars") or [None] * len(old))
-            nc = (cur.get("msg_chars") or [None] * len(new))
+            oc = prev["_chars"] or [None] * len(old)
+            nc = cur["_chars"] or [None] * len(new)
             a_chars = oc[kept] if kept < len(oc) else None
             b_chars = nc[kept] if kept < len(nc) else None
             if a_chars is not None and b_chars is not None:

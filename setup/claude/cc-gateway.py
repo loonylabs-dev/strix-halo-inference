@@ -470,6 +470,12 @@ def prewarm_numbers(proc_out):
         if m:
             out = {"tokens": int(m.group(1)), "mb": int(m.group(2)),
                    "write_ms": int(m.group(3))}
+        # And what the prefill itself reused, so a save row can answer the same
+        # question a request row does instead of leaving the column blank.
+        m = re.search(r"done in [\d.]+ s, reused (\d+) of (\d+) tokens", text)
+        if m:
+            out["reused"] = int(m.group(1))
+            out["computed"] = int(m.group(2)) - int(m.group(1))
     except Exception:
         pass
     return out
@@ -662,8 +668,15 @@ async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
                                           # The same names the request rows
                                           # use, so one column means one thing
                                           # across kinds.
-                                          "reused": None,
-                                          "computed": got.get("tokens"),
+                                          # The prefill's own split where
+                                          # prewarm reported it; the token
+                                          # count otherwise, so the `in` column
+                                          # is never empty for a save.
+                                          "reused": got.get("reused"),
+                                          "computed": (got.get("computed")
+                                                       if "reused" in got
+                                                       else got.get("tokens")),
+                                          "tokens": got.get("tokens"),
                                           "write_ms": got.get("write_ms"),
                                           "mb": got.get("mb"),
                                           "disk_gb": round(disk_used_gb(), 1)},

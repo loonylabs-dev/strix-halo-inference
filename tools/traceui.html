@@ -131,6 +131,11 @@ function bar(r) {
 // never left 39k.
 const inTok = r => (r.reused == null && r.computed == null) ? null
                  : (r.reused || 0) + (r.computed || 0);
+// A save is a prefill too, so it answers the same two columns: how many tokens
+// went in and how much of them the slot already had. Older records carry only
+// prewarm's console line and no split — those show the total and leave the
+// share blank, which is the honest half-answer rather than a guessed 0 %.
+const inAny = r => inTok(r) ?? (tokensOf(r) || null);
 function share(r) {
   const t = inTok(r);
   if (!t || r.reused == null) return "";
@@ -259,8 +264,8 @@ function row(r, i) {
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
     <td>${cold}</td>
     <td class=num title="${saveHint(r)}">${r.took_s ?? r.saved_s ?? ""}</td>
-    <td class=num>${req ? (inTok(r) ?? "") : tokensOf(r)}</td>
-    <td class=num>${req ? share(r) : ""}</td>
+    <td class=num>${inAny(r) ?? ""}</td>
+    <td class=num>${share(r)}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
     <td class=num title="lesen·schreiben. Ohne ~ vom Server gemessen; mit ~ vom Gateway aus der Zeit bis zum ersten Token abgeleitet">${rates(r)}</td>
     <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>

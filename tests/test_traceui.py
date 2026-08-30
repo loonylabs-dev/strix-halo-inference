@@ -209,11 +209,20 @@ class TestAColumnMeansOneThing(unittest.TestCase):
     def setUp(self):
         self.html = PAGE.read_text(encoding="utf-8")
 
-    def test_token_columns_are_asked_only_of_requests(self):
+    def test_written_tokens_are_asked_only_of_requests(self):
+        """The original defect: a `save` record carried prewarm's console
+        output under `output`, the name a request uses for written tokens, and
+        a paragraph of text landed in a number column."""
         self.assertIn('const req = r.kind === "request";', self.html)
-        self.assertIn('${req ? (inTok(r) ?? "") : tokensOf(r)}', self.html)
-        self.assertIn('${req ? share(r) : ""}', self.html)
         self.assertIn('${req ? (r.output ?? "") : ""}', self.html)
+
+    def test_input_and_cache_are_asked_of_both(self):
+        """A save IS a prefill, so it answers the same two questions: how many
+        tokens went in, and how much of them the slot already had. Leaving
+        those blank while the row beside it shows 99 % was the confusion of
+        30.08."""
+        self.assertIn('${inAny(r) ?? ""}', self.html)
+        self.assertIn('${share(r)}', self.html)
 
     def test_everything_else_stays_in_the_detail_view(self):
         """Where it is labelled, instead of guessed at by column position."""
@@ -410,4 +419,22 @@ const setInterval = () => {};
                           "console.log(JSON.stringify(saveRate("
                           "{kind:'save', saved_s:3})));")
         self.assertEqual(out[-2], '""')
+        self.assertEqual(out[-1], '""')
+
+    def test_a_save_fills_both_columns_when_it_can(self):
+        out = self.run_js(
+            "const n={kind:'save',saved_s:51.8,reused:3000,computed:8005,"
+            "tokens:11005,write_ms:237};\n"
+            "console.log(inAny(n)); console.log(share(n));")
+        self.assertEqual(out[-2], "11005")
+        self.assertEqual(out[-1], "27%")
+
+    def test_an_old_save_shows_the_total_and_no_share(self):
+        """Records before 30.08. 19:03 carry no split. The honest half-answer
+        is the total with an empty share, not a guessed 0 %."""
+        out = self.run_js(
+            "const o={kind:'save',saved_s:51.8,"
+            "prewarm_stdout:'saved: x.bin — 11005 tokens, 878 MB, 237 ms'};\n"
+            "console.log(inAny(o)); console.log(JSON.stringify(share(o)));")
+        self.assertEqual(out[-2], "11005")
         self.assertEqual(out[-1], '""')

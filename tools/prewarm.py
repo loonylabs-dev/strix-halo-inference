@@ -158,7 +158,14 @@ def save(a):
     t0 = time.time()
     answer = req("/completion", {"prompt": prefix, "n_predict": 1,
                                   "cache_prompt": True})
-    print("  done in %.1f s" % (time.time() - t0))
+    # THE SPLIT, because "done in 51.4 s" alone cannot say whether the slot
+    # already held half of this. llama.cpp reports it per request and this was
+    # dropping it on the floor; the trace's Cache column then stood empty for
+    # every save while requests beside it showed 99 %. Asked 30.08.2026.
+    tm = answer.get("timings") or {}
+    print("  done in %.1f s, reused %s of %s tokens"
+          % (time.time() - t0, tm.get("cache_n"),
+             (tm.get("cache_n") or 0) + (tm.get("prompt_n") or 0)))
 
     sid = answer.get("id_slot")
     if sid is None:

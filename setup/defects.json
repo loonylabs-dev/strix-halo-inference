@@ -475,6 +475,26 @@
       "status": "open; a switch exists and is measured (10x at prompt level, 2.5x through the gateway), default unchanged pending the operator's word",
       "first_seen": "2026-08-30",
       "last_checked": "2026-08-30"
+    },
+    {
+      "id": "tools-loaded-mid-session-cost-the-conversation",
+      "title": "A tool added mid-conversation invalidates every token behind it",
+      "applies_to": {
+        "component": "prompt format"
+      },
+      "shows_as": "slow",
+      "symptom": "One turn of a running session takes minutes while its neighbours take seconds. The message history is untouched and the system prompt is identical to the character; only the TOOL LIST grew. The gateway logs the turn as COLD because the prefix id moved with it, which is correct and reads like a client mistake.",
+      "measured": "30.08.2026, 17:35:41, live Claude Code, prefix 10b60dbad2e1 -> 1b319f3fc6a5. tools 15 -> 19, prefix 61911 -> 66289 characters, reused 15960, computed 30726, took 339.1 s. The four that appeared are named: mcp__claude-in-chrome__navigate, __read_console_messages, __tabs_context_mcp, __tabs_create_mcp -- deferred MCP tools loaded on demand mid-session. The `system` field was byte-identical, all 8,970 characters common, so the tool block is the whole of it. SEEN BEFORE, same session type, 30.08. 00:01:32: tools 13 -> 21, prefix 60428 -> 73404 characters, reused 17784, computed 55856, took 655.8 s, with 69 of 71 messages unchanged.",
+      "mitigation": "NONE IS POSSIBLE IN THE GATEWAY, and that is the point of registering it. In the rendered prompt the tools sit IN FRONT of the conversation, so any change to the list invalidates every message behind it -- appending the new tools at the end of the block does not help, because the block itself is still ahead of the messages. Reordering it would mean rendering a prompt the model was not trained on. What helps is a habit: load the tools a session will need BEFORE it gets long. At the first turn a new tool costs nothing; after five turns it costs the whole conversation. `python3 tools/tracelog.py diff` names every occurrence with its price.",
+      "detect": {
+        "kind": "manual",
+        "how": "Two consecutive requests from one caller whose `prefix` differs while `msgs_kept` is near the message count. `tools` and `prefix_chars` in the same records say whether it was the tool list or the system prompt; at `text` level the tool NAMES can be diffed, which is how the four above were identified. `tools/tracelog.py diff` reports these under A HEAD IT HAD NEVER SEEN, ordered by what was recomputed."
+      },
+      "suite": null,
+      "upstream": [],
+      "status": "open by nature — recorded so the cost is attributable, not fixable here",
+      "first_seen": "2026-08-30",
+      "last_checked": "2026-08-30"
     }
   ]
 }

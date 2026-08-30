@@ -7,6 +7,11 @@
 #   bash setup/scripts/build-llama.sh --ref master --no-patch
 #                                                        WITHOUT the patch, to
 #                                                        measure upstream itself
+#   bash setup/scripts/build-llama.sh --unroll           patched PLUS the ROCm
+#                                                        unroll workaround, to
+#                                                        measure the flag
+#   bash setup/scripts/build-llama.sh --with-bench       build llama-bench too
+#   bash setup/scripts/build-llama.sh --backend vulkan   the other backend
 #   bash setup/scripts/build-llama.sh --activate         build, then point the
 #                                                        profiles at the result
 #   bash setup/scripts/build-llama.sh --list             which builds exist
@@ -76,6 +81,10 @@ BACKEND=rocm
 REF=""
 JOBS="${JOBS:-$(( $(nproc) > 8 ? $(nproc) - 8 : 2 ))}"
 DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; NOPATCH=0; KEEP="${KEEP:-1}"
+# An extra compiler flag, and a second build target. Both are for MEASURING
+# rather than for serving, which is why each gets a family or a control of its
+# own rather than being folded into the ordinary build. See step 3.
+UNROLL=0; WITHBENCH=0
 # How many commits the patch branch may carry over the ref being built.
 # TWO patches since 30.08.2026 — hip-integrated-off and
 # speculation-stops-at-eog — so three is now one spare rather than two. See
@@ -86,6 +95,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --ref)      REF="${2:?--ref needs a value}"; shift 2 ;;
     --no-patch) NOPATCH=1; shift ;;
+    --unroll)   UNROLL=1; shift ;;
+    --with-bench) WITHBENCH=1; shift ;;
     --backend)  BACKEND="${2:?--backend needs rocm or vulkan}"; shift 2 ;;
     --jobs|-j)  JOBS="${2:?-j needs a number}"; shift 2 ;;
     --activate) ACTIVATE=1; shift ;;
@@ -95,16 +106,21 @@ while [ $# -gt 0 ]; do
     --keep)     KEEP="${2:?--keep needs a number}"; shift 2 ;;
     --yes)      YES=1; shift ;;
     --dry-run|-n) DRY=1; shift ;;
-    -h|--help)  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Bounded by the heading that follows it, not by a line NUMBER: `2,20p`
+    # silently started cutting the last option off the moment two were added
+    # above it, and a truncated help says nothing about being truncated.
+    -h|--help)  sed -n '2,/^# Why this exists/p' "$0" | sed '$d' \
+                  | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)          echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 case "$BACKEND" in rocm|vulkan) ;; *) echo "backend must be rocm or vulkan" >&2; exit 2 ;; esac
-# Two FAMILIES of build directory, and the difference is not cosmetic.
+# Three FAMILIES of build directory, and the difference is not cosmetic.
 #
 #   build-<backend>-patched-<id>     carries setup/patches/hip-integrated-off.patch
 #   build-<backend>-unpatched-<id>   deliberately does not
+#   build-<backend>-unroll-<id>      patched, plus an extra compiler flag
 #
 # An unpatched build is a legitimate SUBJECT — "is the corruption still in
 # upstream master, and does PR #27311 fix it" cannot be answered on a binary
@@ -116,8 +132,23 @@ case "$BACKEND" in rocm|vulkan) ;; *) echo "backend must be rocm or vulkan" >&2;
 #
 # So the families have different names and different stamps, only the patched
 # one can be activated, and activate() refuses anything else by name.
+#
+# THE UNROLL FAMILY is named `<backend>-unroll` and NOT `<backend>-patched-unroll`,
+# and that is load-bearing rather than taste. builds_of_backend() globs
+# `build-$fam-*`, so any name starting with `<backend>-patched-` is swept up by
+# every list and every prune of the patched family: the unroll build would show
+# up there as a build whose id begins `unroll-`, sort into the ranking by
+# built_at, and eventually be offered for deletion as a stale patched build.
+# tests/test_buildllama.py asserts the absence of that collision, because it is
+# a rename away and nothing else would notice.
 FAMILY="$BACKEND-patched"
 [ "$NOPATCH" = 1 ] && FAMILY="$BACKEND-unpatched"
+[ "$UNROLL" = 1 ] && FAMILY="$BACKEND-unroll"
+# Every family there is. Listing and pruning walk THIS, so a family added above
+# and forgotten here becomes ~950 MB per build that nothing mentions and
+# therefore nobody prunes — the failure the old hard-wired pair of names was
+# one family away from.
+ALL_FAMILIES="$BACKEND-patched $BACKEND-unpatched $BACKEND-unroll"
 STABLE="$SRC/build-$BACKEND-patched"
 
 say()  { printf '%s\n' "$*"; }
@@ -282,20 +313,27 @@ prune_builds() {
   say
   # The OTHER family is not silently skipped. A directory nothing mentions is
   # a directory nobody prunes, and these are ~950 MB each.
-  local other; other="$BACKEND-patched"
-  [ "$FAMILY" = "$other" ] && other="$BACKEND-unpatched"
-  local n; n="$(builds_of_backend "$other" | grep -c . || true)"
-  # An `if`, not `[ … ] && A && B`. Under set -e a false test as the last
-  # command of a chain ends the function — the same shape this file already
-  # carries two comments about.
-  if [ "$n" != "0" ]; then
-    say "  $n build(s) also exist in family $other. Prune those with:"
-    if [ "$other" = "$BACKEND-unpatched" ]; then
-      say "      bash setup/scripts/build-llama.sh --prune --no-patch"
-    else
-      say "      bash setup/scripts/build-llama.sh --prune"
+  # EVERY other family, not just the one. While this was a hard-wired pair, a
+  # third family would have been silently omitted here — and a family nothing
+  # mentions is ~950 MB per build that nobody prunes.
+  local other n
+  for other in $ALL_FAMILIES; do
+    # `if`, not `[ … ] && continue` — the shape this file carries two other
+    # comments about, and not worth being clever with a third time.
+    if [ "$other" = "$FAMILY" ]; then continue; fi
+    n="$(builds_of_backend "$other" | grep -c . || true)"
+    # An `if`, not `[ … ] && A && B`. Under set -e a false test as the last
+    # command of a chain ends the function — the same shape this file already
+    # carries two comments about.
+    if [ "$n" != "0" ]; then
+      say "  $n build(s) also exist in family $other. Prune those with:"
+      case "$other" in
+        *-unpatched) say "      bash setup/scripts/build-llama.sh --prune --no-patch" ;;
+        *-unroll)    say "      bash setup/scripts/build-llama.sh --prune --unroll" ;;
+        *)           say "      bash setup/scripts/build-llama.sh --prune" ;;
+      esac
     fi
-  fi
+  done
   say
   if [ "$YES" = 1 ]; then
     say "Removed $removed build(s)."
@@ -318,7 +356,7 @@ show_list() {
   # Both families, always. --list is read-only, and a build that is not listed
   # is a build nobody knows they have — 950 MB at a time.
   local fam
-  for fam in "$BACKEND-patched" "$BACKEND-unpatched"; do
+  for fam in $ALL_FAMILIES; do
    [ -n "$(builds_of_backend "$fam")" ] || continue
    say "  [$fam]"
    for id in $(builds_of_backend "$fam"); do
@@ -456,6 +494,28 @@ if [ -n "$USE" ]; then activate "$USE"; exit 0; fi
 # Preflight
 # --------------------------------------------------------------------------
 step "0/6 preflight"
+if [ "$UNROLL" = 1 ]; then
+  # Same rule as --no-patch, for the same reason: a build that differs from
+  # the serving one is a SUBJECT. It is reachable for a measurement through
+  # `bench/sideserver.py --bin`, which puts production back afterwards and
+  # arms a dead man's switch while it is away; the symlink offers neither.
+  [ "$ACTIVATE" = 0 ] || die "--unroll and --activate cannot be combined.
+
+    The symlink $STABLE is what the model unit execs, and an unroll build is
+    there to be COMPARED against it, not to replace it unmeasured. Run it
+    beside production instead:
+      python3 bench/sideserver.py --bin \$HOME/llama.cpp/build-$FAMILY-<id>/bin/llama-server \\
+          --env setup/env/qwen38.env --stop llama-user@qwen38 -- <command>"
+  # Two variables at once is the mistake llama.cpp#19984 already contains: it
+  # compares self-built-with-flag against an official binary, so where a build
+  # without the flag lands is exactly the cell nobody has. Refusing this
+  # combination is what keeps our own answer to one variable.
+  [ "$NOPATCH" = 0 ] || die "--unroll and --no-patch cannot be combined.
+
+    That build would differ from the serving binary in TWO ways, and the
+    question the flag is being measured for could not be attributed to it."
+  ok "building WITH -mllvm --amdgpu-unroll-threshold-local=600, into the $FAMILY family — not activatable"
+fi
 if [ "$NOPATCH" = 1 ]; then
   # --no-patch and --activate are mutually exclusive, and this is the hard
   # stop of the whole feature. The stable symlink is what the production unit
@@ -694,10 +754,27 @@ case "$BACKEND" in
                 -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=ON
                 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF) ;;
 esac
+# THE UNROLL FLAG. llama.cpp#19984 measures, on this exact hardware, a prefill
+# collapse it attributes to a loop-unrolling regression in ROCm 7+, and works
+# around it with this. Whether it changes anything HERE is the open question —
+# the issue's own comparison is self-built-with-flag against an official
+# binary, two variables, so the cell for a self-built build WITHOUT it does not
+# exist anywhere yet.
+#
+# One array element, not two: the value contains a space, and split across
+# elements cmake receives `-mllvm` as a flag and the threshold as a source file.
+[ "$UNROLL" = 1 ] && CMAKE_ARGS+=(
+    "-DCMAKE_HIP_FLAGS=-mllvm --amdgpu-unroll-threshold-local=600")
 run cmake -S "$SRC" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}"
 
 step "4/6 build (nice, so the running model keeps its CPU)"
 run nice -n 10 cmake --build "$BUILD_DIR" --target llama-server -j "$JOBS"
+# llama-bench is a SECOND target, never a replacement: the server is what this
+# stack serves and what every other suite measures. It is built only on
+# request because it is what llama.cpp#19984 measured with, and reproducing
+# somebody else's number needs their instrument rather than an equivalent one.
+[ "$WITHBENCH" = 1 ] && \
+  run nice -n 10 cmake --build "$BUILD_DIR" --target llama-bench -j "$JOBS"
 
 # --------------------------------------------------------------------------
 step "5/6 verify"

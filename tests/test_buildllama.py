@@ -21,7 +21,7 @@ before the rebase rather than after the report.
 No llama.cpp and no network: the fixture is a git repository of four empty
 commits.
 """
-import os, shutil, subprocess, tempfile, unittest
+import os, re, shutil, subprocess, tempfile, unittest
 
 import common
 
@@ -43,6 +43,40 @@ def git(cwd, *args):
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
     return subprocess.run(["git", "-C", cwd, *args], capture_output=True,
                           text=True, timeout=60, env=env, check=True)
+
+
+def write_fake_cmake(tmp, src):
+    """A cmake that configures and "builds" without a compiler.
+
+    The fake binary reports the commit the checkout is on, so step 5's check
+    that the binary matches the source it claims is exercised for real.
+
+    It honours `--target`, and that is not decoration: a build that asks for
+    llama-bench and silently gets llama-server would let `--with-bench` pass
+    while building nothing, which is the one thing its test has to catch.
+    Returns the directory to put on PATH.
+    """
+    bindir = os.path.join(tmp, "bin")
+    os.makedirs(bindir, exist_ok=True)
+    fake = os.path.join(bindir, "cmake")
+    with open(fake, "w") as f:
+        f.write(
+            '#!/bin/sh\n'
+            'B=""; T=""\n'
+            'while [ $# -gt 0 ]; do\n'
+            '  case "$1" in -B) B="$2"; shift 2 ;;\n'
+            '    --build) B="$2"; shift 2 ;;\n'
+            '    --target) T="$2"; shift 2 ;; *) shift ;; esac\n'
+            'done\n'
+            '[ -n "$B" ] || exit 1\n'
+            'mkdir -p "$B/bin"\n'
+            '[ -n "$T" ] || exit 0\n'
+            'printf \'#!/bin/sh\\necho "version: 0.0.0-dev (build 1, '
+            'commit $(git -C %s rev-parse --short=9 HEAD))"\\n\' '
+            '> "$B/bin/$T"\n'
+            'chmod +x "$B/bin/$T"\n' % src)
+    os.chmod(fake, 0o755)
+    return bindir
 
 
 @unittest.skipIf(shutil.which("cmake") is None,
@@ -125,24 +159,14 @@ class TestItLooksAtWhatWouldBeReplayed(unittest.TestCase):
                                                   "waved through 26 as well")
 
 
-@unittest.skipIf(shutil.which("cmake") is None,
-                 "build-llama.sh refuses without cmake — skipped LOUDLY")
-class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
-    """An unpatched build is a SUBJECT. It must never be a binary to serve.
+class _FakeBuildFixture(unittest.TestCase):
+    """A source tree, a patch branch, and a cmake that builds nothing.
 
-    "Is the corruption still in upstream master, and does PR #27311 fix it"
-    cannot be answered on a binary that already suppresses the symptom — which
-    is exactly what 27.08. did, measuring the PR on top of its own competitor,
-    because building without the patch was a case the script did not have.
+    Shared by every class below that runs build-llama.sh end to end. It carries
+    no tests of its own, so unittest collects nothing from it directly.
 
-    The thing that must never exist is an unpatched build that CLAIMS to be
-    patched. On gfx1151 that is not an error, it is wrong answers once a second
-    slot is used. So: its own directory family, its own stamp field, the marker
-    proven ABSENT rather than assumed, and no path to the symlink production
-    execs.
-
-    The build itself is faked — a cmake on PATH that writes a llama-server
-    reporting the commit it was built from. Everything else runs for real.
+    The build is faked — a cmake on PATH that writes a binary reporting the
+    commit it was built from. Everything else runs for real.
     """
 
     def setUp(self):
@@ -165,27 +189,7 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
         # than skipped, which is the difference between this and a dry run.
         git(self.src, "remote", "add", "origin", self.src)
 
-        # A cmake that configures and "builds" without a compiler. The fake
-        # binary reports the commit the checkout is on, so step 5's check that
-        # the binary matches the source it claims is exercised for real.
-        self.bin = os.path.join(self.tmp, "bin")
-        os.makedirs(self.bin)
-        fake = os.path.join(self.bin, "cmake")
-        with open(fake, "w") as f:
-            f.write(
-                '#!/bin/sh\n'
-                'B=""\n'
-                'while [ $# -gt 0 ]; do\n'
-                '  case "$1" in -B) B="$2"; shift 2 ;;\n'
-                '    --build) B="$2"; shift 2 ;; *) shift ;; esac\n'
-                'done\n'
-                '[ -n "$B" ] || exit 1\n'
-                'mkdir -p "$B/bin"\n'
-                'printf \'#!/bin/sh\\necho "version: 0.0.0-dev (build 1, '
-                'commit $(git -C %s rev-parse --short=9 HEAD))"\\n\' '
-                '> "$B/bin/llama-server"\n'
-                'chmod +x "$B/bin/llama-server"\n' % self.src)
-        os.chmod(fake, 0o755)
+        self.bin = write_fake_cmake(self.tmp, self.src)
 
     def commit(self, msg, *pairs):
         """(path, body) pairs, all in ONE commit — the patch really is one."""
@@ -212,6 +216,24 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
                 if sep:
                     out[k.strip()] = v.strip()
         return out
+
+
+@unittest.skipIf(shutil.which("cmake") is None,
+                 "build-llama.sh refuses without cmake — skipped LOUDLY")
+class TestBuildingWithoutThePatchOnPurpose(_FakeBuildFixture):
+    """An unpatched build is a SUBJECT. It must never be a binary to serve.
+
+    "Is the corruption still in upstream master, and does PR #27311 fix it"
+    cannot be answered on a binary that already suppresses the symptom — which
+    is exactly what 27.08. did, measuring the PR on top of its own competitor,
+    because building without the patch was a case the script did not have.
+
+    The thing that must never exist is an unpatched build that CLAIMS to be
+    patched. On gfx1151 that is not an error, it is wrong answers once a second
+    slot is used. So: its own directory family, its own stamp field, the marker
+    proven ABSENT rather than assumed, and no path to the symlink production
+    execs.
+    """
 
     def test_it_builds_into_a_family_of_its_own(self):
         r = self.build("--ref", "master", "--no-patch")
@@ -342,6 +364,175 @@ class TestBuildingWithoutThePatchOnPurpose(unittest.TestCase):
         r = self.build("--list")
         self.assertIn("[rocm-unpatched]", r.stdout)
         self.assertIn("[rocm-patched]", r.stdout)
+
+
+UNROLL_FLAG = "--amdgpu-unroll-threshold-local=600"
+
+
+class TestTheHelpKeepsUpWithTheOptions(unittest.TestCase):
+    """`--help` printed a fixed line RANGE, so adding two options above the
+    last one pushed `--dry-run` off the end. Nothing failed; the help was
+    simply short, which is the kind of wrong this repository keeps meeting.
+
+    Needs no cmake: -h exits before the preflight."""
+
+    def help_text(self):
+        r = subprocess.run(["bash", SCRIPT, "-h"], capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_every_option_the_parser_accepts_is_documented(self):
+        with open(SCRIPT) as f:
+            body = f.read()
+        # The parser's own case labels, which is the list that cannot drift.
+        # Bounded by the `done` that closes the while, not by the first `esac`:
+        # the case arm is INDENTED, so an unanchored split ran on into the
+        # script body and collected `--porcelain` out of `git status
+        # --porcelain)` as though it were an option.
+        arm = body.split("while [ $# -gt 0 ]; do", 1)[1].split("\ndone", 1)[0]
+        opts = set(re.findall(r"(--[a-z-]+)\)", arm))
+        opts |= set(re.findall(r"\|(--[a-z-]+)\)", arm))
+        self.assertIn("--unroll", opts, "the fixture found no options at all")
+        text = self.help_text()
+        missing = sorted(o for o in opts if o not in text and o != "--help")
+        self.assertEqual(missing, [], "options the help does not mention")
+
+    def test_it_stops_before_the_prose(self):
+        """The bound is a heading. If it ever swallows the whole file the
+        help becomes the essay, and this says so."""
+        text = self.help_text()
+        self.assertNotIn("Why this exists", text)
+        self.assertLess(len(text.splitlines()), 40, text)
+
+
+@unittest.skipIf(shutil.which("cmake") is None,
+                 "build-llama.sh refuses without cmake — skipped LOUDLY")
+class TestBuildingWithTheUnrollFlag(_FakeBuildFixture):
+    """A build carrying an extra compiler flag is a SUBJECT, like an
+    unpatched one — and for the same reason it needs a family of its own.
+
+    llama.cpp#19984 measures, on this exact hardware, a prefill collapse
+    attributed to a loop-unrolling regression in ROCm 7+, and works around it
+    with `-mllvm --amdgpu-unroll-threshold-local=600`. Whether that flag does
+    anything HERE is an open question — which is the point: it cannot be
+    answered by a build that quietly overwrites the reference it would be
+    compared against.
+
+    The family name is `rocm-unroll` and not `rocm-patched-unroll`, and that
+    is load-bearing rather than taste. builds_of_backend() globs
+    `build-$fam-*`, so a name starting with `rocm-patched-` would be swept up
+    by every list and every prune of the patched family — an unroll build
+    would appear there as a build whose id begins `unroll-`, and --prune could
+    offer to delete it as a stale patched build. Hence the collision test
+    below, which is the one that would catch a later rename.
+    """
+
+    def test_it_builds_into_a_family_of_its_own(self):
+        r = self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        made = [d for d in os.listdir(self.src) if d.startswith("build-")]
+        self.assertEqual(len(made), 1, made)
+        self.assertTrue(made[0].startswith("build-rocm-unroll-"), made[0])
+
+    def test_the_family_does_not_collide_with_the_patched_glob(self):
+        """The rename guard. builds_of_backend() is a prefix glob, so this is
+        what keeps --prune of the patched family away from an unroll build."""
+        self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        unroll = [d for d in os.listdir(self.src)
+                  if d.startswith("build-rocm-unroll-")][0]
+        self.assertFalse(
+            unroll.startswith("build-rocm-patched-"),
+            "an unroll build inside the patched family's glob would be "
+            "listed, ranked and eventually deleted as a patched build")
+        # and the glob itself, asserted rather than reasoned about
+        import glob as _glob
+        swept = _glob.glob(os.path.join(self.src, "build-rocm-patched-*"))
+        self.assertEqual(swept, [], swept)
+
+    def test_the_stamp_carries_the_flag(self):
+        """`cmake=` is where a reader finds out what a binary was built with.
+        A flag that is not in it is a flag nobody can attribute a number to."""
+        self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        st = self.stamp(d)
+        self.assertIn(UNROLL_FLAG, st["cmake"])
+        self.assertEqual(st["family"], "rocm-unroll")
+
+    def test_an_ordinary_build_does_not_carry_the_flag(self):
+        """The negative control. Without it the test above passes even if the
+        flag were hard-wired into every build, and the A/B would compare a
+        binary with itself."""
+        self.build("--ref", "master", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        self.assertNotIn(UNROLL_FLAG, self.stamp(d)["cmake"])
+        self.assertNotIn("mllvm", self.stamp(d)["cmake"])
+
+    def test_it_is_still_a_patched_build(self):
+        """An unroll build is patched — the flag is the only difference. If it
+        stamped `patched=no` the comparison would carry two variables."""
+        self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        st = self.stamp(d)
+        self.assertEqual(st["patched"], "yes")
+        self.assertEqual(st["patch_branch"], "patch")
+        self.assertNotEqual(st["patch_commit"], "none")
+
+    def test_it_cannot_be_activated(self):
+        """Same rule as --no-patch: a subject is not a binary to serve. It is
+        reachable for a measurement through sideserver's --bin, which restores
+        production afterwards; the symlink is not that."""
+        r = self.build("--ref", "master", "--unroll", "--activate",
+                       PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("cannot be combined", r.stdout + r.stderr)
+        self.assertFalse(
+            [d for d in os.listdir(self.src) if d.startswith("build-")],
+            "it must refuse in preflight, before anything is built")
+
+    def test_list_shows_the_unroll_family(self):
+        """A directory nothing lists is a directory nobody prunes, and these
+        are ~950 MB each. The two-family list was hard-wired."""
+        self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        r = self.build("--list")
+        self.assertIn("[rocm-unroll]", r.stdout)
+
+    def test_prune_names_the_unroll_family_as_one_it_did_not_touch(self):
+        self.build("--ref", "master", "--unroll", PATCH_BRANCH="patch")
+        self.build("--ref", "master", PATCH_BRANCH="patch")
+        r = self.build("--prune")
+        self.assertIn("rocm-unroll", r.stdout,
+                      "prune of the patched family must say that unroll "
+                      "builds exist and how to prune them")
+
+
+@unittest.skipIf(shutil.which("cmake") is None,
+                 "build-llama.sh refuses without cmake — skipped LOUDLY")
+class TestBuildingLlamaBenchAsWell(_FakeBuildFixture):
+    """llama-bench is what llama.cpp#19984 measured with, and this stack has
+    never built it — `--target llama-server` only. Reproducing somebody
+    else's number needs their instrument, not an equivalent one."""
+
+    def test_it_also_builds_llama_bench(self):
+        r = self.build("--ref", "master", "--with-bench", PATCH_BRANCH="patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        self.assertTrue(
+            os.path.exists(os.path.join(self.src, d, "bin", "llama-bench")),
+            os.listdir(os.path.join(self.src, d, "bin")))
+
+    def test_the_server_is_still_built(self):
+        """The positive control: --with-bench must ADD a target, not swap one."""
+        self.build("--ref", "master", "--with-bench", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        self.assertTrue(
+            os.path.exists(os.path.join(self.src, d, "bin", "llama-server")))
+
+    def test_without_it_there_is_no_bench(self):
+        self.build("--ref", "master", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        self.assertFalse(
+            os.path.exists(os.path.join(self.src, d, "bin", "llama-bench")))
 
 
 if __name__ == "__main__":

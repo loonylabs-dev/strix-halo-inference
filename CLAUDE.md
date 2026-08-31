@@ -29,10 +29,16 @@ home named below.
   retirement condition — setup/README.md, family table.
 - **Production changes only on the operator's explicit go**: `--activate`,
   `switch-model.sh`, restarting a unit with a new binary.
+- **The tree IS the installation.** install.sh symlinks `$HOME` (the user
+  units, `~/.local/lib/llm-stack`, `~/.config/llm-profile`) into this
+  checkout, so a checked-out branch that moves files breaks every service
+  restart. Move files in a `git worktree`; merging to main STARTS the
+  machine migration — install.sh and the unit switch belong in the same
+  sitting (01.09.2026).
 - **One load on the machine at a time.** No compiling while a measurement
   runs, no measurement while a build runs — contention contaminates both.
-- **The repo is public.** `docs/HANDOVER.md`, `docs/FLASHNEXT-PLAN.md` and
-  the German sources are gitignored and stay so. Scan every new artifact
+- **The repo is public.** `docs/HANDOVER.md`, `docs/HANDOVER-LOG.md`,
+  `docs/FLASHNEXT-PLAN.md` and the German sources are gitignored and stay so. Scan every new artifact
   (reports, copied server logs) for identifying values before committing —
   paths fold to `@HOME@`.
 - **Upstream posts are written by the human.** llama.cpp's CONTRIBUTING

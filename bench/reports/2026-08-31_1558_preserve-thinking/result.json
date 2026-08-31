@@ -1,0 +1,285 @@
+{
+ "url": "http://127.0.0.1:8080",
+ "alias": "qwen38",
+ "effort": "low",
+ "sessions": 3,
+ "turns": 4,
+ "max_tokens": 6144,
+ "arms": {
+  "default": {
+   "enable_thinking": true,
+   "reasoning_effort": "low"
+  },
+  "strip": {
+   "enable_thinking": true,
+   "reasoning_effort": "low",
+   "preserve_thinking": false
+  }
+ },
+ "rows": [
+  {
+   "turn": 1,
+   "think_tokens": 700,
+   "answer_tokens": 478,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 63.0,
+   "arm": "default",
+   "session": 1
+  },
+  {
+   "turn": 2,
+   "think_tokens": 1414,
+   "answer_tokens": 509,
+   "finish": "stop",
+   "prompt_n": 37,
+   "cached": 1280,
+   "seconds": 125.3,
+   "arm": "default",
+   "session": 1
+  },
+  {
+   "turn": 3,
+   "think_tokens": 192,
+   "answer_tokens": 256,
+   "finish": "stop",
+   "prompt_n": 26,
+   "cached": 3242,
+   "seconds": 23.7,
+   "arm": "default",
+   "session": 1
+  },
+  {
+   "turn": 4,
+   "think_tokens": 1149,
+   "answer_tokens": 285,
+   "finish": "stop",
+   "prompt_n": 32,
+   "cached": 3718,
+   "seconds": 77.9,
+   "arm": "default",
+   "session": 1
+  },
+  {
+   "turn": 1,
+   "think_tokens": 585,
+   "answer_tokens": 275,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 48.2,
+   "arm": "strip",
+   "session": 1
+  },
+  {
+   "turn": 2,
+   "think_tokens": 769,
+   "answer_tokens": 404,
+   "finish": "stop",
+   "prompt_n": 314,
+   "cached": 96,
+   "seconds": 79.2,
+   "arm": "strip",
+   "session": 1
+  },
+  {
+   "turn": 3,
+   "think_tokens": 397,
+   "answer_tokens": 118,
+   "finish": "stop",
+   "prompt_n": 432,
+   "cached": 406,
+   "seconds": 38.1,
+   "arm": "strip",
+   "session": 1
+  },
+  {
+   "turn": 4,
+   "think_tokens": 247,
+   "answer_tokens": 189,
+   "finish": "stop",
+   "prompt_n": 152,
+   "cached": 834,
+   "seconds": 33.2,
+   "arm": "strip",
+   "session": 1
+  },
+  {
+   "turn": 1,
+   "think_tokens": 489,
+   "answer_tokens": 530,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 62.2,
+   "arm": "default",
+   "session": 2
+  },
+  {
+   "turn": 2,
+   "think_tokens": 1085,
+   "answer_tokens": 441,
+   "finish": "stop",
+   "prompt_n": 37,
+   "cached": 1121,
+   "seconds": 100.6,
+   "arm": "default",
+   "session": 2
+  },
+  {
+   "turn": 3,
+   "think_tokens": 727,
+   "answer_tokens": 220,
+   "finish": "stop",
+   "prompt_n": 26,
+   "cached": 2686,
+   "seconds": 66.8,
+   "arm": "default",
+   "session": 2
+  },
+  {
+   "turn": 4,
+   "think_tokens": 803,
+   "answer_tokens": 197,
+   "finish": "stop",
+   "prompt_n": 32,
+   "cached": 3661,
+   "seconds": 73.3,
+   "arm": "default",
+   "session": 2
+  },
+  {
+   "turn": 1,
+   "think_tokens": 716,
+   "answer_tokens": 387,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 77.0,
+   "arm": "strip",
+   "session": 2
+  },
+  {
+   "turn": 2,
+   "think_tokens": 806,
+   "answer_tokens": 656,
+   "finish": "stop",
+   "prompt_n": 426,
+   "cached": 96,
+   "seconds": 96.7,
+   "arm": "strip",
+   "session": 2
+  },
+  {
+   "turn": 3,
+   "think_tokens": 450,
+   "answer_tokens": 247,
+   "finish": "stop",
+   "prompt_n": 684,
+   "cached": 518,
+   "seconds": 55.0,
+   "arm": "strip",
+   "session": 2
+  },
+  {
+   "turn": 4,
+   "think_tokens": 1015,
+   "answer_tokens": 403,
+   "finish": "stop",
+   "prompt_n": 281,
+   "cached": 1198,
+   "seconds": 101.4,
+   "arm": "strip",
+   "session": 2
+  },
+  {
+   "turn": 1,
+   "think_tokens": 417,
+   "answer_tokens": 545,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 58.8,
+   "arm": "default",
+   "session": 3
+  },
+  {
+   "turn": 2,
+   "think_tokens": 1572,
+   "answer_tokens": 631,
+   "finish": "stop",
+   "prompt_n": 37,
+   "cached": 1064,
+   "seconds": 162.1,
+   "arm": "default",
+   "session": 3
+  },
+  {
+   "turn": 3,
+   "think_tokens": 306,
+   "answer_tokens": 178,
+   "finish": "stop",
+   "prompt_n": 26,
+   "cached": 3306,
+   "seconds": 33.5,
+   "arm": "default",
+   "session": 3
+  },
+  {
+   "turn": 4,
+   "think_tokens": 569,
+   "answer_tokens": 226,
+   "finish": "stop",
+   "prompt_n": 32,
+   "cached": 3818,
+   "seconds": 59.3,
+   "arm": "default",
+   "session": 3
+  },
+  {
+   "turn": 1,
+   "think_tokens": 541,
+   "answer_tokens": 486,
+   "finish": "stop",
+   "prompt_n": 70,
+   "cached": 30,
+   "seconds": 66.8,
+   "arm": "strip",
+   "session": 3
+  },
+  {
+   "turn": 2,
+   "think_tokens": 1131,
+   "answer_tokens": 600,
+   "finish": "stop",
+   "prompt_n": 525,
+   "cached": 96,
+   "seconds": 119.7,
+   "arm": "strip",
+   "session": 3
+  },
+  {
+   "turn": 3,
+   "think_tokens": 295,
+   "answer_tokens": 128,
+   "finish": "stop",
+   "prompt_n": 628,
+   "cached": 617,
+   "seconds": 32.4,
+   "arm": "strip",
+   "session": 3
+  },
+  {
+   "turn": 4,
+   "think_tokens": 1356,
+   "answer_tokens": 226,
+   "finish": "stop",
+   "prompt_n": 162,
+   "cached": 1241,
+   "seconds": 114.8,
+   "arm": "strip",
+   "session": 3
+  }
+ ]
+}

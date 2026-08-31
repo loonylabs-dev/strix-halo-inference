@@ -248,6 +248,7 @@ many cells the variant file holds).
 | `suites/np2-candidates.py` | Backend and flag combinations on a SIDE server (port 8081), so production keeps running while the question "can we have two slots yet?" gets measured |
 | `suites/restore-safety.py` | Whether a slot restore is safe in a given state — and with `--binary`, whether an upstream change fixes it. Every cell is recorded, including the one that is KNOWN to hang, so the cells after it are still measured |
 | `suites/answer-reuse.py` | What a turn pays to read the previous ANSWER again. Measures the cost; expect it to fail on some rounds and not others |
+| `suites/preserve-thinking.py` | Whether stripping past thinking from the history (`preserve_thinking:false`) calms a thinking mode or only saves context — think tokens per turn, counted via `/tokenize`, two arms on identical questions |
 | `suites/decode-rate.py` | What decode actually costs — seven rounds, every rate printed. Exists because a THREE-round mean read a 12 % regression that was not there: the spread on this machine is 19 %, so nothing under ~22 % is resolvable at n=3 |
 | `suites/slot-tail.py` | Why it pays: whether the slot is still a prefix of the next prompt. Reads `f_keep` out of the ordinary journal — no restart, no `LLAMA_SERVER_SLOTS_DEBUG`. The tokens the server hands back do NOT contain the tail, so nothing here may be derived from them |
 | `compare.py` | The decision table across the variants of one sweep |

@@ -38,6 +38,12 @@ home named below.
 - **Upstream posts are written by the human.** llama.cpp's CONTRIBUTING
   forbids AI-written issues/PRs/comments; measurements, tables and
   reproducers may be handed over, prose may not.
+- **A guard's refusal must not be piped away.** build-llama.sh's MAX_REPLAY
+  and the memory guard say no through stderr and a non-zero exit; a
+  background `cmd 2>&1 | tail` reports tail's 0 and the refusal reads as
+  "completed" — a build that never ran passed as success twice on
+  31.08.2026. Redirect full output to a file and read that; pipe nothing
+  whose exit code decides anything.
 
 ## Language
 

@@ -603,6 +603,32 @@
       "status": "FIXED IN PRODUCTION 31.08.2026 ~15:30, on the operator's go: --checkpoint-min-step 512 is in setup/env/qwen38.env (with the argument in its comment) and VERIFIED LIVE after the restart — the production-shaped sequence shows reused=8074 computed=177 on the changed task prompt, where the default gave 6201/2050 the same afternoon. WHAT REMAINS OPEN is the memory side: checkpoints cost 149.8 MiB each, the finer grid keeps more of them, and the -cram fill rate under a real working day is unmeasured. Baseline for that watch: RssAnon 0.45 GiB at the 15:2x restart, cache empty. If the cache starts evicting noticeably, raise the step to 1024/2048 before raising -cram. Upstream family unchanged.",
       "first_seen": "2026-08-31",
       "last_checked": "2026-08-31"
+    },
+    {
+      "id": "flashnext-mtp-serving-shape-hangs",
+      "title": "Flash-Next with draft-mtp,ngram-mod stops producing tokens — GPU busy, zero output",
+      "applies_to": {
+        "model_arch": "qwen4exp"
+      },
+      "shows_as": "silent",
+      "symptom": "The server accepts the request, finishes the prefill at normal speed, starts generating — and never yields a token. GPU stays at ~97 %, the log shows no n_gen line at all, health keeps answering 200. To a client it is indistinguishable from a long generation; nothing raises.",
+      "measured": "31.08.2026 ~23:00, gate G3 immediately before the planned production switch. Build build-rocm-drluoto-b10726-10-gc345e396d (master b10726 + drluoto/llama.cpp strix-halo-flash-next rebased onto it — PR #27836 draft-mtp, its loader/whitelist fixes, backports of #27941/#27977, GDN rsqrt #28068; hipCUB TOP_K dropped for master's radix #27466 — plus this stack's two patches). Profile shape: -md mtp-Qwen3.8-Flash-Next-Q8_0-drluoto.gguf --spec-type draft-mtp,ngram-mod --spec-draft-n-max 4 --spec-draft-p-min 0.75, GGML_CUDA_DISABLE_GRAPHS=1, -ub 512 -c 65536. depth-correctness answered first/middle/last at depth 8k, then the TOOLS question prefilled 8,078 tokens at 273 t/s and generated NOTHING for 39 minutes at GPU 97 % until killed by hand. CONTROLS the same evening: the same question WITHOUT speculation on the same build answered ok twice (gate G2, 8/8 cells clean); the same spec config on the pre-rebase b10664 build ran every speed workload to depth 37k without a hang (bench/reports/2026-08-31_2158_speed_flashnext-C-mtpq8/) but was never asked this question. Server log of the hang preserved beside that report as g3-c2-server-hang.log.",
+      "mitigation": "DO NOT SERVE the flashnext profile until this is isolated — its MODEL_TITLE carries the block and setup/env/flashnext.env carries the suspect ranking and the two ~15-minute isolation experiments: (a) the same depth-correctness WITH speculation against the pre-rebase b10664 build, (b) a C2 rebuild WITHOUT the #27977-backport commit. Suspects in order: (1) the 31.08. rebase doubled the #27977 backport's kv-cells early-stop against master's own #28011, (2) latent in PR #27836 on a newer master, (3) latent everywhere. qwen38 is unaffected — its draft-mtp drafts from the embedded qwen35 head and has served for days.",
+      "detect": {
+        "kind": "manual",
+        "how": "In the server log: prompt-processing print_timing lines complete, then no 'n_gen =' line ever appears while /sys/class/drm/card*/device/gpu_busy_percent stays above 90 for minutes. bench/suites/depth-correctness.py run WITH the speculation flags reproduces it at the depth-8k tools question; without them the same suite is clean."
+      },
+      "suite": "bench/suites/depth-correctness.py",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/pull/27836",
+        "https://github.com/ggml-org/llama.cpp/pull/28097",
+        "https://github.com/ggml-org/llama.cpp/pull/27977",
+        "https://github.com/ggml-org/llama.cpp/pull/28011",
+        "https://github.com/ggml-org/llama.cpp/pull/28068"
+      ],
+      "status": "open, found 31.08.2026 by the last gate before the switch. NOT reported upstream yet, deliberately: the hang was observed on a hand-rebased stack, and until experiment (a) or (b) separates the rebase from the PR it is not an upstream claim. The switch to Flash-Next waits on exactly this entry.",
+      "first_seen": "2026-08-31",
+      "last_checked": "2026-08-31"
     }
   ]
 }

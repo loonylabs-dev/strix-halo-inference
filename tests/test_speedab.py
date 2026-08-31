@@ -205,3 +205,39 @@ class TestTheArmsTakeTurnsGoingFirst(unittest.TestCase):
         for i in range(4):
             speed_ab.order_for(i, arms)
         self.assertEqual(arms, self.ARMS)
+
+
+class TestReportsDoNotNameThisMachine(unittest.TestCase):
+    """Reports are PUBLISHED. A home directory in one names the machine it was
+    measured on, and tests/test_localenv.py does not read bench/reports/ — so
+    this has to be got right at the point of writing rather than caught later.
+
+    systemdfile.unexpand()'s own docstring records the previous occurrence:
+    three reports written with a home directory in them."""
+
+    def test_paths_are_folded(self):
+        home = os.path.expanduser("~")
+        self.assertNotIn(home, speed_ab.rec(os.path.join(home, "llama.cpp")))
+        self.assertIn("@HOME@", speed_ab.rec(os.path.join(home, "llama.cpp")))
+
+    def test_a_whole_cmake_line_is_folded(self):
+        """The stamp's cmake line carries several absolute paths at once, and
+        it is copied into the report verbatim."""
+        home = os.path.expanduser("~")
+        line = ("-DCMAKE_HIP_COMPILER=%s/sdk/llvm/bin/clang "
+                "-DROCM_PATH=%s/sdk" % (home, home))
+        self.assertNotIn(home, speed_ab.rec(line))
+
+    def test_the_written_reports_are_clean(self):
+        """The two that exist. Belt and braces: the helper could be right and
+        a caller still bypass it."""
+        home = os.path.expanduser("~")
+        import glob
+        found = []
+        for f in glob.glob(str(REPO / "bench" / "reports" / "*" / "RESULT.md")):
+            with open(f, encoding="utf-8") as fh:
+                for n, line in enumerate(fh, 1):
+                    if home in line:
+                        found.append("%s:%d" % (os.path.basename(
+                            os.path.dirname(f)), n))
+        self.assertEqual(found, [], "reports naming this machine")

@@ -1,11 +1,11 @@
 # unroll-flag
 
-model: `/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf`
+model: `@MODELS@/Qwen3.8-27B-UD-Q4_K_XL.gguf`
 
-- **reference**: `/home/martinloreck/llama.cpp/build-rocm-patched/bin/llama-bench`, build `b10702-11-gc799f1014`
+- **reference**: `@HOME@/llama.cpp/build-rocm-patched/bin/llama-bench`, build `b10702-11-gc799f1014`
   - cmake: `-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF`
-- **variant**: `/home/martinloreck/llama.cpp/build-rocm-altsdk-b10711-2-gc799f1014/bin/llama-bench`, build `b10711-2-gc799f1014`
-  - cmake: `-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/home/martinloreck/rocm-sdks/rocm-10.1.0a20260830/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DCMAKE_HIP_FLAGS=--rocm-path=/home/martinloreck/rocm-sdks/rocm-10.1.0a20260830 -isystem /home/martinloreck/rocm-sdks/rocm-10.1.0a20260830/include -DCMAKE_PREFIX_PATH=/home/martinloreck/rocm-sdks/rocm-10.1.0a20260830 -DROCM_PATH=/home/martinloreck/rocm-sdks/rocm-10.1.0a20260830`
+- **variant**: `@HOME@/llama.cpp/build-rocm-altsdk-b10711-2-gc799f1014/bin/llama-bench`, build `b10711-2-gc799f1014`
+  - cmake: `-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=@HOME@/rocm-sdks/rocm-10.1.0a20260830/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DCMAKE_HIP_FLAGS=--rocm-path=@HOME@/rocm-sdks/rocm-10.1.0a20260830 -isystem @HOME@/rocm-sdks/rocm-10.1.0a20260830/include -DCMAKE_PREFIX_PATH=@HOME@/rocm-sdks/rocm-10.1.0a20260830 -DROCM_PATH=@HOME@/rocm-sdks/rocm-10.1.0a20260830`
 
 ```
                       reference       unroll     change

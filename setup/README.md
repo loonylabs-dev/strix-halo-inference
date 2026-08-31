@@ -240,6 +240,28 @@ Building into a directory of its own is not tidiness. `llama-server` is a 12 KB
 executable that maps `libggml-hip.so` out of the same `bin/`; overwriting a
 mapped library is a SIGBUS in the running process, not an error in the build.
 
+**Four families, and only one of them can be served.** A build that differs
+from the serving one is a SUBJECT — something to measure against it, never
+something to point the symlink at:
+
+| Family | Built with | Why it is separate |
+|---|---|---|
+| `build-rocm-patched-<id>` | the two patches | the only family `--activate` and `--use` accept |
+| `build-rocm-unpatched-<id>` | `--no-patch` | upstream as it stands, to measure whether a fix landed. Serving it answers WRONG once a second slot is used |
+| `build-rocm-unroll-<id>` | `--unroll` | plus `-mllvm --amdgpu-unroll-threshold-local=600`, the workaround from llama.cpp#19984. Measured 31.08.2026: **no effect on this stack**, see `bench/reports/2026-08-31_0220_unroll-flag/` |
+| `build-rocm-altsdk-<id>` | `--rocm-path DIR` | against a ROCm that is not the system's. Measured 31.08.2026 against 10.1: **+10 % decode on an empty context, gone by 64k**, see `bench/reports/2026-08-31_1219_speed-ab/` |
+
+The names matter more than they look. `builds_of_backend()` globs
+`build-<family>-*`, so a family named `rocm-patched-unroll` would be swept into
+every list and every prune of the patched family — and `--prune` could offer to
+delete it as a stale patched build. Hence `rocm-unroll`, not `rocm-patched-unroll`.
+
+An alternate-SDK build additionally needs that SDK's libraries at RUN time:
+ROCm 10.1's `libamdhip64` carries the SAME soname as Fedora's 7.1, so without
+the SDK in RUNPATH the binary loads the system runtime and reports numbers
+either way. That is why it cannot be activated, and why `bench/suites/speed-ab.py`
+checks with `ldd` rather than trusting the stamp.
+
 ---
 
 ## The defect registry: `defects.json`

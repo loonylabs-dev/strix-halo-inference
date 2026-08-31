@@ -194,6 +194,18 @@ def rocm_libs_of(binary, env=None):
     return out
 
 
+def rec(text):
+    """A path as it should be RECORDED rather than run.
+
+    Expanded to run, unexpanded to record. Reports are published; a home
+    directory in one names the machine it was measured on. systemdfile's
+    docstring says this already happened once, to three reports, before
+    tests/test_localenv.py caught it — and that test does not read
+    bench/reports/, so here it has to be got right rather than caught.
+    """
+    return runlib.systemdfile.unexpand(str(text))
+
+
 def order_for(rnd, arms):
     """Which arm runs first in round `rnd`. Alternates, so that over an even
     number of rounds each arm is first exactly half the time and the
@@ -293,8 +305,7 @@ def main():
     say("rounds:    %d, interleaved" % a.reps)
     hips = {}
     for name, b in arms:
-        say("%-10s %s" % (name + ":", runlib.systemdfile.unexpand(b)
-                          if hasattr(runlib, "systemdfile") else b))
+        say("%-10s %s" % (name + ":", rec(b)))
         st = stamp_beside(b)
         say("           build %s, cmake carries the flag: %s"
             % (st.get("build_id", "?"),
@@ -462,11 +473,12 @@ def report(results, arms, a, depths):
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "RESULT.md"), "w") as f:
         f.write("# unroll-flag\n\n")
-        f.write("model: `%s`\n\n" % a.model)
+        f.write("model: `%s`\n\n" % rec(a.model))
         for name, b in arms:
             st = stamp_beside(b)
-            f.write("- **%s**: `%s`, build `%s`\n" % (name, b, st.get("build_id", "?")))
-            f.write("  - cmake: `%s`\n" % st.get("cmake", "?"))
+            f.write("- **%s**: `%s`, build `%s`\n"
+                    % (name, rec(b), st.get("build_id", "?")))
+            f.write("  - cmake: `%s`\n" % rec(st.get("cmake", "?")))
         f.write("\n```%s\n```\n" % text)
     with open(os.path.join(d, "rounds.json"), "w") as f:
         json.dump({name: {label_of(k): v for k, v in res.items()}

@@ -243,6 +243,7 @@ many cells the variant file holds).
 | `suites/depth-curve.py` | Prefill and decode as the context fills. These diverge far more than any flat number suggests |
 | `suites/depth-correctness.py` | Whether the answers stay RIGHT as the window fills — a property of the build, not of the model |
 | `suites/stock-vs-patched.py` | Whether the patched build is measurably better than an official binary at the setting production runs |
+| `suites/speed-ab.py` | Prefill and decode of TWO builds that differ in exactly one named way — a compiler flag, or the ROCm they load. Refuses a pair that differs in none or in more than one, checks with `ldd` which runtime each arm will really load, alternates which arm goes first, and discards a warm-up pass. The ordering is not fussiness: on a pair that differed in nothing, going second was worth −0.5 to −1.2 % |
 | `suites/slot-corruption.py` | Which ingredient makes this build emit `////` — one variable per case, fresh server each |
 | `suites/np2-candidates.py` | Backend and flag combinations on a SIDE server (port 8081), so production keeps running while the question "can we have two slots yet?" gets measured |
 | `suites/restore-safety.py` | Whether a slot restore is safe in a given state — and with `--binary`, whether an upstream change fixes it. Every cell is recorded, including the one that is KNOWN to hang, so the cells after it are still measured |

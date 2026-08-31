@@ -553,6 +553,30 @@
       "status": "FIXED AND LIVE since 31.08.2026 13:34 — the production gateway was restarted on the operator's go and now runs the fix. Verified END TO END through the Cloudflare edge with a case ABOVE the window, after the operator caught that the first verification run (114.4 s save phase) sat UNDER it and proved nothing about survival: a cold ~40k-token streamed request over the tunnel, save phase 253.8 s, got HTTP 200, 8 pings at a 30 s cadence and message_start at 262.3 s, largest gap 30.4 s, no 524 — more than double any window and past the incident's own 144 s. The journal shows the 'sign of life while the prefix is saved' line at exactly START+30 s on both runs, so the pings came from this code path and not from the queue phase. The fix is on branch test/sse-524 and NOT YET COMMITTED; until it is merged, a checkout of another branch plus a gateway restart would silently reintroduce the silence.",
       "first_seen": "2026-08-31",
       "last_checked": "2026-08-31"
+    },
+    {
+      "id": "static-context-sits-behind-the-first-typed-message",
+      "title": "Claude Code places static context behind the typed first message, so every fresh session recomputes it",
+      "applies_to": {
+        "component": "prompt format"
+      },
+      "shows_as": "slow",
+      "symptom": "The first turn of a fresh Claude Code session (after /clear or a new start) recomputes ~4k tokens and takes ~25 s although everything it sends except the typed greeting is byte-identical to the previous session. The trace reads '84 % cache' with 'msgs N -> 2, kept 2' — system and tools held, the message area rewritten.",
+      "measured": "31.08.2026, at trace level `text`, five fresh sessions from the same client. Anatomy of the request: system 8.8 KB + 52 tool schemas 99.4 KB = the 24,609-token head, always cached; then messages[0] = [system-reminder 306 chars, caveat 246, /clear metadata 177, THE TYPED MESSAGE]; then messages[1] = a 7,252-char static block (the Agent-tool type list), byte-identical between sessions. Four sessions opened with the identical word 'hi': reused=28490 computed=4, 0.9-1.4 s each — so the surrounding blocks are stable and the cache works. One session opened with 'hallo' instead: reused=24609 computed=3886, 25.3 s — the divergence sits exactly at the typed word, and everything behind it is recomputed, including the identical 7.3 KB. The prefix cache is doing exactly what a prefix cache does; the ordering puts variable text in front of static text. CONTRAST, same trace store 30.08.: the DeepSeek harness sends its large dynamic message first and carries no static trailer — 99.2 % cache over 39 turns, which is what the same stack does when the ordering is right. KNOWN UPSTREAM: claude-code #47098 reports this exact structure (cache_control only on the typed input, static reminders uncached before it, the same 'greet first' workaround) and was CLOSED AS NOT PLANNED in April 2026; #43657 and #27048 are the resume-side relatives.",
+      "mitigation": "NOT FIXABLE HERE, twice over. Reordering the messages in the gateway would change the prompt the model actually reads — the category of rewrite this stack deliberately keeps switched off (HOIST_SYSTEM=0 is the operator's standing decision), and it would break against every Claude Code release that moves the blocks again. Upstream knows and has closed it as not planned. WORKAROUND, measured: open every fresh session with the same constant word (e.g. exactly 'hi') and put the real question in the second turn — the first turn is then computed=4 and near-instant, and the second turn appends behind a warm prefix instead of diverging in front of 4k static tokens. Costs one greeting.",
+      "detect": {
+        "kind": "manual",
+        "how": "In the journal: a fresh-session first turn with reused stuck at the head boundary (~24.6k here) and computed ~3.9k. In `tools/tracelog.py diff`: 'msgs N -> 2, kept 2' right after a /clear. At trace level `text` the two bodies differ only in the typed block of messages[0]."
+      },
+      "suite": null,
+      "upstream": [
+        "https://github.com/anthropics/claude-code/issues/47098",
+        "https://github.com/anthropics/claude-code/issues/43657",
+        "https://github.com/anthropics/claude-code/issues/27048"
+      ],
+      "status": "OPEN as a property of the client, documented 31.08.2026. Nothing to fix in this stack; the workaround stands in `mitigation` and costs one greeting per session. Re-check the message order after Claude Code updates — #43657 shows the blocks have moved before.",
+      "first_seen": "2026-08-31",
+      "last_checked": "2026-08-31"
     }
   ]
 }

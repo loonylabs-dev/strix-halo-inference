@@ -5,7 +5,7 @@ another.
 
 | With | What it answers | Needs | Duration |
 |---|---|---|---|
-| `bash tests/run.sh` | Is the logic right? (1041 tests) | nothing | ~14 s |
+| `bash tests/run.sh` | Is the logic right? (1046 tests) | nothing | ~15 s |
 | `bash tests/live_prefix.sh` | Do saving **and** restoring really bite? | GPU, running stack | ~4 min |
 | `bash tests/live_answer_freshness.sh` | Does a RESTORED prefix still answer the CURRENT question? | GPU, running stack | ~3 min |
 | `bash tests/live_concurrency.sh` | Does the admission control hold under load? | GPU, running stack, a token | ~2 min |

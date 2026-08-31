@@ -577,6 +577,32 @@
       "status": "OPEN as a property of the client, documented 31.08.2026. Nothing to fix in this stack; the workaround stands in `mitigation` and costs one greeting per session. Re-check the message order after Claude Code updates — #43657 shows the blocks have moved before.",
       "first_seen": "2026-08-31",
       "last_checked": "2026-08-31"
+    },
+    {
+      "id": "hybrid-checkpoints-round-partial-reuse-down",
+      "title": "A prompt that diverges near its end is rolled back to the last checkpoint, not to the divergence",
+      "applies_to": {
+        "model_arch": "qwen35"
+      },
+      "shows_as": "slow",
+      "symptom": "Two prompts share a long head and differ only near the end — same system, same tools, a different final user text. The reuse does not reach the divergence: it stops at the last context checkpoint of the PREVIOUS prompt, and everything from there is recomputed. Here that turned a ~170-token difference into a 2,050-token recompute, ~10 s instead of ~1 s, once per changed prompt.",
+      "measured": "31.08.2026, DeepSeek-harness traffic against qwen38, trace level text, positions confirmed with /apply-template + /tokenize (tools included in the template call — the slot-tail.py lesson). The prompt: head (system message + 52 tools) = 8,081 tokens, the harness start prompt = 16 tokens at position 8,081, a 154-token runtime-context message BEHIND it, total 8,251. Identical rerun: reused=8245..8247, computed=4 — the end-minus-4 checkpoint, f_keep 1.0. Changed start prompt: reused=6201, computed=2050. The arithmetic is exact: 6,201 = 8,249 (previous prompt) - 2,048 (n_ubatch), and 2,050 = 2,048 + 2 — the slot fell back to the previous prompt's last usable checkpoint, 1,880 tokens BEFORE the true divergence at 8,081. checkpoints exist only at {end-4, end-(4+n_ubatch)} of what was processed (server-context.cpp checkpoint_offsets), and a hybrid slot cannot be trimmed to an arbitrary position — llama_memory_hybrid::seq_pos_min sits at the sequence end, the same amplifier the-previous-answer-is-sometimes-not-reused documents. So 1,880 of the 2,050 recomputed tokens are checkpoint rounding, not content. The client's share is small here: the harness carries only the 154-token runtime-context behind the variable input — the same ordering flaw as static-context-sits-behind-the-first-typed-message, at 1/25 the size.\n\nREPRODUCED AND EXPLAINED the same afternoon on a side server (bench/reports/2026-08-31_1500_checkpoint-grid): a changed prompt sent STRAIGHT after its predecessor reuses to the EXACT divergence (reused=8074, computed=177) even on the default grid — the rounding needs the production-shaped history of an identical repeat plus the harness's judge calls in between (sequence a,j,a,j,b). Every reprocessing lays fresh end checkpoints and the min-step eviction (default 8192) then prunes the user-message-boundary checkpoint as too close; the best rollback point left is one ubatch before the previous end, which is exactly where reused lands (6201 = 8249 - 2048, reproduced deterministically, twice in one run). WITH --checkpoint-min-step 512, same sequence: reused=8074, computed=177/181 — the boundary checkpoint survives and the rounding is gone, 11.6x less prefill per task switch.",
+      "mitigation": "THE LEVER IS MEASURED and it is `--checkpoint-min-step 512` (default 8192): same production-shaped sequence, computed per changed start prompt falls from 2,050 to 177 tokens and reuse reaches the exact divergence. APPLIED 31.08.2026 ~15:30 — the flag is in setup/env/qwen38.env with the argument in its comment, and `status` carries the live verification (an earlier version of this field said 'NOT APPLIED yet'; it was written before the operator's go and outlived it). The price is more surviving checkpoints at 149.8 MiB each (capacity 32 per slot, and the RAM prompt cache stores them with every prompt); what that does to the -cram budget under real traffic is UNMEASURED and is the watch named in `status`. Secondary and mostly moot next to it: the harness could move its runtime-context message in front of the variable input (saves only the ~170 content tokens); `--ctx-checkpoints` (capacity, default 32) was never the limit.",
+      "detect": {
+        "kind": "manual",
+        "how": "In the journal: a warm request whose reused equals the PREVIOUS prompt's length minus n_ubatch (here 2,048) while computed is n_ubatch plus a small remainder — on a prompt whose true divergence sits far behind the reuse point. /apply-template + /tokenize on the shared head gives the true divergence position; the gap between it and `reused` is the rounding."
+      },
+      "suite": "bench/suites/checkpoint-grid.py",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/discussions/19264",
+        "https://github.com/ggml-org/llama.cpp/issues/24055",
+        "https://github.com/ggml-org/llama.cpp/issues/22384",
+        "https://github.com/ggml-org/llama.cpp/issues/20225",
+        "https://github.com/ggml-org/llama.cpp/issues/19794"
+      ],
+      "status": "FIXED IN PRODUCTION 31.08.2026 ~15:30, on the operator's go: --checkpoint-min-step 512 is in setup/env/qwen38.env (with the argument in its comment) and VERIFIED LIVE after the restart — the production-shaped sequence shows reused=8074 computed=177 on the changed task prompt, where the default gave 6201/2050 the same afternoon. WHAT REMAINS OPEN is the memory side: checkpoints cost 149.8 MiB each, the finer grid keeps more of them, and the -cram fill rate under a real working day is unmeasured. Baseline for that watch: RssAnon 0.45 GiB at the 15:2x restart, cache empty. If the cache starts evicting noticeably, raise the step to 1024/2048 before raising -cram. Upstream family unchanged.",
+      "first_seen": "2026-08-31",
+      "last_checked": "2026-08-31"
     }
   ]
 }

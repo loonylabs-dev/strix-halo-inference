@@ -207,6 +207,16 @@ for pair in "cc-gateway.env llm-gateway.env" "cc-gateway-tokens llm-gateway-toke
     printf "      rm ~/.config/%s\n" "$1"
   fi
 done
+# Same rule for the gateway's cache: the seen file is copied by install.sh,
+# the trace directory is diagnosis history and is moved rather than copied.
+if [ -e "$HOME/.cache/cc-gateway-seen.json" ] && [ -e "$HOME/.cache/llm-gateway-seen.json" ]; then
+  printf "  \033[33m?\033[0m ~/.cache/cc-gateway-seen.json is left over — copied to llm-gateway-seen.json (09/2026).\n"
+  printf "      rm ~/.cache/cc-gateway-seen.json\n"
+fi
+if [ -d "$HOME/.cache/cc-gateway-trace" ]; then
+  printf "  \033[33m?\033[0m ~/.cache/cc-gateway-trace is left over — the trace dir is llm-gateway-trace since 09/2026.\n"
+  printf "      mv ~/.cache/cc-gateway-trace ~/.cache/llm-gateway-trace\n"
+fi
 if systemctl --user is-active cc-gateway.service >/dev/null 2>&1; then
   old "the pre-rename unit cc-gateway is RUNNING; llm-gateway is the name since 09/2026"
   printf "      systemctl --user disable --now cc-gateway\n"

@@ -1,4 +1,10 @@
-# unroll-flag
+# ROCm 10.1 against ROCm 7.1 — first pass, A,B ordering not yet counterbalanced
+
+Superseded by `2026-08-31_1219_speed-ab/`, which reran the pair with
+alternating arm order after the ordering bias was found. Kept because the
+two runs together are what showed the bias. The title said `# unroll-flag`
+until 31.08. — the suite's report generator wrote its first use case's name
+into every report; fixed the same day.
 
 model: `@MODELS@/Qwen3.8-27B-UD-Q4_K_XL.gguf`
 

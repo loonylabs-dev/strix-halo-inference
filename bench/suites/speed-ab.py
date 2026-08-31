@@ -482,7 +482,14 @@ def report(results, arms, a, depths):
                      time.strftime("%Y-%m-%d_%H%M") + "_speed-ab")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "RESULT.md"), "w") as f:
-        f.write("# unroll-flag\n\n")
+        # The title names the PAIR, not the suite's first use case. It said
+        # "# unroll-flag" verbatim for every comparison until 31.08. — the
+        # ROCm-10 report shipped under that title and one of the two copies
+        # was corrected by hand, the other was not.
+        sr, sv = stamp_beside(arms[0][1]), stamp_beside(arms[1][1])
+        f.write("# speed-ab — %s vs %s\n\n"
+                % (sr.get("build_id", "reference"),
+                   sv.get("build_id", "variant")))
         f.write("model: `%s`\n\n" % rec(a.model))
         for name, b in arms:
             st = stamp_beside(b)

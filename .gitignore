@@ -92,5 +92,3 @@ docs/px13/
 # which is the point; it is not deletion.
 docs/archive/
 
-# The entry point for a new session. Internal, like the handover it points at.
-docs/NEXT-SESSION.md

@@ -5,6 +5,28 @@ directory exists so the opinion is not needed: the same battery, the same
 probes, the same report layout for every candidate, so two of them can be
 put next to each other without arguing about anecdotes.
 
+## The rules a measurement here has to obey
+
+Promoted 31.08.2026 from the session entry notes, where three of them lived
+unpublished; each was paid for before it was written down.
+
+- **A check that cannot fail is not a check.** The recurring defect here is
+  not the crash; it is the thing that runs, exits 0, and has no effect.
+  Before trusting a new test or probe, make the condition it guards against
+  actually appear and confirm it goes red.
+- **A bound shorter than the work it waits for measures the bound, not the
+  work.** Four reproductions of a defect that did not exist, because nothing
+  compared a 300 s restore timeout with the 335 s generation queued in front
+  of it. Ask of any measurement: what would this have reported if the thing
+  were fine?
+- **Know what your instrument can resolve.** Decode here has a 19 %
+  coefficient of variation, so a three-round mean cannot see anything under
+  ~22 % — it once reported a 12 % regression that did not exist. And a
+  comparison that measures nothing in both arms is worse than no comparison,
+  because it produces a conclusion: a speculation on/off test once read the
+  same answer in both arms, through a quantity that could not show the
+  effect at all.
+
 ## What one run can and cannot decide (26.08.2026)
 
 > **Record, not instruction.** This section is about the task battery, removed

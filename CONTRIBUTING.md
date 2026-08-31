@@ -47,7 +47,7 @@ not invented.
 
 ## Before you open a pull request
 
-    bash tests/run.sh        505 tests, ~8 s, no GPU and no service needed
+    bash tests/run.sh        1046 tests, ~15 s, no GPU and no service needed
     bash setup/check.sh      is the repo still what the running system reads?
 
 The test suite is the contract between the parts, and that is where the bugs

@@ -1,0 +1,92 @@
+{
+  "_meta": {
+    "argv": [
+      "bench/suites/flag-ab.py",
+      "--name",
+      "ub-sweep",
+      "--arm",
+      "ub512:-ub 512",
+      "--arm",
+      "ub1024:-ub 1024",
+      "--arm",
+      "ub2048:-ub 2048",
+      "--depths",
+      "0,32768",
+      "--prompt",
+      "2048",
+      "--reps",
+      "2"
+    ],
+    "build": {
+      "build_id": "b10702-11-gc799f1014",
+      "backend": "rocm",
+      "family": "rocm-patched",
+      "patched": "yes",
+      "upstream_ref": "master-2patches",
+      "upstream_commit": "c799f10147916ad58f00648b5ef0b87425f554c0",
+      "patch_commit": "c799f10147916ad58f00648b5ef0b87425f554c0",
+      "patch_branch": "master-2patches",
+      "built_at": "2026-08-30T23:24:37+02:00",
+      "version": "version: 0.3.0-dev (build 333, commit c799f1014)",
+      "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+    },
+    "axis": {
+      "kind": "flag",
+      "name": "-ub"
+    }
+  },
+  "ub512": {
+    "pp2048 @ d0": [
+      256.446484,
+      247.245273
+    ],
+    "tg64 @ d0": [
+      9.097849,
+      8.924641
+    ],
+    "pp2048 @ d32768": [
+      165.850618,
+      157.716899
+    ],
+    "tg64 @ d32768": [
+      8.327454,
+      8.203304
+    ]
+  },
+  "ub1024": {
+    "pp2048 @ d0": [
+      257.92645,
+      239.739425
+    ],
+    "tg64 @ d0": [
+      9.060443,
+      8.882393
+    ],
+    "pp2048 @ d32768": [
+      155.575846,
+      150.805347
+    ],
+    "tg64 @ d32768": [
+      8.305182,
+      8.172996
+    ]
+  },
+  "ub2048": {
+    "pp2048 @ d0": [
+      247.938418,
+      236.191112
+    ],
+    "tg64 @ d0": [
+      9.076647,
+      8.83939
+    ],
+    "pp2048 @ d32768": [
+      127.666248,
+      130.875166
+    ],
+    "tg64 @ d32768": [
+      8.158182,
+      8.166401
+    ]
+  }
+}

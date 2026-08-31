@@ -5,6 +5,10 @@
 #   bash setup/scripts/build-llama.sh --ref b10631       build a tag
 #   bash setup/scripts/build-llama.sh --ref pr/27700     build a pull request
 #   bash setup/scripts/build-llama.sh --ref master --no-patch
+#   bash setup/scripts/build-llama.sh --ref somebranch --family gdnfork
+#                                     a foreign tree as a SUBJECT, in a family
+#                                     of its own that --activate/--use/--prune
+#                                     can never mistake for a serving candidate
 #                                                        WITHOUT the patch, to
 #                                                        measure upstream itself
 #   bash setup/scripts/build-llama.sh --unroll           patched PLUS the ROCm
@@ -87,7 +91,7 @@ DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; NOPATCH=0; KEEP="${KEEP:-1}"
 # An extra compiler flag, and a second build target. Both are for MEASURING
 # rather than for serving, which is why each gets a family or a control of its
 # own rather than being folded into the ordinary build. See step 3.
-UNROLL=0; WITHBENCH=0; ROCMPATH=""
+UNROLL=0; WITHBENCH=0; ROCMPATH=""; CUSTOMFAM=""
 # How many commits the patch branch may carry over the ref being built.
 # TWO patches since 30.08.2026 — hip-integrated-off and
 # speculation-stops-at-eog — so three is now one spare rather than two. See
@@ -101,6 +105,7 @@ while [ $# -gt 0 ]; do
     --unroll)   UNROLL=1; shift ;;
     --with-bench) WITHBENCH=1; shift ;;
     --rocm-path) ROCMPATH="${2:?--rocm-path needs a directory}"; shift 2 ;;
+    --family)   CUSTOMFAM="${2:?--family needs a name}"; shift 2 ;;
     --backend)  BACKEND="${2:?--backend needs rocm or vulkan}"; shift 2 ;;
     --jobs|-j)  JOBS="${2:?-j needs a number}"; shift 2 ;;
     --activate) ACTIVATE=1; shift ;;
@@ -150,11 +155,30 @@ FAMILY="$BACKEND-patched"
 [ "$NOPATCH" = 1 ] && FAMILY="$BACKEND-unpatched"
 [ "$UNROLL" = 1 ] && FAMILY="$BACKEND-unroll"
 [ -n "$ROCMPATH" ] && FAMILY="$BACKEND-altsdk"
+# A FOREIGN TREE IS A SUBJECT with a family of its own — measuring somebody's
+# fork without its build ever sitting where the serving symlink could reach
+# it. Lowercase letters and digits ONLY: a hyphen in the name would re-open
+# the exact glob collision the paragraph above describes, so it is refused
+# rather than documented around; equality with a built-in family is the one
+# collision the charset cannot prevent, refused likewise. (Plain printf/exit
+# here: die() is not defined yet at this point in the file.)
+if [ -n "$CUSTOMFAM" ]; then
+  case "$CUSTOMFAM" in
+    *[!a-z0-9]*) printf 'ABORT --family takes lowercase letters and digits only (no hyphen — build-<family>-* is a glob), got: %s\n' "$CUSTOMFAM" >&2; exit 2 ;;
+  esac
+  for builtin in patched unpatched unroll altsdk; do
+    if [ "$CUSTOMFAM" = "$builtin" ]; then
+      printf 'ABORT --family %s names a built-in family; use its own flag, or another name\n' "$CUSTOMFAM" >&2; exit 2
+    fi
+  done
+  FAMILY="$BACKEND-$CUSTOMFAM"
+fi
 # Every family there is. Listing and pruning walk THIS, so a family added above
 # and forgotten here becomes ~950 MB per build that nothing mentions and
 # therefore nobody prunes — the failure the old hard-wired pair of names was
 # one family away from.
 ALL_FAMILIES="$BACKEND-patched $BACKEND-unpatched $BACKEND-unroll $BACKEND-altsdk"
+[ -n "$CUSTOMFAM" ] && ALL_FAMILIES="$ALL_FAMILIES $FAMILY"
 STABLE="$SRC/build-$BACKEND-patched"
 
 say()  { printf '%s\n' "$*"; }
@@ -517,6 +541,18 @@ if [ -n "$ROCMPATH" ]; then
     $ROCMPATH — and its libamdhip64 carries the SAME soname as the system one,
     so without that path it loads the system's and nothing says so."
   ok "building against ROCm ${ALT_VERSION:-unknown} at $ROCMPATH — not activatable"
+fi
+if [ -n "$CUSTOMFAM" ]; then
+  # Same rule as --no-patch and --unroll, same reason: a foreign tree in its
+  # own family is a SUBJECT. It is reachable for a measurement through
+  # bench/suites/speed-ab.py --variant-family or bench/sideserver.py --bin;
+  # the symlink production execs offers neither.
+  [ "$ACTIVATE" = 0 ] || die "--family and --activate cannot be combined.
+
+    A custom family exists to keep a foreign tree AWAY from the symlink
+    $STABLE that the model unit execs. Measure it instead:
+      python3 bench/suites/speed-ab.py --variant-family $FAMILY"
+  ok "building into the $FAMILY family — a subject to measure, not activatable"
 fi
 if [ "$UNROLL" = 1 ]; then
   # Same rule as --no-patch, for the same reason: a build that differs from

@@ -632,5 +632,56 @@ class TestBuildingLlamaBenchAsWell(_FakeBuildFixture):
             os.path.exists(os.path.join(self.src, d, "bin", "llama-bench")))
 
 
+@unittest.skipIf(shutil.which("cmake") is None,
+                 "build-llama.sh refuses without cmake — skipped LOUDLY")
+class TestAForeignTreeGetsItsOwnFamily(_FakeBuildFixture):
+    """--family: the phase-3 case. Measuring somebody's fork means building a
+    tree that is neither the serving one nor merely unpatched — and the
+    handover entry that planned it names the trap: a fork build sitting in
+    the patched family is one --use away from being served. So the family is
+    the caller's to name, within the rules the naming section of the script
+    already carries: no hyphen (build-<family>-* is a glob), no built-in name.
+    """
+
+    def test_it_builds_into_the_named_family_with_the_patches(self):
+        r = self.build("--ref", "master", "--family", "gdnfork",
+                       PATCH_BRANCH="patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        made = [d for d in os.listdir(self.src) if d.startswith("build-")]
+        self.assertEqual(len(made), 1, made)
+        self.assertTrue(made[0].startswith("build-rocm-gdnfork-"), made[0])
+        st = self.stamp(made[0])
+        self.assertEqual(st["family"], "rocm-gdnfork")
+        self.assertEqual(st["patched"], "yes",
+                         "a --family build still carries the patches — it is "
+                         "a foreign TREE, not an unpatched one")
+
+    def test_it_cannot_be_activated(self):
+        r = self.build("--ref", "master", "--family", "gdnfork", "--activate",
+                       PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("cannot be combined", r.stdout + r.stderr)
+        self.assertFalse(
+            [d for d in os.listdir(self.src) if d.startswith("build-")],
+            "it must refuse in preflight, before anything is built")
+
+    def test_a_built_in_name_is_refused(self):
+        """--family patched would put a foreign tree in the one family the
+        symlink resolves against, wearing the family's own name."""
+        r = self.build("--ref", "master", "--family", "patched",
+                       PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("built-in family", r.stdout + r.stderr)
+
+    def test_a_hyphen_is_refused(self):
+        """builds_of_backend() globs build-<family>-*, so a family name with
+        a hyphen re-opens the collision the unroll naming note describes."""
+        r = self.build("--ref", "master", "--family", "gdn-fork",
+                       PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("lowercase letters and digits only",
+                      r.stdout + r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

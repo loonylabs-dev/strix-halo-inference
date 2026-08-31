@@ -1,0 +1,72 @@
+{
+  "_meta": {
+    "argv": [
+      "bench/suites/flag-ab.py",
+      "--name",
+      "ub256-check",
+      "--arm",
+      "ub512:-ub 512",
+      "--arm",
+      "ub256:-ub 256",
+      "--depths",
+      "0,32768",
+      "--prompt",
+      "2048",
+      "--reps",
+      "2"
+    ],
+    "build": {
+      "build_id": "b10702-11-gc799f1014",
+      "backend": "rocm",
+      "family": "rocm-patched",
+      "patched": "yes",
+      "upstream_ref": "master-2patches",
+      "upstream_commit": "c799f10147916ad58f00648b5ef0b87425f554c0",
+      "patch_commit": "c799f10147916ad58f00648b5ef0b87425f554c0",
+      "patch_branch": "master-2patches",
+      "built_at": "2026-08-30T23:24:37+02:00",
+      "version": "version: 0.3.0-dev (build 333, commit c799f1014)",
+      "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+    },
+    "axis": {
+      "kind": "flag",
+      "name": "-ub"
+    }
+  },
+  "ub512": {
+    "pp2048 @ d0": [
+      259.963261,
+      237.642357
+    ],
+    "tg64 @ d0": [
+      9.065474,
+      8.85177
+    ],
+    "pp2048 @ d32768": [
+      164.938302,
+      153.290545
+    ],
+    "tg64 @ d32768": [
+      8.330235,
+      8.453125
+    ]
+  },
+  "ub256": {
+    "pp2048 @ d0": [
+      262.497236,
+      245.304268
+    ],
+    "tg64 @ d0": [
+      9.077882,
+      8.922103
+    ],
+    "pp2048 @ d32768": [
+      156.167146,
+      151.428802
+    ],
+    "tg64 @ d32768": [
+      8.179862,
+      8.103794
+    ]
+  }
+}

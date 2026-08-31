@@ -53,10 +53,23 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "bench"))
 import run as runlib                                          # noqa: E402
 
-MODEL = os.environ.get(
-    "UNROLL_MODEL", "/mnt/shared/LLM/Qwen3.8-27B-UD-Q4_K_XL.gguf")
+# The FILE is the profile's; WHERE it lives is the machine's, and only the
+# one resolver knows that. A path written out here would be this machine's
+# path, which tests/test_localenv.py refuses on sight — correctly, since the
+# repository is meant to run on somebody else's disk layout too.
+MODEL_FILE = "Qwen3.8-27B-UD-Q4_K_XL.gguf"      # what qwen38.env serves
 UNIT = "llama-user@qwen38"
 DEADMAN = "unroll-flag-deadman"
+
+
+def default_model():
+    """Same resolution order bench/run.py uses, and the same one resolver."""
+    explicit = os.environ.get("UNROLL_MODEL")
+    if explicit:
+        return explicit
+    models = (os.environ.get("LLAMA_MODELS")
+              or runlib.systemdfile.models_dir())
+    return os.path.join(models, MODEL_FILE)
 
 
 def say(msg):
@@ -137,7 +150,9 @@ def main():
     ap.add_argument("--unroll", default=None,
                     help="the build carrying the flag; default: the newest "
                          "rocm-unroll build")
-    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--model", default=None,
+                    help="default: the profile's model under the resolved "
+                         "model directory")
     ap.add_argument("--depths", default="0,16384,32768,65536",
                     help="prefix depths, as llama-bench -d")
     ap.add_argument("--prompt", type=int, default=512)
@@ -152,6 +167,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
+    a.model = a.model or default_model()
     depths = [int(d) for d in a.depths.split(",") if d.strip()]
     ref = runlib.resolve_binary(a.reference)
     unroll = a.unroll or newest_unroll()

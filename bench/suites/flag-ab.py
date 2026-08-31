@@ -60,8 +60,11 @@ sab = _load_speed_ab()
 
 # What every invocation carries unless an arm overrides it — the serving
 # profile's values, so an arm that does not vary a knob measures production's
-# setting rather than llama-bench's default.
-BASE = {"-ngl": "999", "-fa": "on", "-ub": "2048", "-b": "2048", "-r": "1"}
+# setting rather than llama-bench's default. A DECLARED copy of qwen38.env,
+# and tests/test_flagab.py holds it against the profile's own LLAMA_ARGS so
+# the two cannot drift apart in silence — the fate of every second reader of
+# one file in this repo.
+BASE = {"-ngl": "999", "-fa": "on", "-ub": "512", "-b": "2048", "-r": "1"}
 
 ENV_TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 

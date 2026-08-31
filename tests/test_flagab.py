@@ -85,27 +85,43 @@ class TestTheOneDifferenceRule(unittest.TestCase):
 class TestTheInvocationCarriesTheProfile(unittest.TestCase):
     def test_base_matches_the_serving_profile(self):
         """An arm that does not vary a knob must measure production's value,
-        not llama-bench's default — qwen38.env serves -fa on -ub 2048 -b 2048."""
-        self.assertEqual(flag_ab.BASE["-fa"], "on")
-        self.assertEqual(flag_ab.BASE["-ub"], "2048")
-        self.assertEqual(flag_ab.BASE["-b"], "2048")
+        not llama-bench's default. BASE is a declared copy of qwen38.env, and
+        this test is what keeps the copy honest: it reads the profile's own
+        LLAMA_ARGS rather than repeating the numbers here — repeating them
+        would be a THIRD reader of one file, which is how the three
+        LLAMA_ARGS parsers began. The day this went in, BASE still said
+        -ub 2048 while the profile had moved to 512."""
+        env = (REPO / "setup" / "env" / "qwen38.env").read_text()
+        args = env.replace("\\\n", " ")
+        line = next(l for l in args.splitlines()
+                    if l.startswith("LLAMA_ARGS="))
+        toks = line.split()
+        for flag in ("-fa", "-ub", "-b"):
+            self.assertIn(flag, toks, "profile no longer carries %s" % flag)
+            self.assertEqual(flag_ab.BASE[flag], toks[toks.index(flag) + 1],
+                             "BASE[%s] drifted from qwen38.env" % flag)
 
     def test_an_arm_overrides_rather_than_repeats(self):
-        """llama-bench accumulates repeated flags into a sweep; '-ub 2048
-        ... -ub 512' would run BOTH. The dry argv must carry -ub exactly
-        once."""
+        """llama-bench accumulates repeated flags into a sweep; a base -ub
+        AND an arm's -ub would run BOTH. The dry argv must carry -ub exactly
+        once, with the arm's value. The arm value is chosen to differ from
+        BASE's, whatever BASE currently says — an override test that
+        overrides with the base value tests string formatting."""
+        arm_ub = "1024"
+        self.assertNotEqual(flag_ab.BASE["-ub"], arm_ub,
+                            "pick a different arm value for this test")
         rows = []
         real = flag_ab.sab.say
         flag_ab.sab.say = rows.append
         try:
             flag_ab.bench("/nonexistent/llama-bench", "/m.gguf", [0], 2048,
-                          64, {"-ub": "512"}, {}, dry=True)
+                          64, {"-ub": arm_ub}, {}, dry=True)
         finally:
             flag_ab.sab.say = real
         argv = rows[0]
         self.assertEqual(argv.count(" -ub "), 1, argv)
-        self.assertIn("-ub 512", argv)
-        self.assertNotIn("-ub 2048", argv)
+        self.assertIn("-ub " + arm_ub, argv)
+        self.assertNotIn("-ub " + flag_ab.BASE["-ub"], argv)
 
 
 if __name__ == "__main__":

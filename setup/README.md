@@ -714,6 +714,17 @@ mode. Measured on a 181-second prefill with 40 tools:
 stays silent and runs into the 524. Claude Code streams by default; scripts and
 `curl` tests often do not.
 
+**And every phase in front of llama-server has to send its own sign of life,
+which one did not.** On 31.08.2026 the first streamed request from another
+machine hit the 524 anyway: the gateway's save-before-serve phase prefilled a
+cold 22k prefix for 114.5 s without writing a byte — llama-server never saw
+the request during it, so the keep-alives above never ran. Fixed the same day
+(`setup/defects.json`, `save-before-serve-is-silent`): the save phase now
+sends the queue phase's `:` every 30 s. The server-side table above was
+re-measured on b10702-11 the same day and holds — status after 0.2 s, a ping
+every 30 s across a cold 114.6 s prefill. `bench/suites/sse-ping.py` measures
+any endpoint of the chain the same way.
+
 ### The separate tunnel port
 
 When a request arrives through a tunnel, the source IP is **no longer the
@@ -816,7 +827,9 @@ a trap:
 
     QUEUE_AGE_AFTER   30   after this many seconds of waiting, a request is
                            served next whatever its zone
-    QUEUE_KEEPALIVE   30   a queued STREAMING request gets a `:\n\n` this often
+    QUEUE_KEEPALIVE   30   a queued STREAMING request gets a `:\n\n` this
+                           often — and since 31.08. the save-before-serve
+                           phase sends the same sign of life at the same pace
 
 Both were added because both failure modes were measured. Strict priority
 starves the lower zones: with four local streams — two Claude Code sessions — a

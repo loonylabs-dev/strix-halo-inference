@@ -491,7 +491,8 @@ def slot_was_stolen(proc_out):
     return b"refusing to publish" in (proc_out or b"")
 
 
-async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
+async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC,
+                            req=None, resp=None, streaming=False):
     """Write the prefix BEFORE the first real message is answered.
 
     THE WHOLE SAVE PROBLEM, dissolved by doing it in the other order. Measured
@@ -518,6 +519,23 @@ async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
     holds, so nothing else can take the slot while it happens. That is the
     guarantee, and it comes from the order rather than from a lock.
 
+    AND IT MUST NOT BE SILENT WHILE IT RUNS. A cold Claude-Code-sized prefix
+    prefills for 100-145 s here (22-27k tokens at ~200 t/s), and until
+    31.08.2026 nothing was written to the caller for all of it — no headers,
+    no bytes. That is over Cloudflare's ~125 s window, so a remote streaming
+    caller got a 524 while the save marched on; measured the day the operator
+    first called from another machine (bench/suites/sse-ping.py, largest_gap
+    114.5 s against the gateway, 0.3 s against llama-server directly). The
+    QUEUE_KEEPALIVE comment says why the queue phase pings; this phase sits in
+    the same gap between admission and forward() and needs the same sign of
+    life, under the same rules: the response is opened on the first slice, the
+    status is then spent, and a later upstream failure arrives as an SSE error
+    event (sse_error) — which forward() already handles for a response that
+    arrives prepared.
+
+    Returns the response object if one was opened (or the one passed in),
+    None otherwise; the caller hands it to forward() either way.
+
     Never raises into the request path: a save that fails must cost a cold
     prefill, never an answer.
     """
@@ -530,7 +548,21 @@ async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
     task = asyncio.ensure_future(
         asyncio.wait_for(auto_save(id_, body, dialect), timeout=SAVE_TIMEOUT_S))
     try:
-        await asyncio.shield(task)
+        while True:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=KEEPALIVE)
+                break
+            except asyncio.TimeoutError:
+                if task.done():
+                    raise            # the save's own timeout, not this slice
+                if not streaming or req is None:
+                    continue         # a plain response cannot be kept alive
+                if resp is None:
+                    resp = web.StreamResponse(status=200, headers=SSE_HEADERS)
+                    await resp.prepare(req)
+                    log("WAITING     %-15s sign of life while the prefix "
+                        "is saved" % (req.remote or "?"))
+                await resp.write(b":\n\n")
     except asyncio.TimeoutError:
         log("NOTE        save of %s exceeded %d s — carrying on without it"
             % (id_, SAVE_TIMEOUT_S))
@@ -538,6 +570,7 @@ async def save_prefix_first(id_, body, dialect=DIA.ANTHROPIC):
         raise
     except Exception as e:
         log("NOTE        save of %s: %r — carrying on without it" % (id_, e))
+    return resp
 
 
 async def auto_save(id_, body, dialect=DIA.ANTHROPIC):
@@ -1784,7 +1817,9 @@ async def handler(req):
                 TRACE.record("save-skipped",
                              summary={"prefix": ident, "rivals": saved_rivals[:5]})
             else:
-                await save_prefix_first(ident, json.loads(out), dialect)
+                early = await save_prefix_first(ident, json.loads(out), dialect,
+                                                req=req, resp=early,
+                                                streaming=streaming)
         SERVED_COUNT += 1
         SERVED_TRAIL.append((SERVED_COUNT, ident))
         del SERVED_TRAIL[:-50]

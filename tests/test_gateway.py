@@ -455,6 +455,65 @@ class TestAutoSave(unittest.IsolatedAsyncioTestCase):
 
 
 # ------------------------------------------------------------- Schleuse ---
+class TestSavePhaseLifesign(unittest.IsolatedAsyncioTestCase):
+    """The save-before-serve phase must not be silent.
+
+    A cold Claude-Code-sized prefix prefills for 100-145 s inside
+    save_prefix_first, and until 31.08.2026 nothing was written to the caller
+    for all of it — over Cloudflare's ~125 s window, so a remote streaming
+    caller got a 524 while the save marched on. Same rule as the queue phase
+    (test_a_queued_streaming_caller_gets_a_sign_of_life): a streaming caller
+    gets ":\\n\\n" every KEEPALIVE seconds, a plain one cannot be kept alive
+    without spending its status code and stays untouched.
+    """
+
+    class Resp:
+        def __init__(self, status=200, headers=None):
+            self.writes = []
+            self.prepared = None
+
+        async def prepare(self, req):
+            self.prepared = req
+
+        async def write(self, data):
+            self.writes.append(data)
+
+    class Req:
+        remote = "unit-test"
+
+    async def _run(self, streaming, resp, delay=0.3):
+        async def slow_save(id_, body, dialect):
+            await asyncio.sleep(delay)
+        with mock.patch.object(GW, "auto_save", slow_save), \
+             mock.patch.object(GW, "log", lambda *a: None):
+            old_ka, GW.KEEPALIVE = GW.KEEPALIVE, 0.05
+            try:
+                return await GW.save_prefix_first(
+                    "p1", {}, req=self.Req(), resp=resp, streaming=streaming)
+            finally:
+                GW.KEEPALIVE = old_ka
+
+    async def test_a_streaming_caller_is_pinged_while_the_prefix_is_saved(self):
+        resp = self.Resp()
+        out = await self._run(streaming=True, resp=resp)
+        self.assertIs(out, resp)
+        self.assertGreaterEqual(len(resp.writes), 2,
+                                "no sign of life during the save")
+        self.assertTrue(all(w == b":\n\n" for w in resp.writes))
+
+    async def test_the_stream_is_opened_if_none_is_open_yet(self):
+        with mock.patch.object(GW.web, "StreamResponse", self.Resp):
+            out = await self._run(streaming=True, resp=None)
+        self.assertIsInstance(out, self.Resp)
+        self.assertIsNotNone(out.prepared, "headers never went out")
+        self.assertGreaterEqual(len(out.writes), 2)
+
+    async def test_a_plain_caller_keeps_its_status_code(self):
+        out = await self._run(streaming=False, resp=None)
+        self.assertIsNone(
+            out, "a non-streaming caller must not get a committed stream")
+
+
 class TestPriorityGate(unittest.IsolatedAsyncioTestCase):
     async def test_priority_beats_arrival(self):
         s = GW.PriorityGate(1)

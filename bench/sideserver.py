@@ -54,6 +54,12 @@ Note for this machine specifically: swap is partly zram, which lives in RAM.
 Under this kind of pressure it cannot free anything — it compresses in place
 while 87 GiB sits pinned in GTT beside it. That is why the box froze instead
 of killing one process.
+
+What this does NOT do (measured 31.08.2026): the transient unit is started
+via systemd-run WITHOUT the profile as EnvironmentFile, so a profile's env
+vars (GGML_*, LLAMA_*) never reach the side server. A measurement that needs
+them wraps the binary in a script passed via --bin and exports them there.
+The production unit is unaffected — it reads the profile as EnvironmentFile.
 """
 import argparse, os, subprocess, sys, time
 

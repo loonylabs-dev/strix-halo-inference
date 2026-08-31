@@ -62,6 +62,7 @@ llama-slots/
 # tests/test_watchflashnext.py goes with the script it tests — a public test
 # importing a module that is not in the clone is a red CI run on day one.
 docs/HANDOVER.md
+docs/HANDOVER-LOG.md
 docs/FLASHNEXT-PLAN.md
 setup/scripts/watchflashnext.py
 setup/scripts/watch-flashnext.sh

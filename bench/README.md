@@ -369,6 +369,14 @@ GTT is not swappable. An over-large start does not page, it hangs the machine.
   of the range: free prose is the floor (drafts get discarded, it can even
   cost a little), repetitive output the ceiling. One number in the middle
   describes nothing.
+- **A proof has to exceed its condition.** The first tunnel verification of
+  the SSE lifesign sat UNDER the ~125 s window it claimed to beat (114.4 s)
+  and read as a pass; the operator caught it (31.08.2026). State the
+  threshold, then show the measurement crossing it.
+- **The modelled client's endpoint is part of the experiment.** An
+  OpenAI-format body POSTed to /v1/messages loses its tools silently — 2,309
+  of 8,251 tokens rendered, and nothing errors (31.08.2026). Match body
+  dialect and endpoint before comparing anything downstream of them.
 
 ## One edit to the records, on 27.08.2026, written down here
 

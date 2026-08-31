@@ -26,7 +26,7 @@ HOP = {"host", "content-length", "connection", "transfer-encoding",
        "keep-alive", "accept-encoding"}
 
 # What is forwarded at all in the LOCAL branch. An allow list, not a deny list:
-# previously only authorization and x-api-key were stripped, while cc-gateway
+# previously only authorization and x-api-key were stripped, while the gateway
 # itself knows anthropic-auth-token as a possible carrier of credentials (see
 # its diagnostics branch). A header nobody thought of would therefore have
 # carried the subscription token to the foreign server — and nobody would have
@@ -77,7 +77,7 @@ async def handler(req):
             return resp
 
 def build_app():
-    """A fresh application per call — see cc-gateway.build_app()."""
+    """A fresh application per call — see gateway.build_app()."""
     a = web.Application(client_max_size=1024**3)
     a.router.add_route("*", "/{tail:.*}", handler)
     return a

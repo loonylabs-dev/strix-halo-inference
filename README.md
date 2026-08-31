@@ -131,7 +131,7 @@ release.
 
 ```bash
 systemctl --user --now enable llama-user@qwen38
-systemctl --user --now enable cc-gateway
+systemctl --user --now enable llm-gateway
 systemctl --user --now enable prefix-cleanup.timer
 sudo loginctl enable-linger $USER      # so they come up at boot
 ```

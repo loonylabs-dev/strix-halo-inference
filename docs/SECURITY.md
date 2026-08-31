@@ -171,7 +171,7 @@ more source of error. `bench/` belongs locally against 127.0.0.1.
 
 At first there was a single token for everyone — neither individually
 revocable nor attributable in the log. Now every consumer gets their own named
-access in `~/.config/cc-gateway-tokens` (mode 600, outside the repo).
+access in `~/.config/llm-gateway-tokens` (mode 600, outside the repo).
 
 Measured:
 

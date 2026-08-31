@@ -53,7 +53,7 @@ costs in KV, and why every flag on its command line is there.
 ## Starting it
 
     systemctl --user --now enable llama-user@qwen38     # the model server
-    systemctl --user --now enable cc-gateway            # the gateway
+    systemctl --user --now enable llm-gateway           # the gateway
     sudo loginctl enable-linger $USER                   # so both come up at boot
     systemctl --user --now enable prefix-cleanup.timer  # weekly cache cleanup
 

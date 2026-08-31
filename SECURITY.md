@@ -10,7 +10,7 @@ with a security team — but a report will be read and answered.
 ## What is worth reporting
 
 This repository is mostly configuration and measurement, and most of it cannot
-be attacked. One part can: `setup/claude/cc-gateway.py` sits in front of a
+be attacked. One part can: `setup/gateway/gateway.py` sits in front of a
 local inference server and is deliberately reachable from the internet through
 a Cloudflare tunnel. It decides three things, and a mistake in any of them
 matters:

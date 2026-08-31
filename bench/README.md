@@ -209,7 +209,7 @@ weeks from now means the same thing.
 
     # 1 · get it served. A profile per model, one line per decision:
     cp setup/env/qwen38.env setup/env/<model>.env      # then edit and explain
-    ln -sfn "$PWD/setup/env/<model>.env" ~/.claude/env/<model>.env
+    ln -sfn "$PWD/setup/env/<model>.env" ~/.config/llm-profile/<model>.env
     systemctl --user start llama-user@<model>
 
     # 2 · what does it COST here? Prefill and decode per KV depth, read off

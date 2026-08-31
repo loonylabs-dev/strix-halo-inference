@@ -54,11 +54,14 @@ them and the evidence chain gets cut in half.
 
     inference layer   llama.cpp build and patches, GTT, the model registry,
                       switch-model.sh, check.sh, the profiles
-    harness           cc-gateway, cc-router, the Claude Code profiles,
-                      prewarm — the REFERENCE CONSUMER, not a second product
+    gateway           llm-gateway with dialects, modes and prewarm — the one
+                      entrance, consumer-agnostic: it speaks anthropic AND
+                      openai, so Claude Code and DeepSeek Harness alike
+    Claude harness    cc-router and the Claude Code profiles — the REFERENCE
+                      CONSUMER, not a second product
 
-**The harness may require the inference layer. The inference layer may notice
-the harness, but must never need it.**
+**Each layer may require the one below. The inference layer must never need
+the gateway, and the gateway must never need any one consumer.**
 
 Until 26.08. it did, in two places, and both were found by asking what a
 machine without a gateway would do:
@@ -69,8 +72,8 @@ machine without a gateway would do:
 * `check.sh` reported six missing harness symlinks as `(not installed)`,
   which sets `DIFF=1`, and exited 1 — on a machine where nothing was wrong.
 
-Both now ask first (`gateway_present` / `harness_present`, either the unit or
-`~/.config/cc-gateway.env`) and say plainly that the harness is absent rather
+Both now ask first (`gateway_present`, either the unit or
+`~/.config/llm-gateway.env`) and say plainly that the gateway is absent rather
 than treating it as a defect. The smoke test still happens either way: through
 the gateway where there is one, straight at `/v1/chat/completions` where there
 is not — "no harness" must not come to mean "no verification".
@@ -95,31 +98,33 @@ file went away. A companion made compulsory.
 | `env/*.env` | `/etc/llm-profile/` | **the model registry** — one file per model, and the file IS the model. `MODEL_SOURCE` says where its weights come from |
 | `get-model.sh` | — | fetch what a profile needs: this stack's `ollama pull`, except the list it offers is measured on this hardware |
 | `lib/models.sh` | — | which models exist, which one runs, what its profile says |
-| `lib/systemdfile.py` | `~/.claude/bin/`, `/usr/local/lib/llm-profile/` | the one reader for systemd syntax (`LLAMA_ARGS`, `Conflicts=`) |
-| `lib/budget.py` | `~/.claude/bin/`, `/usr/local/lib/llm-profile/` | **the one memory budget** — what a profile costs and whether it fits. Travels with `systemdfile.py`, which it imports by directory |
+| `lib/systemdfile.py` | `~/.local/lib/llm-stack/`, `/usr/local/lib/llm-profile/` | the one reader for systemd syntax (`LLAMA_ARGS`, `Conflicts=`) |
+| `lib/budget.py` | `~/.local/lib/llm-stack/`, `/usr/local/lib/llm-profile/` | **the one memory budget** — what a profile costs and whether it fits. Travels with `systemdfile.py`, which it imports by directory |
 | `consumer-info.sh` | — | the four facts a consumer needs — endpoint, model names, window, token — read from the RUNNING stack, because values written into prose go stale |
-| `checkroom` | `~/.claude/bin/`, `/usr/local/bin/llm-check-room` | the budget as `ExecStartPre`: retries briefly, then refuses. A model that does not fit freezes the machine, so a service that will not start is the good outcome |
+| `checkroom` | `~/.local/lib/llm-stack/`, `/usr/local/bin/llm-check-room` | the budget as `ExecStartPre`: retries briefly, then refuses. A model that does not fit freezes the machine, so a service that will not start is the good outcome |
 | `scripts/build-llama.sh` | — | builds the patched llama.cpp, versioned and reversible |
 | `scripts/gtt.sh` | kernel command line | how much system RAM the GPU may take |
 | `scripts/scout.py` | — | look at a model before downloading it: does our build know the architecture, how big is each quant, does it fit |
 | `scripts/fetch-model.sh` | the model directory | resumable, size-checked GGUF download that can WAIT for a quant not yet uploaded |
 | `defects.json` | — | **the defect registry** — what is known to go wrong on this hardware, as data |
-| `scripts/probe.py` | `~/.claude/bin/` | the watchdog: one question whose answer is known, every ten minutes. Turns the silent failure modes into loud ones |
+| `scripts/probe.py` | `~/.local/lib/llm-stack/` | the watchdog: one question whose answer is known, every ten minutes. Turns the silent failure modes into loud ones |
 | `lib/defects.py` | — | evaluates the registry against the running server and the build stamp; `check.sh` prints it |
 | `lib/kernelcmdline.py` | — | editing a kernel command line without losing `root=` |
 | `systemd/*.service` | `~/.config/systemd/user/`, `/etc/systemd/system/` | `llama-user@.service` (one model per instance — **the only unit file**) and `llm-watch.service` |
 | `lib/systemunit.py` | `/etc/systemd/system/llama@.service` | **derives** the system unit from the user unit. Opt-in: `install.sh --system-unit`, for a host with no user session |
 | `claude/*.json` | `~/.claude/profiles/` | backend profiles for Claude Code |
-| `claude/cc-gateway.py` | `~/.claude/bin/` | **the current gateway.** Zones, access, prefix cache |
-| `claude/cc-cachefix2.py` | `~/.claude/bin/` | predecessor of the gateway — kept for comparison only |
-| `claude/cc-cachefix.py` | `~/.claude/bin/` | its predecessor in turn — superseded, see below |
+| `gateway/gateway.py` | `~/.local/lib/llm-stack/` | **the current gateway** (unit: `llm-gateway`). Zones, access, prefix cache |
+| `gateway/{modes,tracelog}.py` | `~/.local/lib/llm-stack/` | thinking modes by model name; the trace instrument |
+| `gateway/savepolicy.py` | — | when a prefix is worth saving — read from the repo by the gateway's tests and the simulator |
+| `claude/cc-cachefix2.py` | — | predecessor of the gateway — kept for comparison only, not installed |
+| `claude/cc-cachefix.py` | — | its predecessor in turn — superseded, see below |
 | `claude/cc-router.py` | `~/.claude/bin/` | router for variant 2 (keep the subscription, subagents local) |
-| `waitformodel` | `~/.claude/bin/`, `/usr/local/bin/llm-wait-for-model` | waits for the model partition before the start |
-| `../tools/prewarm.py` | `~/.claude/bin/` | saves and restores project prefixes |
+| `waitformodel` | `~/.local/lib/llm-stack/`, `/usr/local/bin/llm-wait-for-model` | waits for the model partition before the start |
+| `../tools/prewarm.py` | `~/.local/lib/llm-stack/` | saves and restores project prefixes |
 | `scripts/*.sh` | — | measurement and operating scripts, run FROM the repo. `~/llm-setup/` holds their old working copies and the logs they wrote; `install.sh` does not touch either, and the table said it did until 26.08. |
 | `llmprofile` | `/usr/local/bin/llm-profile` | power profiles and backend start |
-| `claude/dialects.py` | `~/.claude/bin/` | how a request body is read — shared by gateway and prewarm |
-| `env/*.env` | `~/.claude/env/` | the SAME files as symlinks: what the USER service reads |
+| `gateway/dialects.py` | `~/.local/lib/llm-stack/` | how a request body is read — shared by gateway and prewarm |
+| `env/*.env` | `~/.config/llm-profile/` | the SAME files as symlinks: what the USER service reads |
 | `patches/*.patch` | applied in `~/llama.cpp` | changes llama.cpp needs on this hardware |
 
 ## What belongs to the MACHINE, and why it is not in the repo
@@ -204,8 +209,8 @@ first one is load-bearing and fails silently, the rest fail loudly.
 | `~/llama.cpp` branch `master-2patches` | **both** patches, as commits, on current master — see `setup/patches/README.md`. `gfx1151-patched` is its 22-commit predecessor, kept as the way back | a `git pull` takes them with it. Without the first, **the server answers WRONG** once a second slot is used; without the second, every turn re-reads the whole previous answer. Neither says anything |
 | `~/llama.cpp/build-rocm-patched` | symlink to the active build, the path `LLAMA_BIN` names | the service will not start |
 | `~/llama.cpp/build-rocm-patched-<id>/` | the builds themselves, each with a `.build-stamp` | no way back to a build that worked |
-| `~/.claude/env/<model>.env` | symlinks to `env/*.env`, read by `llama-user@.service` | the service refuses to start (deliberately, no leading `-`) |
-| `~/.config/cc-gateway.env` | gateway configuration, carries tokens | gateway falls back to defaults: no thinking modes, no system rewrite |
+| `~/.config/llm-profile/<model>.env` | symlinks to `env/*.env`, read by `llama-user@.service` | the service refuses to start (deliberately, no leading `-`) |
+| `~/.config/llm-gateway.env` | gateway configuration, carries tokens | gateway falls back to defaults: no thinking modes, no system rewrite |
 | `~/.cache/llama-slots/` | saved prefixes (GB-sized), plus `.owner` and parked stores per model | first request per project runs cold again |
 | `~/.cache/llama-slots/.owner` | which model wrote these prefixes | `switch-model.sh` has to guess, and a wrong guess feeds one model's KV state to another |
 
@@ -586,7 +591,7 @@ Memory: GTT 73.2 → 82.8 GiB of 96.
 
 ---
 
-## cc-cachefix.py is superseded — cc-gateway.py does this now
+## cc-cachefix.py is superseded — the gateway does this now
 
 The old version pulls **all** `system` messages out of `messages` to the start
 of the prompt. For simple requests that helped (the user question slides to the
@@ -603,7 +608,7 @@ active:
     no proxy          turns 2..4   99   % cache    1.5–2.0 s
     cc-cachefix2.py   turns 2..4   99   % cache    1.5–2.0 s
 
-`cc-gateway.py` (like its predecessor `cc-cachefix2.py`) splits the stable and
+`gateway.py` (like its predecessor `cc-cachefix2.py`) splits the stable and
 the volatile part: the stable part moves to the front, the counter stays at the
 end of the history. That additionally brings the "new session, different
 question" case down from 10.4 s to 0.7 s.
@@ -618,7 +623,7 @@ what keeps Claude Code from aborting after 300 s of silence.
 
 Start it and point a profile at it:
 
-    python3 ~/.claude/bin/cc-gateway.py            # port 8090
+    python3 ~/.local/lib/llm-stack/gateway.py      # port 8090
     claude --settings ~/.claude/profiles/local.json
 
 **Practical test**, warm server, wall clock of the entire `claude -p` call:
@@ -641,7 +646,7 @@ open state.
 
 ### Setting it up
 
-Create a secret and put it into `~/.config/cc-gateway-tokens` (the file stays
+Create a secret and put it into `~/.config/llm-gateway-tokens` (the file stays
 local, mode 600, excluded from the repo via .gitignore):
 
     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -649,11 +654,11 @@ local, mode 600, excluded from the repo via .gitignore):
     # one consumer per line: name<whitespace>secret
     martin-mobile   <the generated secret>
 
-And add the LAN address in `~/.config/cc-gateway.env`:
+And add the LAN address in `~/.config/llm-gateway.env`:
 
     BIND=127.0.0.1,<your LAN address>     # ip -4 -o addr show scope global
 
-Then `systemctl --user restart cc-gateway`.
+Then `systemctl --user restart llm-gateway`.
 
 ### Firewall
 
@@ -793,7 +798,7 @@ send file contents through this proxy.
 Every consumer gets their **own, named token**. A single shared secret would be
 neither individually revocable nor attributable in the log.
 
-Access lives in `~/.config/cc-gateway-tokens`, mode 600, **outside the repo**:
+Access lives in `~/.config/llm-gateway-tokens`, mode 600, **outside the repo**:
 
     # one access per line:  name<whitespace>secret
     martin-mobile  xY7…
@@ -803,7 +808,7 @@ Access lives in `~/.config/cc-gateway-tokens`, mode 600, **outside the repo**:
 
     python3 -c "import secrets; print(secrets.token_urlsafe(32))"
     # append a line "name <secret>", then:
-    systemctl --user restart cc-gateway
+    systemctl --user restart llm-gateway
 
 ### Revoking access
 
@@ -1007,7 +1012,7 @@ request arrives.
 
 ### When the gateway saves by itself
 
-When a cold request arrives, `cc-gateway` calls the same script in the
+When a cold request arrives, the gateway calls the same script in the
 background — with one difference: it passes its own id through with
 `--gateway-id` instead of having it recomputed. The reason is the body it hands
 over. By that point it is already **corrected**, so the system field carries the
@@ -1019,7 +1024,7 @@ That is exactly what went wrong between 23 and 24 August: saving happened, the
 file was there, the log reported `SAVED` — and `RESTORED` never came, because
 the sidecar file sat under a key that no request ever produces. `check` finds
 such files, `--repair` puts the id right (then `systemctl --user restart
-cc-gateway`), and `tests/live_prefix.sh` checks the whole chain against the GPU.
+llm-gateway`), and `tests/live_prefix.sh` checks the whole chain against the GPU.
 
 ### Measured, against a real service restart
 
@@ -1202,8 +1207,8 @@ in the call. Every path is therefore written out in full.
     8081   gemma26 — and the side port the measurement suites start their own
     8082   gemma31   server on (bench/suites/np2-candidates.py,
     8083   batch     setup/scripts/slot-test.sh), and cc-router.py in variant 2
-    8090   cc-gateway.py
-    8091   cc-gateway.py, tunnel port (everything here counts as "remote")
+    8090   llm-gateway (gateway.py)
+    8091   llm-gateway, tunnel port (everything here counts as "remote")
 
 **The three profiles on 8081-8083 cannot currently be used.** They were given
 their own ports to run ALONGSIDE the main model, and the `Conflicts=` line in

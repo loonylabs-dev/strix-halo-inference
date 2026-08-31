@@ -160,10 +160,10 @@ instrument from one that catches a check with no effect.
 
 ## Structure
 
-`tests/common.py` loads the scripts by file path; they carry a hyphen in their
-name and are not on the search path. The precondition is that an import stays
-without consequences — which is why `cc-gateway.py`, `cc-router.py` and
-`prewarm.py` each have a `main()` guard.
+`tests/common.py` loads the scripts by file path; some carry a hyphen in
+their name and none are on the search path. The precondition is that an
+import stays without consequences — which is why `gateway.py`,
+`cc-router.py` and `prewarm.py` each have a `main()` guard.
 
 llama-server is replaced by a small aiohttp application that records what
 arrives at it. That makes it possible to check things deterministically that

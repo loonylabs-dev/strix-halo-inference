@@ -198,7 +198,7 @@ Details in [setup/README.md](../setup/README.md).
 | File | Content |
 |---|---|
 | [llmprofile](../setup/llmprofile) | power profiles and backend start. Rev. 2 of 22 August — the `card0` bug that had devalued the watchdog is fixed. |
-| `~/.claude/bin/cc-gateway.py` | **The current gateway.** Splits stable and volatile system messages, and much more. Source: [setup/claude/](../setup/claude/). |
+| `~/.local/lib/llm-stack/gateway.py` | **The current gateway** (llm-gateway; cc-gateway until 09/2026). Splits stable and volatile system messages, and much more. Source: [setup/gateway/](../setup/gateway/). |
 | `~/.claude/bin/cc-cachefix.py` | Predecessor. **Do not use any more** — it pulls a changing counter to the start of the prompt and turns a 1.5-second turn into an 89-second one. |
 
 Installed, these live under `/usr/local/bin/llm-profile` and `/etc/llm-profile/` on the

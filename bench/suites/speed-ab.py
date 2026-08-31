@@ -114,14 +114,24 @@ def disarm_deadman():
                    capture_output=True, text=True)
 
 
-def bench(binary, model, depths, prompt, gen, extra, dry=False):
+# The serving profile's batch geometry, so a build comparison runs at the
+# operating point rather than at llama-bench's default. A DECLARED copy of
+# qwen38.env — it sat here hardcoded as 2048 after the profile moved to 512,
+# which is exactly how the comparison would have been run off the operating
+# point; tests/test_speedab.py holds it against the profile's LLAMA_ARGS now.
+UB = "512"
+BATCH = "2048"
+
+
+def bench(binary, model, depths, prompt, gen, extra, dry=False,
+          ub=UB, batch=BATCH):
     """One llama-bench run. Returns its parsed JSON rows, or [] on failure."""
     argv = [binary, "-m", model, "-p", str(prompt), "-n", str(gen),
             "-d", ",".join(str(d) for d in depths),
             # -fa takes on|off|auto, NOT 1. With `1` llama-bench does not
             # fail — it parses it as a mode it does not know and the run is
             # not the one the profile serves.
-            "-ngl", "999", "-fa", "on", "-ub", "2048", "-b", "2048",
+            "-ngl", "999", "-fa", "on", "-ub", str(ub), "-b", str(batch),
             "-r", "1", "-o", "json"] + extra
     if dry:
         say("  would run: %s" % " ".join(argv))

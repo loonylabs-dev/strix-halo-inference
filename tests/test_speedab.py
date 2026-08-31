@@ -147,6 +147,24 @@ class TestItRefusesAPairThatCannotAnswerTheQuestion(unittest.TestCase):
         self.assertIn("the unroll flag", r.stdout + r.stderr)
 
 
+class TestTheBatchGeometryFollowsTheProfile(unittest.TestCase):
+    def test_ub_and_batch_match_qwen38_env(self):
+        """The suite measures builds AT THE OPERATING POINT. Its -ub/-b were
+        hardcoded 2048 and survived the profile's move to 512 by a few hours
+        — a comparison run there would have ranked builds at a batch size
+        production no longer serves. Same rule as flag-ab's BASE, same
+        anti-drift check: read the profile's own LLAMA_ARGS, do not repeat
+        numbers here."""
+        env = (REPO / "setup" / "env" / "qwen38.env").read_text()
+        line = next(l for l in env.replace("\\\n", " ").splitlines()
+                    if l.startswith("LLAMA_ARGS="))
+        toks = line.split()
+        self.assertEqual(speed_ab.UB, toks[toks.index("-ub") + 1],
+                         "speed-ab UB drifted from qwen38.env")
+        self.assertEqual(speed_ab.BATCH, toks[toks.index("-b") + 1],
+                         "speed-ab BATCH drifted from qwen38.env")
+
+
 class TestTheSummaryArithmetic(unittest.TestCase):
     def test_the_median_is_the_middle_not_the_mean(self):
         """One slow round — a background job, a thermal dip — must not move

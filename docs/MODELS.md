@@ -126,29 +126,33 @@ request time, so prefill sat inside every decode number.
 
 ### Why Flash-Next runs and is not served
 
-It is not slow. That was the first answer and it was wrong — a floor compared
-against a ceiling. On equal terms (no drafter on either side) it decodes 13.7
-t/s against qwen38's 9.3, and with `ngram-mod` it reaches 81-99 t/s on
-copy-heavy work. It is the faster model.
+It is not slow, and since 31 August it no longer runs out of memory either.
+Both blockers of the first week fell to measurements:
 
-**It runs out of memory at depth, and that is not a flag away.** 103.7 GiB of
-file, of which llama.cpp pins 78.1 in GTT and holds ~27 GiB as anonymous host
-memory — neither reclaimable. At a 24k window the machine stalls: GPU at 5 %,
-memory pressure `full` at 16.7 %, 360k major faults, zram exhausted.
-**Claude Code's tool head alone is around 43k tokens**, so every real session
-starts past that wall.
+**The memory wall is gone.** The ~27 GiB of anonymous host memory the n-gram
+table used to occupy became demand-paged page cache when llama.cpp **#27837**
+merged (30.08.): RssAnon 0.31 GiB instead of 27.1, re-measured here on the
+build that serves. On a current master build the model answers anchor and
+tool questions correctly through a 51.7k-token window, 16 of 16 cells
+(`bench/reports/2026-08-31_1943_depth-correctness_flashnext-masterA/`).
+
+**The decode gap closes when the MTP head drafts.** The checkpoint ships a
+speculation head that public GGUFs strip; with it exported as a sidecar and
+llama.cpp PR **#27836** (open, previewed here as a pinned build), a
+one-variable pair on the same build measured decode 16→100 t/s on copy at
+shallow depth, 12→49 at 37k, prose +6 to +17 % and never negative —
+acceptance 42-100 % by workload
+(`bench/reports/2026-08-31_2149…/` and `…_2158…/`).
+
+**What stops it today is a hang, not a wall.** The exact serving shape —
+that build plus `draft-mtp,ngram-mod` — generated zero tokens in 39 minutes
+at GPU 97 % on one depth-correctness question, found by the last gate before
+switching. Until that is isolated (suspects and the two experiments are in
+`setup/env/flashnext.env`), the profile says DO NOT SERVE, and
 
     python3 setup/lib/budget.py --profile flashnext
 
-prints the arithmetic: 123.8 GiB of a 124.9 GiB machine at `-c 65536`, before
-a single token of conversation. The profile is kept because the measurement is
-worth keeping, and `setup/lib/budget.py` refuses to start it beyond what fits
-rather than freezing the machine.
-
-What would change the answer is llama.cpp **#27766**, not a different quant and
-not moving the n-gram table — on a unified-memory machine that moves the same
-bytes between the same DRAM. `setup/env/flashnext.env` carries the full
-measurement history.
+still prints the arithmetic that guards every start. qwen38 keeps serving.
 
 ---
 

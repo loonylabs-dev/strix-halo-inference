@@ -11,6 +11,9 @@
 #                                                        unroll workaround, to
 #                                                        measure the flag
 #   bash setup/scripts/build-llama.sh --with-bench       build llama-bench too
+#   bash setup/scripts/build-llama.sh --rocm-path DIR    build against a
+#                                                        ROCm that is not
+#                                                        the system one
 #   bash setup/scripts/build-llama.sh --backend vulkan   the other backend
 #   bash setup/scripts/build-llama.sh --activate         build, then point the
 #                                                        profiles at the result
@@ -84,7 +87,7 @@ DRY=0; ACTIVATE=0; USE=""; LIST=0; PRUNE=0; YES=0; NOPATCH=0; KEEP="${KEEP:-1}"
 # An extra compiler flag, and a second build target. Both are for MEASURING
 # rather than for serving, which is why each gets a family or a control of its
 # own rather than being folded into the ordinary build. See step 3.
-UNROLL=0; WITHBENCH=0
+UNROLL=0; WITHBENCH=0; ROCMPATH=""
 # How many commits the patch branch may carry over the ref being built.
 # TWO patches since 30.08.2026 — hip-integrated-off and
 # speculation-stops-at-eog — so three is now one spare rather than two. See
@@ -97,6 +100,7 @@ while [ $# -gt 0 ]; do
     --no-patch) NOPATCH=1; shift ;;
     --unroll)   UNROLL=1; shift ;;
     --with-bench) WITHBENCH=1; shift ;;
+    --rocm-path) ROCMPATH="${2:?--rocm-path needs a directory}"; shift 2 ;;
     --backend)  BACKEND="${2:?--backend needs rocm or vulkan}"; shift 2 ;;
     --jobs|-j)  JOBS="${2:?-j needs a number}"; shift 2 ;;
     --activate) ACTIVATE=1; shift ;;
@@ -116,11 +120,12 @@ while [ $# -gt 0 ]; do
 done
 
 case "$BACKEND" in rocm|vulkan) ;; *) echo "backend must be rocm or vulkan" >&2; exit 2 ;; esac
-# Three FAMILIES of build directory, and the difference is not cosmetic.
+# Four FAMILIES of build directory, and the difference is not cosmetic.
 #
 #   build-<backend>-patched-<id>     carries setup/patches/hip-integrated-off.patch
 #   build-<backend>-unpatched-<id>   deliberately does not
 #   build-<backend>-unroll-<id>      patched, plus an extra compiler flag
+#   build-<backend>-altsdk-<id>      patched, built against another ROCm
 #
 # An unpatched build is a legitimate SUBJECT — "is the corruption still in
 # upstream master, and does PR #27311 fix it" cannot be answered on a binary
@@ -144,11 +149,12 @@ case "$BACKEND" in rocm|vulkan) ;; *) echo "backend must be rocm or vulkan" >&2;
 FAMILY="$BACKEND-patched"
 [ "$NOPATCH" = 1 ] && FAMILY="$BACKEND-unpatched"
 [ "$UNROLL" = 1 ] && FAMILY="$BACKEND-unroll"
+[ -n "$ROCMPATH" ] && FAMILY="$BACKEND-altsdk"
 # Every family there is. Listing and pruning walk THIS, so a family added above
 # and forgotten here becomes ~950 MB per build that nothing mentions and
 # therefore nobody prunes — the failure the old hard-wired pair of names was
 # one family away from.
-ALL_FAMILIES="$BACKEND-patched $BACKEND-unpatched $BACKEND-unroll"
+ALL_FAMILIES="$BACKEND-patched $BACKEND-unpatched $BACKEND-unroll $BACKEND-altsdk"
 STABLE="$SRC/build-$BACKEND-patched"
 
 say()  { printf '%s\n' "$*"; }
@@ -494,6 +500,24 @@ if [ -n "$USE" ]; then activate "$USE"; exit 0; fi
 # Preflight
 # --------------------------------------------------------------------------
 step "0/6 preflight"
+if [ -n "$ROCMPATH" ]; then
+  # PROVEN PRESENT, not assumed. Without this check a wrong --rocm-path falls
+  # back to the system toolchain, the build succeeds, and the stamp claims the
+  # other SDK — a lie every measurement downstream would inherit.
+  [ -d "$ROCMPATH" ] || die "--rocm-path: no such directory: $ROCMPATH"
+  ALT_CLANG="$ROCMPATH/llvm/bin/clang"
+  [ -x "$ALT_CLANG" ] || die "--rocm-path: no clang at $ALT_CLANG
+    A ROCm tarball unpacks with its compiler under llvm/bin. Without it this
+    build would silently use the system toolchain and be stamped as this SDK's."
+  ALT_VERSION="$(cat "$ROCMPATH/.info/version" 2>/dev/null | head -1)"
+  [ "$ACTIVATE" = 0 ] || die "--rocm-path and --activate cannot be combined.
+
+    The serving binary must run against the ROCm the system actually has.
+    This build's libraries are found only with LD_LIBRARY_PATH pointing into
+    $ROCMPATH — and its libamdhip64 carries the SAME soname as the system one,
+    so without that path it loads the system's and nothing says so."
+  ok "building against ROCm ${ALT_VERSION:-unknown} at $ROCMPATH — not activatable"
+fi
 if [ "$UNROLL" = 1 ]; then
   # Same rule as --no-patch, for the same reason: a build that differs from
   # the serving one is a SUBJECT. It is reachable for a measurement through
@@ -739,6 +763,11 @@ step "3/6 configure $BUILD_DIR"
 # the model server simply stays down. With $ORIGIN the libraries are found
 # relative to the binary and a build directory can be moved, renamed or reached
 # through the symlink.
+# ONE place decides the compiler. Appending an override later left
+# -DCMAKE_HIP_COMPILER in the line TWICE — cmake takes the last, so it worked,
+# and the stamp then showed both and settled nothing about which was used.
+HIPCC="/usr/lib64/rocm/llvm/bin/clang"
+[ -n "$ROCMPATH" ] && HIPCC="$ROCMPATH/llvm/bin/clang"
 case "$BACKEND" in
   rocm)
     CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release
@@ -746,7 +775,7 @@ case "$BACKEND" in
                 -DGGML_HIP=ON -DGPU_TARGETS=gfx1151
                 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON
                 -DBUILD_SHARED_LIBS=ON
-                -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang
+                "-DCMAKE_HIP_COMPILER=$HIPCC"
                 -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF) ;;
   vulkan)
     CMAKE_ARGS=(-DCMAKE_BUILD_TYPE=Release
@@ -763,8 +792,35 @@ esac
 #
 # One array element, not two: the value contains a space, and split across
 # elements cmake receives `-mllvm` as a flag and the threshold as a source file.
-[ "$UNROLL" = 1 ] && CMAKE_ARGS+=(
-    "-DCMAKE_HIP_FLAGS=-mllvm --amdgpu-unroll-threshold-local=600")
+# HIP compile flags are COLLECTED, then passed once. Two separate appends of
+# -DCMAKE_HIP_FLAGS would leave the second overwriting the first, silently, so
+# --unroll and --rocm-path together would have lost the unroll flag.
+HIP_FLAGS=""
+[ "$UNROLL" = 1 ] && HIP_FLAGS="$HIP_FLAGS -mllvm --amdgpu-unroll-threshold-local=600"
+# clang's OWN --rocm-path, and it is not the same thing as CMAKE_PREFIX_PATH.
+# Without it the compiler keeps finding /usr/include/hip — the SYSTEM headers —
+# and a ROCm 10.1 clang against ROCm 7.1 headers dies on
+# `use of undeclared identifier '__ocml_log2_f32'`. Measured 31.08.2026; the
+# first attempt at this build failed exactly there.
+# BOTH are needed, and they do different jobs. --rocm-path points clang at the
+# SDK's device libraries; -isystem is what actually decides which hip/*.h gets
+# included. Without the second, /usr/include wins because it is a default
+# search path and the hip cmake target's include directories never reach the
+# HIP compile line — flags.make carried exactly one -I, and it was ggml's own.
+# The symptom is not subtle but it is misleading: ROCm 10.1's clang against
+# ROCm 7.1's headers dies on `use of undeclared identifier '__ocml_log2_f32'`,
+# a name the 7.1 header uses and the 10.1 header does not. Measured 31.08.2026.
+[ -n "$ROCMPATH" ] && HIP_FLAGS="$HIP_FLAGS --rocm-path=$ROCMPATH -isystem $ROCMPATH/include"
+[ -n "$HIP_FLAGS" ] && CMAKE_ARGS+=("-DCMAKE_HIP_FLAGS=${HIP_FLAGS# }")
+# ANOTHER ROCm. The compiler comes from the SDK, and CMAKE_PREFIX_PATH is what
+# lets find_package(hip) resolve there instead of against /usr. ROCM_PATH is
+# exported as well because parts of the HIP cmake package still read it.
+if [ -n "$ROCMPATH" ]; then
+  CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=$ROCMPATH"
+               "-DROCM_PATH=$ROCMPATH")
+  export ROCM_PATH="$ROCMPATH"
+  export PATH="$ROCMPATH/bin:$PATH"
+fi
 run cmake -S "$SRC" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}"
 
 step "4/6 build (nice, so the running model keeps its CPU)"
@@ -808,9 +864,10 @@ if [ "$DRY" = 0 ]; then
   else
     PATCH_COMMIT="$(git_ rev-parse "$PATCH_BRANCH")"; PATCH_BRANCH_FIELD="$PATCH_BRANCH"; PATCHED=yes
   fi
-  printf 'build_id=%s\nbackend=%s\nfamily=%s\npatched=%s\nupstream_ref=%s\nupstream_commit=%s\npatch_commit=%s\npatch_branch=%s\nbuilt_at=%s\nversion=%s\ncmake=%s\n' \
+  printf 'build_id=%s\nbackend=%s\nfamily=%s\npatched=%s\nupstream_ref=%s\nupstream_commit=%s\npatch_commit=%s\npatch_branch=%s\nrocm_path=%s\nrocm_version=%s\nbuilt_at=%s\nversion=%s\ncmake=%s\n' \
     "$BUILD_ID" "$BACKEND" "$FAMILY" "$PATCHED" "$REF" "$(git_ rev-parse "$TARGET")" \
     "$PATCH_COMMIT" "$PATCH_BRANCH_FIELD" \
+    "${ROCMPATH:-none}" "${ALT_VERSION:-none}" \
     "$(date -Is)" "$VER" "${CMAKE_ARGS[*]}" > "$BUILD_DIR/.build-stamp"
   ok "stamp written: $BUILD_DIR/.build-stamp"
 fi

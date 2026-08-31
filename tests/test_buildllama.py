@@ -508,6 +508,103 @@ class TestBuildingWithTheUnrollFlag(_FakeBuildFixture):
 
 @unittest.skipIf(shutil.which("cmake") is None,
                  "build-llama.sh refuses without cmake — skipped LOUDLY")
+class TestBuildingAgainstAnotherRocm(_FakeBuildFixture):
+    """A build against a ROCm that is not the system's.
+
+    THE FAILURE THIS GUARDS AGAINST IS SILENT AND WAS MEASURED. ROCm 10.1's
+    libamdhip64 carries the SAME soname as Fedora's 7.1 — `.so.7`, pointing at
+    7.16.26344 and 7.1.52802 respectively. So a binary built against the new
+    SDK loads the OLD runtime through the system search path unless something
+    sets LD_LIBRARY_PATH, and reports numbers either way. The stamp records
+    the SDK precisely so bench/suites/speed-ab.py can put it back on the path
+    and then CHECK, with ldd, which one actually gets loaded.
+
+    The compiler is proven present rather than assumed: without that check a
+    wrong --rocm-path silently falls back to the system toolchain and stamps
+    the result as the other SDK's, which is a lie a measurement would inherit.
+    """
+
+    def fake_sdk(self, version="10.1.0", with_clang=True):
+        sdk = os.path.join(self.tmp, "sdk")
+        os.makedirs(os.path.join(sdk, "llvm", "bin"), exist_ok=True)
+        os.makedirs(os.path.join(sdk, ".info"), exist_ok=True)
+        with open(os.path.join(sdk, ".info", "version"), "w") as f:
+            f.write(version + "\n")
+        if with_clang:
+            p = os.path.join(sdk, "llvm", "bin", "clang")
+            with open(p, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(p, 0o755)
+        return sdk
+
+    def test_it_builds_into_a_family_of_its_own(self):
+        r = self.build("--ref", "master", "--rocm-path", self.fake_sdk(),
+                       PATCH_BRANCH="patch")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        made = [d for d in os.listdir(self.src) if d.startswith("build-")]
+        self.assertEqual(len(made), 1, made)
+        self.assertTrue(made[0].startswith("build-rocm-altsdk-"), made[0])
+
+    def test_the_stamp_records_which_sdk(self):
+        """Without this speed-ab.py cannot put the SDK back on the library
+        path, and the run silently measures the system ROCm."""
+        sdk = self.fake_sdk(version="10.1.0")
+        self.build("--ref", "master", "--rocm-path", sdk, PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        st = self.stamp(d)
+        self.assertEqual(st["rocm_path"], sdk)
+        self.assertEqual(st["rocm_version"], "10.1.0")
+        self.assertIn(os.path.join(sdk, "llvm", "bin", "clang"), st["cmake"])
+
+    def test_the_compiler_flag_appears_exactly_once(self):
+        """It appeared twice — the system path and then the override. cmake
+        takes the last, so it WORKED, and the stamp showed both and settled
+        nothing about which compiler had produced the binary."""
+        sdk = self.fake_sdk()
+        self.build("--ref", "master", "--rocm-path", sdk, PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        cmake = self.stamp(d)["cmake"]
+        self.assertEqual(cmake.count("-DCMAKE_HIP_COMPILER="), 1, cmake)
+        self.assertNotIn("/usr/lib64/rocm", cmake)
+
+    def test_an_ordinary_build_records_no_sdk(self):
+        """The negative control: speed-ab.py keys on this field, so an
+        ordinary build must not claim one."""
+        self.build("--ref", "master", PATCH_BRANCH="patch")
+        d = [x for x in os.listdir(self.src) if x.startswith("build-")][0]
+        st = self.stamp(d)
+        self.assertIn(st.get("rocm_path", "none"), ("none", ""))
+
+    def test_a_path_without_a_compiler_is_refused(self):
+        """The lie this prevents: falling back to the system toolchain and
+        stamping the build as the other SDK's."""
+        r = self.build("--ref", "master", "--rocm-path",
+                       self.fake_sdk(with_clang=False), PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("no clang", (r.stdout + r.stderr).lower())
+        self.assertFalse(
+            [d for d in os.listdir(self.src) if d.startswith("build-")],
+            "it must refuse in preflight, before anything is built")
+
+    def test_a_missing_directory_is_refused(self):
+        r = self.build("--ref", "master", "--rocm-path",
+                       os.path.join(self.tmp, "nope"), PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+
+    def test_it_cannot_be_activated(self):
+        r = self.build("--ref", "master", "--rocm-path", self.fake_sdk(),
+                       "--activate", PATCH_BRANCH="patch")
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("cannot be combined", r.stdout + r.stderr)
+
+    def test_list_shows_the_altsdk_family(self):
+        self.build("--ref", "master", "--rocm-path", self.fake_sdk(),
+                   PATCH_BRANCH="patch")
+        self.assertIn("[rocm-altsdk]", self.build("--list").stdout)
+
+
+@unittest.skipIf(shutil.which("cmake") is None,
+                 "build-llama.sh refuses without cmake — skipped LOUDLY")
 class TestBuildingLlamaBenchAsWell(_FakeBuildFixture):
     """llama-bench is what llama.cpp#19984 measured with, and this stack has
     never built it — `--target llama-server` only. Reproducing somebody

@@ -5,7 +5,7 @@ a table, and attributes the difference to the flag — which is the failure mode
 this repository keeps meeting, and the reason the picking is tested rather
 than the plumbing.
 
-One of these tests exists because the bug had already happened: newest_unroll()
+One of these tests exists because the bug had already happened: newest_of_family()
 returned a full PATH, runlib.resolve_binary() takes a path OR a directory name
 OR a build id, and resolved the path against $LLAMA_SRC — producing
 `~/llama.cpp/llama-bench`, a file that does not exist. That one announced
@@ -16,12 +16,12 @@ import os, shutil, subprocess, sys, tempfile, unittest
 import common
 
 REPO = common.REPO
-SUITE = str(REPO / "bench" / "suites" / "unroll-flag.py")
+SUITE = str(REPO / "bench" / "suites" / "speed-ab.py")
 # The suite imports bench/run.py as `run`, so that has to be importable
 # before it is loaded — the hyphen in its own filename is why it cannot
 # simply be imported by name.
 sys.path.insert(0, str(REPO / "bench"))
-unroll_flag = common.load(SUITE, "unroll_flag")
+speed_ab = common.load(SUITE, "speed_ab")
 
 
 def make_build(root, name, built_at, cmake="-DCMAKE_BUILD_TYPE=Release",
@@ -59,7 +59,7 @@ class TestItPicksTheRightUnrollBuild(unittest.TestCase):
         name against $LLAMA_SRC and a path as itself; handing it a path it
         then joins produced ~/llama.cpp/llama-bench."""
         make_build(self.tmp, "build-rocm-unroll-b1", "2026-08-31T00:23:15+02:00")
-        got = unroll_flag.newest_unroll()
+        got = speed_ab.newest_of_family()
         self.assertEqual(got, "build-rocm-unroll-b1")
         self.assertNotIn(os.sep, got)
 
@@ -67,15 +67,15 @@ class TestItPicksTheRightUnrollBuild(unittest.TestCase):
         """Directory order is arbitrary and build ids do not sort by age."""
         make_build(self.tmp, "build-rocm-unroll-zzz", "2026-08-01T10:00:00+02:00")
         make_build(self.tmp, "build-rocm-unroll-aaa", "2026-08-30T10:00:00+02:00")
-        self.assertEqual(unroll_flag.newest_unroll(), "build-rocm-unroll-aaa")
+        self.assertEqual(speed_ab.newest_of_family(), "build-rocm-unroll-aaa")
 
     def test_it_ignores_the_other_families(self):
         make_build(self.tmp, "build-rocm-patched-b1", "2026-08-31T00:00:00+02:00")
         make_build(self.tmp, "build-rocm-unpatched-b1", "2026-08-31T00:00:00+02:00")
-        self.assertIsNone(unroll_flag.newest_unroll())
+        self.assertIsNone(speed_ab.newest_of_family())
 
     def test_nothing_there_is_none_rather_than_a_guess(self):
-        self.assertIsNone(unroll_flag.newest_unroll())
+        self.assertIsNone(speed_ab.newest_of_family())
 
 
 class TestTheStampIsReadFromBesideTheBinary(unittest.TestCase):
@@ -86,7 +86,7 @@ class TestTheStampIsReadFromBesideTheBinary(unittest.TestCase):
     def test_it_finds_the_stamp_two_levels_up_from_bin(self):
         d = make_build(self.tmp, "build-rocm-unroll-b1", "2026-08-31T00:00:00+02:00",
                        cmake="-DCMAKE_HIP_FLAGS=-mllvm --amdgpu-unroll-threshold-local=600")
-        st = unroll_flag.stamp_beside(os.path.join(d, "bin", "llama-bench"))
+        st = speed_ab.stamp_beside(os.path.join(d, "bin", "llama-bench"))
         self.assertIn("amdgpu-unroll", st["cmake"])
         self.assertEqual(st["patched"], "yes")
 
@@ -94,7 +94,7 @@ class TestTheStampIsReadFromBesideTheBinary(unittest.TestCase):
         """A build without a stamp predates them. The suite must be able to
         SAY that, which it cannot do from a traceback."""
         self.assertEqual(
-            unroll_flag.stamp_beside("/nonexistent/bin/llama-bench"), {})
+            speed_ab.stamp_beside("/nonexistent/bin/llama-bench"), {})
 
 
 class TestItRefusesAPairThatCannotAnswerTheQuestion(unittest.TestCase):
@@ -107,7 +107,7 @@ class TestItRefusesAPairThatCannotAnswerTheQuestion(unittest.TestCase):
 
     def run_suite(self, ref, unroll):
         return subprocess.run(
-            [sys.executable, SUITE, "--reference", ref, "--unroll", unroll,
+            [sys.executable, SUITE, "--reference", ref, "--variant", unroll,
              "--dry-run"],
             capture_output=True, text=True, timeout=120,
             env=dict(os.environ, LLAMA_SRC=self.tmp))
@@ -122,45 +122,86 @@ class TestItRefusesAPairThatCannotAnswerTheQuestion(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn("nothing to compare", (r.stdout + r.stderr).lower())
 
-    def test_it_refuses_when_the_unroll_arm_does_not_carry_it(self):
+    def test_it_refuses_a_pair_that_differs_in_nothing(self):
+        """Neither arm carries the flag, same ROCm, same commit. A table from
+        this pair would be two runs of the same binary wearing two names."""
         make_build(self.tmp, "build-rocm-patched-b1", "2026-08-30T10:00:00+02:00")
         make_build(self.tmp, "build-rocm-unroll-b1", "2026-08-30T11:00:00+02:00")
         r = self.run_suite("build-rocm-patched-b1", "build-rocm-unroll-b1")
         self.assertNotEqual(r.returncode, 0, r.stdout)
-        self.assertIn("does NOT carry the flag", r.stdout + r.stderr)
+        self.assertIn("do not differ in anything", r.stdout + r.stderr)
 
-    def test_a_differing_commit_is_called_out(self):
-        """Not fatal — sometimes the reference IS an older build — but it must
-        not pass in silence, because the difference then carries more than
-        the flag."""
+    def test_two_differences_at_once_are_refused(self):
+        """The flag AND a different commit. Whatever such a table showed
+        could not be attributed to either, which is precisely the mistake
+        llama.cpp#19984 made — so it is refused rather than footnoted."""
         flag = "-DCMAKE_HIP_FLAGS=-mllvm --amdgpu-unroll-threshold-local=600"
         make_build(self.tmp, "build-rocm-patched-b1", "2026-08-30T10:00:00+02:00",
                    commit="a" * 40)
         make_build(self.tmp, "build-rocm-unroll-b1", "2026-08-30T11:00:00+02:00",
                    cmake=flag, commit="b" * 40)
         r = self.run_suite("build-rocm-patched-b1", "build-rocm-unroll-b1")
-        self.assertIn("NOT the same commit", r.stdout + r.stderr)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn("MORE THAN ONE difference", r.stdout + r.stderr)
+        self.assertIn("the llama.cpp commit", r.stdout + r.stderr)
+        self.assertIn("the unroll flag", r.stdout + r.stderr)
 
 
 class TestTheSummaryArithmetic(unittest.TestCase):
     def test_the_median_is_the_middle_not_the_mean(self):
         """One slow round — a background job, a thermal dip — must not move
         the answer the way a mean would."""
-        self.assertEqual(unroll_flag.median([10.0, 11.0, 100.0]), 11.0)
-        self.assertEqual(unroll_flag.median([10.0, 20.0]), 15.0)
-        self.assertEqual(unroll_flag.median([]), 0.0)
+        self.assertEqual(speed_ab.median([10.0, 11.0, 100.0]), 11.0)
+        self.assertEqual(speed_ab.median([10.0, 20.0]), 15.0)
+        self.assertEqual(speed_ab.median([]), 0.0)
 
     def test_rows_are_matched_across_arms_by_shape_and_depth(self):
         """pp512@d0 must never be compared against pp512@d65536."""
         a = {"n_prompt": 512, "n_gen": 0, "n_depth": 32768}
         b = {"n_prompt": 512, "n_gen": 0, "n_depth": 0}
-        self.assertNotEqual(unroll_flag.key_of(a), unroll_flag.key_of(b))
-        self.assertEqual(unroll_flag.label_of(unroll_flag.key_of(a)),
+        self.assertNotEqual(speed_ab.key_of(a), speed_ab.key_of(b))
+        self.assertEqual(speed_ab.label_of(speed_ab.key_of(a)),
                          "pp512 @ d32768")
         self.assertEqual(
-            unroll_flag.label_of(unroll_flag.key_of(
+            speed_ab.label_of(speed_ab.key_of(
                 {"n_prompt": 0, "n_gen": 128, "n_depth": 0})), "tg128 @ d0")
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTheArmsTakeTurnsGoingFirst(unittest.TestCase):
+    """Straight A,B,A,B leaves B second in EVERY round, on a machine one pass
+    warmer. Measured on a pair that differed in nothing, that is worth -0.5 to
+    -1.2 % to whichever arm goes second — small, but the same order as the
+    prefill difference this suite was asked to resolve. Alternating cancels it
+    rather than making it small."""
+
+    ARMS = [("reference", "/a"), ("variant", "/b")]
+
+    def test_it_alternates(self):
+        first = [speed_ab.order_for(i, self.ARMS)[0][0] for i in range(4)]
+        self.assertEqual(first, ["reference", "variant",
+                                 "reference", "variant"])
+
+    def test_each_arm_leads_half_the_rounds(self):
+        for n in (2, 4, 6):
+            leads = [speed_ab.order_for(i, self.ARMS)[0][0] for i in range(n)]
+            self.assertEqual(leads.count("reference"), n // 2, leads)
+            self.assertEqual(leads.count("variant"), n // 2, leads)
+
+    def test_both_arms_run_in_every_round(self):
+        """Alternating must reorder, never drop — a round with one arm would
+        silently halve that arm's sample count."""
+        for i in range(4):
+            names = sorted(n for n, _ in speed_ab.order_for(i, self.ARMS))
+            self.assertEqual(names, ["reference", "variant"])
+
+    def test_it_does_not_mutate_the_caller_s_list(self):
+        """reversed() on the shared list would flip the arms permanently, and
+        every later round would then read the wrong labels."""
+        arms = list(self.ARMS)
+        for i in range(4):
+            speed_ab.order_for(i, arms)
+        self.assertEqual(arms, self.ARMS)

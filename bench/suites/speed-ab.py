@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""unroll-flag — does ROCm's loop-unrolling workaround do anything HERE?
+"""speed-ab — two builds, one difference, interleaved.
 
-    python3 bench/suites/unroll-flag.py
-    python3 bench/suites/unroll-flag.py --depths 0,16384 --reps 2
-    python3 bench/suites/unroll-flag.py --dry-run       what it would run
+    python3 bench/suites/speed-ab.py                     the newest unroll build
+    python3 bench/suites/speed-ab.py --variant-family rocm-altsdk
+    python3 bench/suites/speed-ab.py --depths 0,16384 --reps 2
+    python3 bench/suites/speed-ab.py --dry-run           what it would run
 
-THE QUESTION. llama.cpp#19984 reports, on this exact hardware — gfx1151,
-128 GB Strix Halo — a prefill collapse it attributes to a loop-unrolling
-regression in ROCm 7+, and works around it with
+Compares the build that SHIPS against one that differs from it in exactly one
+way — a compiler flag, or the ROCm SDK it was built against — and refuses the
+pair when it cannot name that one way. Two variables produce a table that
+looks like an answer and is not, which is how llama.cpp#19984 came to
+attribute a build-configuration difference to a compiler flag.
+
+WHAT IT WAS WRITTEN FOR. llama.cpp#19984 reports, on this exact hardware —
+gfx1151, 128 GB Strix Halo — a prefill collapse it attributes to a
+loop-unrolling regression in ROCm 7+, and works around it with
 
     -mllvm --amdgpu-unroll-threshold-local=600
 
@@ -59,12 +66,12 @@ import run as runlib                                          # noqa: E402
 # repository is meant to run on somebody else's disk layout too.
 MODEL_FILE = "Qwen3.8-27B-UD-Q4_K_XL.gguf"      # what qwen38.env serves
 UNIT = "llama-user@qwen38"
-DEADMAN = "unroll-flag-deadman"
+DEADMAN = "speed-ab-deadman"
 
 
 def default_model():
     """Same resolution order bench/run.py uses, and the same one resolver."""
-    explicit = os.environ.get("UNROLL_MODEL")
+    explicit = os.environ.get("SPEEDAB_MODEL")
     if explicit:
         return explicit
     models = (os.environ.get("LLAMA_MODELS")
@@ -119,9 +126,8 @@ def bench(binary, model, depths, prompt, gen, extra, dry=False):
     if dry:
         say("  would run: %s" % " ".join(argv))
         return []
-    env = dict(os.environ, LD_LIBRARY_PATH=os.path.dirname(binary))
     r = subprocess.run(argv, capture_output=True, text=True, timeout=3600,
-                       env=env)
+                       env=env_for(binary))
     if r.returncode != 0:
         say("  FAILED (%d): %s" % (r.returncode, (r.stderr or "")[-400:]))
         return []
@@ -130,6 +136,94 @@ def bench(binary, model, depths, prompt, gen, extra, dry=False):
     except Exception as e:
         say("  unparseable output (%s): %s" % (e, r.stdout[:300]))
         return []
+
+
+ROCM_LIBS = ("libamdhip64", "libhsa-runtime64", "librocblas", "libhipblas")
+
+
+def env_for(binary):
+    """The environment this build has to run in.
+
+    A build made against another ROCm SDK needs that SDK's libraries at RUN
+    time too, and RUNPATH is only `$ORIGIN:`. Without this the binary loads
+    /lib64 — the system ROCm — and the run measures a compiler difference
+    while reporting an SDK one. The stamp is what says which SDK, so a build
+    that names none keeps the system's.
+    """
+    libs = [os.path.dirname(binary)]
+    sdk = stamp_beside(binary).get("rocm_path", "")
+    if sdk:
+        libs = [os.path.join(sdk, "lib"), os.path.join(sdk, "lib64")] + libs
+    prev = os.environ.get("LD_LIBRARY_PATH", "")
+    if prev:
+        libs.append(prev)
+    return dict(os.environ, LD_LIBRARY_PATH=os.pathsep.join(libs))
+
+
+def rocm_libs_of(binary, env=None):
+    """Where this binary's ROCm libraries actually come from.
+
+    Not which SDK it was BUILT against — which one it will LOAD. The two are
+    the same only by accident here: RUNPATH is `$ORIGIN:`, so anything not
+    beside the binary is resolved through the system search path, and a build
+    made against another ROCm silently picks up /lib64 when the sonames match.
+    That failure produces numbers rather than an error, which is the only
+    reason this function exists.
+
+    Returns {soname: resolved path}, empty if ldd could not be run.
+    """
+    target = binary
+    if os.path.basename(binary).startswith("llama-"):
+        # The executables are 12 KB stubs; the HIP backend is in the .so
+        # beside them, and that is what links against ROCm.
+        for cand in ("libggml-hip.so", "libggml-hip.so.0"):
+            p = os.path.join(os.path.dirname(binary), cand)
+            if os.path.exists(p):
+                target = p
+                break
+    try:
+        r = subprocess.run(["ldd", target], capture_output=True, text=True,
+                           timeout=60, env=env or os.environ)
+    except Exception:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        m = re.match(r"\s*(\S+)\s*=>\s*(\S+)", line)
+        if m and any(m.group(1).startswith(x) for x in ROCM_LIBS):
+            out[m.group(1)] = m.group(2)
+    return out
+
+
+def order_for(rnd, arms):
+    """Which arm runs first in round `rnd`. Alternates, so that over an even
+    number of rounds each arm is first exactly half the time and the
+    second-place thermal penalty cancels instead of accumulating on one."""
+    return list(arms) if rnd % 2 == 0 else list(reversed(arms))
+
+
+def gpu_state():
+    """Temperature and power draw, for the record rather than for a decision.
+
+    The operator watched package power fall from 51 W to 49 W during a run and
+    asked whether the arms were being compared fairly. They were — but the
+    answer had to be reconstructed from a previous run's numbers because
+    nothing here recorded the machine's own state. Now it does.
+    """
+    import glob
+    for hw in glob.glob("/sys/class/drm/card*/device/hwmon/hwmon*/"):
+        try:
+            with open(hw + "temp1_input") as f:
+                t = int(f.read()) / 1000.0
+        except OSError:
+            continue
+        w = None
+        try:
+            with open(hw + "power1_average") as f:
+                w = int(f.read()) / 1e6
+        except OSError:
+            pass
+        return {"temp_c": round(t, 1), "power_w": round(w, 1) if w else None}
+    return {}
 
 
 def key_of(row):
@@ -147,9 +241,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", default="rocm-patched",
                     help="the build that ships (path, dir name or build id)")
-    ap.add_argument("--unroll", default=None,
-                    help="the build carrying the flag; default: the newest "
-                         "rocm-unroll build")
+    ap.add_argument("--variant", "--unroll", dest="variant", default=None,
+                    help="the build to compare against; default: the newest "
+                         "one in --variant-family")
+    ap.add_argument("--variant-family", default="rocm-unroll",
+                    help="which build family the variant comes from "
+                         "(rocm-unroll, rocm-altsdk, ...)")
     ap.add_argument("--model", default=None,
                     help="default: the profile's model under the resolved "
                          "model directory")
@@ -164,20 +261,25 @@ def main():
     ap.add_argument("--keep-production", action="store_true",
                     help="do not stop the model server (only safe for a "
                          "depth-0 run on a small model, and not checked)")
+    ap.add_argument("--no-warmup", action="store_true",
+                    help="skip the discarded first pass (faster, and the "
+                         "first round then carries the warm-up drift)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
     a.model = a.model or default_model()
     depths = [int(d) for d in a.depths.split(",") if d.strip()]
     ref = runlib.resolve_binary(a.reference)
-    unroll = a.unroll or newest_unroll()
-    if not unroll:
+    variant = a.variant or newest_of_family(a.variant_family)
+    if not variant:
         raise SystemExit(
-            "no rocm-unroll build found. Build one:\n"
-            "    bash setup/scripts/build-llama.sh --unroll --with-bench")
-    unr = runlib.resolve_binary(unroll)
+            "no %s build found. Build one, for example:\n"
+            "    bash setup/scripts/build-llama.sh --unroll --with-bench\n"
+            "    bash setup/scripts/build-llama.sh --rocm-path DIR --with-bench"
+            % a.variant_family)
+    var = runlib.resolve_binary(variant)
 
-    arms = [("reference", bench_binary(ref)), ("unroll", bench_binary(unr))]
+    arms = [("reference", bench_binary(ref)), ("variant", bench_binary(var))]
     for name, b in arms:
         if not os.path.exists(b):
             raise SystemExit(
@@ -189,6 +291,7 @@ def main():
     say("model:     %s" % a.model)
     say("depths:    %s" % depths)
     say("rounds:    %d, interleaved" % a.reps)
+    hips = {}
     for name, b in arms:
         say("%-10s %s" % (name + ":", runlib.systemdfile.unexpand(b)
                           if hasattr(runlib, "systemdfile") else b))
@@ -196,21 +299,38 @@ def main():
         say("           build %s, cmake carries the flag: %s"
             % (st.get("build_id", "?"),
                "yes" if "amdgpu-unroll" in st.get("cmake", "") else "NO"))
+        libs = rocm_libs_of(b, env_for(b))
+        hip = libs.get("libamdhip64.so.7") or next(
+            (v for k, v in libs.items() if k.startswith("libamdhip64")), None)
+        say("           ROCm it will LOAD: %s" % (hip or "could not tell"))
+        hips[name] = hip
 
-    # The one thing that must be true of the pair, asserted rather than
-    # assumed: same commit, and exactly one of them carrying the flag.
+    # WHAT DIFFERS, named rather than assumed. A pair with no difference
+    # measures nothing; a pair with two measures neither of them. The issue
+    # this suite was written for made exactly that mistake, so the check is
+    # the point of the file and not a formality.
     sr, su = stamp_beside(arms[0][1]), stamp_beside(arms[1][1])
+    axes = []
+    if ("amdgpu-unroll" in sr.get("cmake", "")) != \
+            ("amdgpu-unroll" in su.get("cmake", "")):
+        axes.append("the unroll flag")
+    if hips["reference"] != hips["variant"]:
+        axes.append("the ROCm they load (%s vs %s)"
+                    % (hips["reference"], hips["variant"]))
     if sr.get("upstream_commit") != su.get("upstream_commit"):
-        say("\n  ! the two builds are NOT the same commit:\n"
-            "      reference %s\n      unroll    %s\n"
-            "    the difference would carry more than the flag."
-            % (sr.get("upstream_commit"), su.get("upstream_commit")))
-    if "amdgpu-unroll" in sr.get("cmake", ""):
-        raise SystemExit("the REFERENCE build already carries the flag — "
-                         "there is nothing to compare.")
-    if "amdgpu-unroll" not in su.get("cmake", ""):
-        raise SystemExit("the unroll build does NOT carry the flag. Its "
-                         "stamp says: %s" % su.get("cmake", "")[:200])
+        axes.append("the llama.cpp commit (%s vs %s)"
+                    % ((sr.get("upstream_commit") or "?")[:9],
+                       (su.get("upstream_commit") or "?")[:9]))
+
+    if not axes:
+        raise SystemExit(
+            "the two builds do not differ in anything this suite can name — "
+            "same flag, same ROCm, same commit. There is nothing to compare.")
+    say("\ndiffers in: %s" % "; ".join(axes))
+    if len(axes) > 1:
+        raise SystemExit(
+            "MORE THAN ONE difference. Whatever the table showed could not be "
+            "attributed to any of them. Build a pair that differs in one.")
 
     if a.dry_run:
         for name, b in arms:
@@ -230,9 +350,26 @@ def main():
             runlib.wait_for_gtt_to_settle()
             say("GTT after stop: %.1f GiB" % (runlib.gtt() or 0))
 
-        for rnd in range(a.reps):
+        if not a.no_warmup:
+            # A DISCARDED FIRST PASS. Package power settles from ~51 W to ~49 W
+            # as the SoC warms, and the previous run lost 3-4 % between its
+            # first and last round because of it. One short pass per arm puts
+            # every measured round in the same thermal state.
+            say("\nwarm-up (discarded): one shallow pass per arm")
             for name, b in arms:
-                say("\n== round %d/%d — %s" % (rnd + 1, a.reps, name))
+                bench(b, a.model, [0], a.prompt, min(a.gen, 32), [])
+            say("  GPU after warm-up: %s" % gpu_state())
+
+        for rnd in range(a.reps):
+            # COUNTERBALANCED. Straight A,B,A,B still runs B second in every
+            # round, on a machine one pass warmer — worth -0.5 to -1.2 % to
+            # whichever arm is second, measured on a pair that differed in
+            # nothing. Alternating makes each arm first exactly half the time,
+            # so the offset cancels instead of merely being small.
+            order = order_for(rnd, arms)
+            for name, b in order:
+                say("\n== round %d/%d — %s   %s"
+                    % (rnd + 1, a.reps, name, gpu_state()))
                 t0 = time.time()
                 for row in bench(b, a.model, depths, a.prompt, a.gen, []):
                     k = key_of(row)
@@ -270,15 +407,16 @@ def stamp_beside(binary):
     return out
 
 
-def newest_unroll():
+def newest_of_family(family="rocm-unroll"):
     src = os.environ.get("LLAMA_SRC", os.path.expanduser("~/llama.cpp"))
     best, best_at = None, ""
+    prefix = "build-%s-" % family
     try:
         names = os.listdir(src)
     except OSError:
         return None
     for d in names:
-        if not d.startswith("build-rocm-unroll-"):
+        if not d.startswith(prefix):
             continue
         st = stamp_beside(os.path.join(src, d, "bin", "x"))
         at = st.get("built_at", "")
@@ -299,13 +437,13 @@ def median(xs):
 
 
 def report(results, arms, a, depths):
-    ref, unr = results["reference"], results["unroll"]
+    ref, unr = results["reference"], results["variant"]
     keys = [k for k in ref if k in unr]
     keys.sort(key=lambda k: (k[2], k[0] or 0))
 
     lines = []
     lines.append("")
-    lines.append("%-18s %12s %12s %10s" % ("", "reference", "unroll", "change"))
+    lines.append("%-18s %12s %12s %10s" % ("", "reference", "variant", "change"))
     for k in keys:
         r, u = median(ref[k]), median(unr[k])
         pct = ((u - r) / r * 100.0) if r else 0.0
@@ -320,7 +458,7 @@ def report(results, arms, a, depths):
     say(text)
 
     d = os.path.join(REPO, "bench", "reports",
-                     time.strftime("%Y-%m-%d_%H%M") + "_unroll-flag")
+                     time.strftime("%Y-%m-%d_%H%M") + "_speed-ab")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "RESULT.md"), "w") as f:
         f.write("# unroll-flag\n\n")

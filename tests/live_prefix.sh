@@ -10,7 +10,7 @@
 #   bash tests/live_prefix.sh
 #
 # Duration: one cold start (100-180 s) plus about a minute. Requires a running
-# llama-server and cc-gateway.
+# llama-server and llm-gateway.
 #
 # SIDE EFFECT: clears every slot in between (action=erase). Warm sessions of
 # other projects reload from disk once afterwards.
@@ -38,7 +38,7 @@ trap cleanup EXIT
 
 echo "Prefix saving, end to end"
 
-curl -sf -m5 "$GATEWAY/gateway/status" >/dev/null || { echo "cc-gateway unreachable"; exit 2; }
+curl -sf -m5 "$GATEWAY/gateway/status" >/dev/null || { echo "llm-gateway unreachable"; exit 2; }
 curl -sf -m5 "$LLAMA/slots"            >/dev/null || { echo "llama-server unreachable"; exit 2; }
 
 # 1 · Build a body and compute the id with the gateway's own code — do not
@@ -53,7 +53,7 @@ def load(path, name):
     spec.loader.exec_module(m)
     return m
 syn = load("tools/synthetic.py", "synthetic")
-gw  = load("setup/claude/cc-gateway.py", "cc_gateway")
+gw  = load("setup/gateway/gateway.py", "gateway")
 p = syn.body(project="/tmp/live-%d" % time.time(), n_tools=24,
              question="Say only the word test.")
 p["model"], p["max_tokens"], p["stream"] = "laguna", 8, False
@@ -118,7 +118,7 @@ WARM=$(( $(date +%s) - t2 ))
 [ "$CODE" = "200" ] && ok "second request answered ($WARM s)" \
                     || nope "second request: HTTP $CODE"
 
-if journalctl --user -u cc-gateway --since "-10min" --no-pager 2>/dev/null \
+if journalctl --user -u llm-gateway --since "-10min" --no-pager 2>/dev/null \
    | grep -q "RESTORED    prefix $ID"; then
   ok "restored from the file"
 else

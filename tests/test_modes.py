@@ -35,7 +35,7 @@ import unittest
 
 import common
 
-M = common.load("setup/claude/modes.py", "modes")
+M = common.load("setup/gateway/modes.py", "modes")
 
 # Exactly what the profiles declare, after measurement. No `none` on either:
 # both Qwen profiles switch thinking off on the command line and gemma's
@@ -57,7 +57,7 @@ class TestTheModuleDocstringSurvivesItsOwnParser(unittest.TestCase):
 
     def test_the_example_lines_parse(self):
         import re
-        src = (common.REPO / "setup" / "claude" / "modes.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "modes.py").read_text(encoding="utf-8")
         head = src.split('"""')[1]
         modes = re.search(r"^\s*MODES=(.*)$", head, re.M)
         levels = re.search(r"^\s*TEMPLATE_LEVELS=(.*)$", head, re.M)
@@ -66,7 +66,7 @@ class TestTheModuleDocstringSurvivesItsOwnParser(unittest.TestCase):
                       M.parse_levels(levels.group(1)))
 
     def test_it_does_not_advertise_a_field_that_was_removed(self):
-        src = (common.REPO / "setup" / "claude" / "modes.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "modes.py").read_text(encoding="utf-8")
         self.assertNotIn("EFFORT_MAP", src)
 
 

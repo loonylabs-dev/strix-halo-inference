@@ -91,7 +91,7 @@ class TestTheDerivationIsComplete(Base):
 class TestTheStoreLimitLivesInOnePlace(unittest.TestCase):
     """Two consumers govern the saved-prefix store and they must agree.
 
-    cc-gateway STOPS SAVING at AUTO_MAX_GB; prefix-cleanup.timer PRUNES DOWN
+    The gateway STOPS SAVING at AUTO_MAX_GB; prefix-cleanup.timer PRUNES DOWN
     TO its --max-gb. A pruning limit below the saving limit makes the two
     fight over every prefix; above it, the timer never fires at all. Both were
     `20`, typed separately, and agreed by coincidence — the shape
@@ -110,7 +110,7 @@ class TestTheStoreLimitLivesInOnePlace(unittest.TestCase):
         self.src = self.UNIT.read_text(encoding="utf-8")
 
     def test_the_unit_reads_the_gateway_env_file(self):
-        self.assertIn("EnvironmentFile=-%h/.config/cc-gateway.env", self.src)
+        self.assertIn("EnvironmentFile=-%h/.config/llm-gateway.env", self.src)
 
     def test_it_uses_the_variable_and_not_a_number(self):
         self.assertIn("AUTO_MAX_GB", self.src)
@@ -143,7 +143,7 @@ class TestTheStoreLimitLivesInOnePlace(unittest.TestCase):
                                      "on every fire")
 
     def test_zero_is_translated_rather_than_passed_through(self):
-        """AUTO_MAX_GB=0 is a legitimate setting — cc-gateway.py:345 reads it
+        """AUTO_MAX_GB=0 is a legitimate setting — gateway.py's AUTO_MAX_GB reads it
         as "the store may use no disk" and stops saving. prewarm REFUSES a
         limit of 0, on purpose, because in a deleting tool 0 is ambiguous. Two
         changes made on the same day would therefore have disagreed on the one

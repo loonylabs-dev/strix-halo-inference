@@ -8,8 +8,8 @@
 #
 #   bash tests/live_concurrency.sh
 #
-# Duration: about a minute. Needs a running llama-server and cc-gateway, a warm
-# prefix (it warms one itself) and an entry in ~/.config/cc-gateway-tokens.
+# Duration: about a minute. Needs a running llama-server and llm-gateway, a warm
+# prefix (it warms one itself) and an entry in ~/.config/llm-gateway-tokens.
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,11 +17,11 @@ GATEWAY="${GATEWAY:-http://127.0.0.1:8090}"
 DIRECT="${DIRECT:-http://127.0.0.1:8080}"
 LAN="${LAN:-$(ip -4 -o addr show scope global 2>/dev/null | grep -v docker \
       | awk '{print $4}' | cut -d/ -f1 | head -1)}"
-TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/cc-gateway-tokens}"
+TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/llm-gateway-tokens}"
 TOKEN="$(awk '!/^#/ && NF>=2 {sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit}' \
          "$TOKEN_FILE" 2>/dev/null)"
 echo "Admission control under load"
-curl -sf -m5 "$GATEWAY/gateway/status" >/dev/null || { echo "cc-gateway unreachable"; exit 2; }
+curl -sf -m5 "$GATEWAY/gateway/status" >/dev/null || { echo "llm-gateway unreachable"; exit 2; }
 [ -n "$LAN" ]   || { echo "no LAN address found"; exit 2; }
 [ -n "$TOKEN" ] || { echo "no access in $TOKEN_FILE"; exit 2; }
 
@@ -76,7 +76,7 @@ def call(base, max_tokens, token=None, question="Say alpha.", shape=False):
 # again with equal bodies: 6 ms). So: shape the direct body the way the
 # gateway would, and refuse to report an overhead unless both sides
 # really answered 200.
-sys.path.insert(0, REPO + "/setup/claude")
+sys.path.insert(0, REPO + "/setup/gateway")
 import dialects as DIA
 import re as _re
 _VOLATILE = [_re.compile(r"<total_tokens>\s*\d+\s*tokens left\s*</total_tokens>")]

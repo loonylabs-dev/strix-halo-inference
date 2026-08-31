@@ -16,7 +16,7 @@ import json, os, stat, tempfile, shutil, unittest
 
 import common
 
-TR = common.load("setup/claude/tracelog.py", "tracelog")
+TR = common.load("setup/gateway/tracelog.py", "tracelog")
 
 
 class Base(unittest.TestCase):
@@ -164,7 +164,7 @@ class TestItCannotBreakTheGateway(Base):
 
 class TestTheGatewayActuallyRecords(unittest.TestCase):
     def test_the_call_sites_are_there(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         import re
         for kind in ("request", "restore", "save", "quarantine", "mismatch"):
@@ -175,7 +175,7 @@ class TestTheGatewayActuallyRecords(unittest.TestCase):
 
     def test_a_trace_left_on_is_visible_at_startup(self):
         """Otherwise it runs for weeks and nobody knows."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("TRACE IS ON at level", src)
         self.assertIn("prompts are being written in the clear", src)
@@ -196,7 +196,7 @@ class TestTheSuiteCannotWriteIntoTheRealTrace(unittest.TestCase):
 
     def test_the_gateway_under_test_traces_somewhere_harmless(self):
         import importlib
-        gw = common.load("setup/claude/cc-gateway.py", "cc_gateway_trace_check",
+        gw = common.load("setup/gateway/gateway.py", "gateway_trace_check",
                          {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
                           "SLOT_PATH": "/nonexistent-slots",
                           "TRACE_DIR": "/nonexistent-trace"})
@@ -205,7 +205,7 @@ class TestTheSuiteCannotWriteIntoTheRealTrace(unittest.TestCase):
                          "a directory that does not exist has no level to read")
 
     def test_the_env_var_is_what_redirects_it(self):
-        src = (common.REPO / "setup" / "claude" / "tracelog.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "tracelog.py").read_text(
             encoding="utf-8")
         self.assertIn('os.environ.get("TRACE_DIR")', src)
         loader = (common.REPO / "tests" / "test_gateway.py").read_text(
@@ -224,7 +224,7 @@ class TestBothNamesAreRecorded(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.GW = common.load("setup/claude/cc-gateway.py", "cc_gateway_names",
+        cls.GW = common.load("setup/gateway/gateway.py", "gateway_names",
                              {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
                               "SLOT_PATH": "/nonexistent-slots",
                               "TRACE_DIR": "/nonexistent-trace"})
@@ -247,7 +247,7 @@ class TestBothNamesAreRecorded(unittest.TestCase):
         self.assertEqual(self.GW._mode_of("qwen38-low", None), "bare")
 
     def test_the_record_carries_slug_served_and_mode(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         block = src[src.index('TRACE.record(\n                "request"'):][:1200]
         for field in ('"slug"', '"served"', '"mode"'):
@@ -258,7 +258,7 @@ class TestWhatCameBack(unittest.TestCase):
     """Read and written are two different numbers, and until 29.08. only the
     reading was recorded."""
 
-    DIA = common.load("setup/claude/dialects.py", "dialects_output")
+    DIA = common.load("setup/gateway/dialects.py", "dialects_output")
 
     def test_llama_cpps_own_count(self):
         self.assertEqual(self.DIA.output_from_text('{"timings":{"predicted_n":42}}'), 42)
@@ -284,7 +284,7 @@ class TestOneNameMeansOneThing(unittest.TestCase):
         """A save event used to carry prewarm's stdout under `output`, and the
         table — which reads `output` as the tokens the model wrote — printed a
         paragraph of console text in a number column. Found on screen, 29.08."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('"prewarm_stdout"', src)
         self.assertNotIn('detail={"output"', src)
@@ -296,7 +296,7 @@ class TestTheRatesAreMeasuredOrAbsent(unittest.TestCase):
     them afterwards. So the rates come from llama.cpp's own `timings` or they
     do not come at all."""
 
-    DIA = common.load("setup/claude/dialects.py", "dialects_rates")
+    DIA = common.load("setup/gateway/dialects.py", "dialects_rates")
 
     def test_both_rates_come_from_the_timings_object(self):
         got = self.DIA.rates_from_text(
@@ -321,7 +321,7 @@ class TestTheRatesAreMeasuredOrAbsent(unittest.TestCase):
         self.assertEqual(got, (None, 12.5))
 
     def test_nothing_is_derived_from_the_duration(self):
-        src = (common.REPO / "setup" / "claude" / "dialects.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "dialects.py").read_text(
             encoding="utf-8")
         body = src[src.index("def rates_from_text"):]
         for forbidden in ("took", "elapsed", "/ duration", "time.time"):
@@ -333,7 +333,7 @@ class TestALostStateLooksNothingLikeARewrite(unittest.TestCase):
     rounds of blaming the watchdog for what the client had done to its own
     history. One hash per message tells them apart."""
 
-    DIA = common.load("setup/claude/dialects.py", "dialects_shape")
+    DIA = common.load("setup/gateway/dialects.py", "dialects_shape")
 
     def msgs(self, *texts):
         return {"messages": [{"role": "user", "content": t} for t in texts]}
@@ -356,7 +356,7 @@ class TestALostStateLooksNothingLikeARewrite(unittest.TestCase):
     def test_it_is_per_message_and_says_so(self):
         """A change INSIDE one long message marks the whole message. Enough
         for the distinction, and cheap enough for the request path."""
-        src = (common.REPO / "setup" / "claude" / "dialects.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "dialects.py").read_text(
             encoding="utf-8")
         self.assertIn("Per MESSAGE, not per token", src)
 
@@ -365,7 +365,7 @@ class TestALostStateLooksNothingLikeARewrite(unittest.TestCase):
         self.assertEqual(len(shape), 1)
 
     def test_the_gateway_bounds_what_it_remembers(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("LAST_SHAPE_MAX", src)
         self.assertIn("LAST_SHAPE.pop(next(iter(LAST_SHAPE)))", src)
@@ -383,7 +383,7 @@ class TestTheShapeSurvivesTheProcessThatComputedIt(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = self.src.index('TRACE.record(\n                "request"')
         self.block = self.src[start:self.src.index(

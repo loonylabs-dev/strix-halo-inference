@@ -172,7 +172,7 @@ class TestWhichProgramAsked(unittest.TestCase):
 
     def setUp(self):
         self.html = PAGE.read_text(encoding="utf-8")
-        self.gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.gw = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
     def test_the_gateway_records_all_three(self):

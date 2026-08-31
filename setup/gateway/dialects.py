@@ -11,7 +11,7 @@ things out of both:
                 system prompt = messages[0] with role "system"
                 tools:  [ {type:function, function:{name,description,parameters}} ]
 
-Why a module of its own, and why both cc-gateway.py and prewarm.py import it:
+Why a module of its own, and why both gateway.py and prewarm.py import it:
 the prefix id decides whether a saved state is ever found again. That logic
 used to exist TWICE — once in the gateway, once in prewarm — and the two
 drifted apart: prewarm recomputed the id from the already-corrected body and

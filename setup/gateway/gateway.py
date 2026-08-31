@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""cc-gateway — the single entrance to the local llama-server.
+"""llm-gateway — the single entrance to the local llama-server.
+
+Consumer-agnostic: it serves every harness that speaks either dialect
+(dialects.py) — Claude Code, DeepSeek Harness, plain OpenAI clients. It was
+born as cc-gateway next to the Claude Code tooling and renamed 09/2026 when
+the stack moved out of ~/.claude; the measurement records keep the old name.
 
 Replaces cc-cachefix2.py and carries its logic in full. On top of that:
 
@@ -44,8 +49,8 @@ from aiohttp import web, ClientSession, ClientTimeout
 import hashlib, urllib.request
 
 # dialects.py sits next to this file — both in the repo and as a symlink in
-# ~/.claude/bin. Importing by directory instead of by package keeps that
-# working without an installation step.
+# ~/.local/lib/llm-stack. Importing by directory instead of by package keeps
+# that working without an installation step.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dialects as DIA                                   # noqa: E402
 import modes as MODES_LIB                                # noqa: E402
@@ -57,8 +62,8 @@ import tracelog as TRACE_LIB                                # noqa: E402
 # the thing it observes is worse than no trace.
 TRACE = TRACE_LIB.Trace()
 
-# The repo this file lives in, through the symlink in ~/.claude/bin. Needed for
-# two things and nothing else: the profile directory below, and systemdfile —
+# The repo this file lives in, through the symlink in ~/.local/lib/llm-stack.
+# Needed for two things and nothing else: the profile directory below, and systemdfile —
 # which is imported rather than re-implemented, because a fourth reader of
 # these files is exactly what systemdfile.py's own docstring warns about.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -73,7 +78,7 @@ def env(name, old=None, default=None):
     """Read an environment variable, still accepting its former German name.
 
     These variables were renamed to English in August 2026. An installation
-    that still carries the old spelling in ~/.config/cc-gateway.env would
+    that still carries the old spelling in ~/.config/llm-gateway.env would
     otherwise fall back to the default silently — a change in behaviour that
     nobody would see. So the old name keeps working and says so once.
     """
@@ -106,7 +111,7 @@ TUNNEL_BIND  = [a.strip() for a in os.environ.get("TUNNEL_BIND", "127.0.0.1").sp
 # A single consumer can be revoked that way, and the log says WHO did
 # something. One shared token can do neither.
 TOKEN_FILE   = env("TOKEN_FILE", "TOKENDATEI",
-                   os.path.expanduser("~/.config/cc-gateway-tokens"))
+                   os.path.expanduser("~/.config/llm-gateway-tokens"))
 # Concurrent requests per consumer. Claude Code sends up to two prompt types
 # in parallel, hence 2 as the default.
 PER_TOKEN_MAX = int(env("PER_TOKEN_MAX", "JE_TOKEN_MAX", 2))
@@ -345,10 +350,17 @@ MAX_TASK_ID = None
 # remembered — not a boot id, not a timestamp, both of which the server
 # withholds.
 SEEN_PATH = env("SEEN_PATH", "GESEHEN_PFAD",
-                os.path.expanduser("~/.cache/cc-gateway-seen.json"))
+                os.path.expanduser("~/.cache/llm-gateway-seen.json"))
 SEEN = {}
-PREWARM   = env("PREWARM", "VORWAERMEN",
-                os.path.expanduser("~/.claude/bin/prewarm.py"))
+# prewarm.py is the gateway's saving arm. Installed, it sits NEXT TO this file
+# (~/.local/lib/llm-stack); in the repo it lives in tools/. Both are tried, so
+# the gateway works uninstalled — no hard-wired install path to go stale.
+PREWARM   = env("PREWARM", "VORWAERMEN", next(
+    (p for p in (os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                              "prewarm.py"),
+                 os.path.join(REPO_ROOT, "tools", "prewarm.py"))
+     if os.path.exists(p)),
+    os.path.join(REPO_ROOT, "tools", "prewarm.py")))
 _save_lock = None          # asyncio.Lock, can only be created inside the loop
 
 # When was a saved prefix last USED? That is the only usable criterion for
@@ -2404,7 +2416,7 @@ def main():
     TOKENS = load_tokens()
     SAVED = refresh_saved(force=True)
     globals()["SEEN"] = load_seen()
-    log("cc-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))
+    log("llm-gateway on %s:%d -> %s" % (",".join(BIND), PORT, LLAMA))
     log("  saved prefixes on disk: %d (%.1f GB)" % (len(SAVED), disk_used_gb()))
     # A switch that does not announce itself cannot be verified, and the first
     # question asked of this one was "is it actually on?" — which nothing in

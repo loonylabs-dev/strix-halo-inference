@@ -14,6 +14,7 @@ bodies/
 # Secrets
 *.token
 *.secret
+llm-gateway.env
 cc-gateway.env
 .env.local
 
@@ -37,7 +38,9 @@ __pycache__/
 cert.pem
 config.yml
 
-# Named access — belongs in ~/.config, never in the repo
+# Named access — belongs in ~/.config, never in the repo. The cc-* twins are
+# the pre-09/2026 names; kept so a copy from an old installation stays out too.
+llm-gateway-tokens
 cc-gateway-tokens
 
 # Saved slot states (628 MB each)

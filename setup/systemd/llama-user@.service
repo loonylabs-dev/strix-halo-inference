@@ -70,7 +70,7 @@ Type=simple
 # lesson of the EnvironmentFile= that had no '-' and stopped the service when
 # its file went away.
 EnvironmentFile=-%h/.config/llm-stack.env
-EnvironmentFile=%h/.claude/env/%i.env
+EnvironmentFile=%h/.config/llm-profile/%i.env
 # Wait until the model is readable first. Models usually live on a volume of
 # their own, listed in fstab with nofail: if it is not mounted yet at start, the
 # service used to fail three times in fifteen seconds and then stay down for
@@ -80,7 +80,7 @@ EnvironmentFile=%h/.claude/env/%i.env
 # The user service takes the symlinked copy from the repo — like prewarm.py.
 # That way 'install.sh --nur-user' is enough, no sudo is needed, and a change
 # in the repo takes effect immediately.
-ExecStartPre=%h/.claude/bin/waitformodel
+ExecStartPre=%h/.local/lib/llm-stack/waitformodel
 # Then ask whether it FITS. Separate from the wait above and deliberately so:
 # waitformodel waits, because a missing mount comes back; this one refuses,
 # because a model that is too big does not get smaller. setup/checkroom
@@ -91,7 +91,7 @@ ExecStartPre=%h/.claude/bin/waitformodel
 # not a crash — it is a desktop that stops answering, three times on
 # 26.08.2026. A unit that refuses to start is visible and reversible; that is
 # the better half of the trade.
-ExecStartPre=%h/.claude/bin/checkroom
+ExecStartPre=%h/.local/lib/llm-stack/checkroom
 # %h instead of the hard-wired home directory: this used to say
 # one operator's absolute home directory, which tied the repo to one machine.
 #
@@ -110,7 +110,7 @@ ExecStartPre=%h/.claude/bin/checkroom
 # systemd syntax, so what reached bash was empty. The server came up in
 # router mode, listening and modelless, and /slots answered: it looked alive.
 # setup/llamaexec carries the reasoning and the two placeholders.
-ExecStart=%h/.claude/bin/llamaexec
+ExecStart=%h/.local/lib/llm-stack/llamaexec
 # --- the memory ceiling, added 26.08. after the second machine hang ---------
 #
 # This box died twice in one day to a measurement, and both times the same
@@ -168,7 +168,7 @@ RestartSec=5
 # is garbage until the next restart. The gateway's guard did not cover this:
 # it guards ITS restores, and this one was systemd's.
 #
-# Nothing is lost by removing it. cc-gateway reloads a saved prefix lazily on
+# Nothing is lost by removing it. The gateway reloads a saved prefix lazily on
 # the first cold request that needs it, and only when no slot is computing
 # (restore_from_disk). Same benefit, at a moment that is safe by
 # construction, and a cold prefill when it is not.

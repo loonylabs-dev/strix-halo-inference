@@ -66,7 +66,7 @@ import argparse, hashlib, json, os, subprocess, sys, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(REPO, "setup", "lib"))
-sys.path.insert(0, os.path.join(REPO, "setup", "claude"))
+sys.path.insert(0, os.path.join(REPO, "setup", "gateway"))
 import systemdfile                                            # noqa: E402
 import modes as MODES                                         # noqa: E402
 

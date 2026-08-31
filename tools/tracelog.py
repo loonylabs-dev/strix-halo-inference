@@ -14,7 +14,7 @@
     python3 tools/tracelog.py diff             where a history stopped being
                                                an append, and what it cost
 
-The switch takes effect on the next request without restarting cc-gateway —
+The switch takes effect on the next request without restarting llm-gateway —
 which matters, because restarting it clears the very prefix bookkeeping you
 turned the trace on to look at.
 
@@ -25,7 +25,7 @@ import argparse, json, os, re, sys, time
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "setup", "claude"))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "setup", "gateway"))
 import tracelog as TR                                            # noqa: E402
 try:
     import dialects as DIA                                       # noqa: E402

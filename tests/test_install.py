@@ -1,9 +1,10 @@
 """install.sh — a module found by directory has to BE in the directory.
 
-`setup/install.sh:116` states the rule in one line and the tree obeys it twice:
-`dialects.py` sits beside `cc-gateway.py` and `prewarm.py` because they
+setup/install.sh states the rule in one line and the tree obeys it twice:
+`dialects.py` sits beside `gateway.py` and `prewarm.py` because they
 `import dialects`, and `systemdfile.py` travels with `budget.py` for the same
-reason.
+reason. The directory is ~/.local/lib/llm-stack since 09/2026; the history
+below happened in its predecessor ~/.claude/bin and is kept as written.
 
 `modes.py` was added on 28.08.2026 as a third such module and was NOT linked.
 The gateway kept starting anyway, which is why nothing noticed: since Python
@@ -23,9 +24,9 @@ state, and that is not the same as working: an installation that copies rather
 than symlinks, an older interpreter, or a run through `runpy` all break it.
 
 So this file asks the only question that matters — for every module the
-installer places in `~/.claude/bin`, is every sibling it imports placed there
-too? Reading install.sh rather than the live installation, because the test has
-to fail in CI on a machine where nothing is installed.
+installer places in `~/.local/lib/llm-stack`, is every sibling it imports
+placed there too? Reading install.sh rather than the live installation,
+because the test has to fail in CI on a machine where nothing is installed.
 """
 import ast
 import re
@@ -46,7 +47,9 @@ def linked():
     out = {}
     for src, dst in re.findall(r'link_\s+"([^"]+)"\s+"([^"]+)"',
                                INSTALL.read_text(encoding="utf-8")):
-        if not dst.endswith(".py") or "/.claude/bin/" not in dst:
+        # $LIB is install.sh's name for ~/.local/lib/llm-stack — the one
+        # directory whose modules import each other by neighbourhood.
+        if not dst.endswith(".py") or not dst.startswith("$LIB/"):
             continue
         # install.sh addresses the tree through two variables: $SRC is
         # setup/, $REPO is the checkout root.
@@ -77,11 +80,11 @@ class TestEveryLinkedModuleFindsItsSiblings(unittest.TestCase):
         self.assertTrue(self.linked, "install.sh links no python modules?")
 
     def test_the_gateway_and_its_siblings_are_all_installed(self):
-        """The concrete case: cc-gateway.py imports dialects AND modes."""
-        self.assertIn("cc-gateway", self.linked)
+        """The concrete case: gateway.py imports dialects AND modes."""
+        self.assertIn("gateway", self.linked)
         for sibling in ("dialects", "modes"):
             self.assertIn(sibling, self.linked,
-                          "%s is imported by cc-gateway.py and not linked "
+                          "%s is imported by gateway.py and not linked "
                           "beside it" % sibling)
 
     def test_no_linked_module_imports_a_sibling_that_is_not_linked(self):

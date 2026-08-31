@@ -63,20 +63,31 @@ check_copy() {  # $1 = repo source, $2 = system target
   fi
 }
 
-# Is the Claude Code harness installed here at all?
+# Is the gateway installed here at all?
 #
 # This repo holds two things: an inference layer for this hardware, and the
-# harness that consumes it. The dependency points ONE way — the harness needs
-# the inference layer, the inference layer must not need the harness. Until
-# 26.08. this script did not know that: a machine running llama-server for
-# something else got `gone()` on six links, DIFF=1, and "Differences found"
-# with exit 1. Nothing was wrong with it.
+# gateway plus consumer tooling on top of it. The dependency points ONE way —
+# the gateway needs the inference layer, the inference layer must not need
+# the gateway. Until 26.08. this script did not know that: a machine running
+# llama-server for something else got `gone()` on six links, DIFF=1, and
+# "Differences found" with exit 1. Nothing was wrong with it.
 #
-# So the harness is checked WHERE IT IS, and its absence is a fact, not a
-# defect. Either signal is enough — the unit, or the gateway's config.
-harness_present() {
+# So the gateway is checked WHERE IT IS, and its absence is a fact, not a
+# defect. Either signal is enough — the unit, or the gateway's config. The
+# pre-rename names count as present too: on such a machine the gateway IS
+# installed, and the checks below are what says it needs migrating.
+gateway_present() {
+  [ -e "$HOME/.config/systemd/user/llm-gateway.service" ] || \
+  [ -r "${GATEWAY_ENV:-$HOME/.config/llm-gateway.env}" ] || \
   [ -e "$HOME/.config/systemd/user/cc-gateway.service" ] || \
-  [ -r "${GATEWAY_ENV:-$HOME/.config/cc-gateway.env}" ]
+  [ -r "$HOME/.config/cc-gateway.env" ]
+}
+
+# …and the Claude Code consumer on top of the gateway — router and profiles.
+# A machine can serve DeepSeek Harness alone; their absence is a fact too.
+claude_present() {
+  [ -e "$HOME/.claude/bin/cc-router.py" ] || \
+  [ -e "$HOME/.claude/profiles/local.json" ]
 }
 
 head_ "This machine's own answers"
@@ -111,17 +122,48 @@ head_ "User side — symlinks into the repo expected"
 # The inference layer. waitformodel is ExecStartPre of llama-user@.service and
 # the profiles ARE the model registry; both belong to the server, not to any
 # consumer of it.
-check_link "$SRC/waitformodel"                "$HOME/.claude/bin/waitformodel"
-check_link "$SRC/llamaexec"                   "$HOME/.claude/bin/llamaexec"
+LIB="$HOME/.local/lib/llm-stack"
+check_link "$SRC/waitformodel"                "$LIB/waitformodel"
+check_link "$SRC/llamaexec"                   "$LIB/llamaexec"
 # The memory guard. It matters MORE than the others that this is checked:
 # checkroom deliberately fails OPEN when it cannot find budget.py — a guard
 # that is missing has no opinion about whether the model fits, and refusing on
 # that basis would turn a packaging mistake into an outage. The price of that
 # choice is that a missing link is silent at start time. This is where it
 # stops being silent.
-check_link "$SRC/checkroom"                   "$HOME/.claude/bin/checkroom"
-check_link "$SRC/lib/budget.py"               "$HOME/.claude/bin/budget.py"
-check_link "$SRC/lib/systemdfile.py"          "$HOME/.claude/bin/systemdfile.py"
+check_link "$SRC/checkroom"                   "$LIB/checkroom"
+check_link "$SRC/lib/budget.py"               "$LIB/budget.py"
+check_link "$SRC/lib/systemdfile.py"          "$LIB/systemdfile.py"
+# llama-probe.service execs it; unchecked before the 09/2026 move — a gap,
+# not a choice.
+check_link "$REPO/setup/scripts/probe.py"     "$LIB/probe.py"
+for f in "$SRC"/env/*.env; do
+  check_link "$f" "$HOME/.config/llm-profile/$(basename "$f")"
+done
+
+if gateway_present; then
+  # The gateway and its sibling modules (they import each other by
+  # directory), and prewarm, the gateway's saving arm.
+  check_link "$SRC/gateway/gateway.py"          "$LIB/gateway.py"
+  check_link "$SRC/gateway/dialects.py"         "$LIB/dialects.py"
+  check_link "$SRC/gateway/modes.py"            "$LIB/modes.py"
+  check_link "$SRC/gateway/tracelog.py"         "$LIB/tracelog.py"
+  check_link "$REPO/tools/prewarm.py"           "$LIB/prewarm.py"
+  check_link "$SRC/systemd/llm-gateway.service" "$HOME/.config/systemd/user/llm-gateway.service"
+else
+  printf "  \033[33m?\033[0m no gateway installed — its links are skipped.\n"
+  printf "    That is a choice, not a difference.\n"
+fi
+
+if claude_present; then
+  check_link "$SRC/claude/local.json"           "$HOME/.claude/profiles/local.json"
+  check_link "$SRC/claude/hybrid.json"          "$HOME/.claude/profiles/hybrid.json"
+  check_link "$SRC/claude/cc-router.py"         "$HOME/.claude/bin/cc-router.py"
+else
+  printf "  \033[33m?\033[0m no Claude Code consumer installed — router and profiles\n"
+  printf "    are skipped. That is a choice, not a difference.\n"
+fi
+
 # Links install.sh USED to make. A symlink it stops creating is not a symlink
 # it removes, and nothing else would notice: cc-cachefix2.py was linked into
 # ~/.claude/bin until 27.08. while setup/README.md had called it superseded
@@ -129,26 +171,46 @@ check_link "$SRC/lib/systemdfile.py"          "$HOME/.claude/bin/systemdfile.py"
 # the operator's call.
 for f in cc-cachefix.py cc-cachefix2.py; do
   if [ -e "$HOME/.claude/bin/$f" ]; then
-    printf "  \033[33m?\033[0m ~/.claude/bin/%s is left over — cc-gateway.py replaced it.\n" "$f"
+    printf "  \033[33m?\033[0m ~/.claude/bin/%s is left over — the gateway replaced it.\n" "$f"
     printf "      rm ~/.claude/bin/%s\n" "$f"
   fi
 done
-for f in "$SRC"/env/*.env; do
-  check_link "$f" "$HOME/.claude/env/$(basename "$f")"
+# The 09/2026 move: everything consumer-agnostic left ~/.claude/bin for
+# ~/.local/lib/llm-stack, and the model profiles left ~/.claude/env for
+# ~/.config/llm-profile. The old links go DANGLING the moment the repo files
+# move, so -L matters in every test below: -e alone is false for a dangling
+# symlink and would pass over exactly the thing being reported.
+for f in cc-gateway.py dialects.py modes.py tracelog.py prewarm.py \
+         waitformodel llamaexec checkroom budget.py systemdfile.py probe.py; do
+  p="$HOME/.claude/bin/$f"
+  if [ -e "$p" ] || [ -L "$p" ]; then
+    printf "  \033[33m?\033[0m ~/.claude/bin/%s is left over — moved to ~/.local/lib/llm-stack (09/2026).\n" "$f"
+    printf "      rm ~/.claude/bin/%s\n" "$f"
+  fi
 done
-
-if harness_present; then
-  # The harness: gateway, router, the Claude Code profiles, and prewarm,
-  # which is the gateway's saving arm rather than a server tool.
-  check_link "$SRC/claude/local.json"           "$HOME/.claude/profiles/local.json"
-  check_link "$SRC/claude/hybrid.json"          "$HOME/.claude/profiles/hybrid.json"
-  check_link "$SRC/claude/cc-gateway.py"        "$HOME/.claude/bin/cc-gateway.py"
-  check_link "$SRC/claude/cc-router.py"         "$HOME/.claude/bin/cc-router.py"
-  check_link "$REPO/tools/prewarm.py"           "$HOME/.claude/bin/prewarm.py"
-  check_link "$SRC/systemd/cc-gateway.service"  "$HOME/.config/systemd/user/cc-gateway.service"
-else
-  printf "  \033[33m?\033[0m no Claude Code harness installed — gateway, router and\n"
-  printf "    the profiles are skipped. That is a choice, not a difference.\n"
+if [ -d "$HOME/.claude/env" ] || [ -L "$HOME/.claude/env" ]; then
+  printf "  \033[33m?\033[0m ~/.claude/env is left over — the profiles moved to ~/.config/llm-profile (09/2026).\n"
+  printf "      rm -r ~/.claude/env\n"
+fi
+p="$HOME/.config/systemd/user/cc-gateway.service"
+if [ -e "$p" ] || [ -L "$p" ]; then
+  printf "  \033[33m?\033[0m ~/.config/systemd/user/cc-gateway.service is left over — the unit is llm-gateway since 09/2026.\n"
+  printf "      systemctl --user disable cc-gateway 2>/dev/null; rm %s\n" "$p"
+fi
+# The gateway's own local files, reported only once install.sh has copied
+# them to the new name — reporting them earlier would invite an rm BEFORE the
+# copy, and these are the two files that cannot be regenerated from the repo.
+for pair in "cc-gateway.env llm-gateway.env" "cc-gateway-tokens llm-gateway-tokens"; do
+  set -- $pair
+  if [ -e "$HOME/.config/$1" ] && [ -e "$HOME/.config/$2" ]; then
+    printf "  \033[33m?\033[0m ~/.config/%s is left over — copied to %s (09/2026).\n" "$1" "$2"
+    printf "      rm ~/.config/%s\n" "$1"
+  fi
+done
+if systemctl --user is-active cc-gateway.service >/dev/null 2>&1; then
+  old "the pre-rename unit cc-gateway is RUNNING; llm-gateway is the name since 09/2026"
+  printf "      systemctl --user disable --now cc-gateway\n"
+  printf "      systemctl --user enable --now llm-gateway\n"
 fi
 
 head_ "System wide — copies"
@@ -249,7 +311,7 @@ INSTANCE="${INSTANCE:-$(models_serving | head -1)}"
 printf "  checking instance: %s\n" "$INSTANCE"
 # Since 25.08. the user service reads the profile from the user's own
 # directory — see the unit for why. /etc stays for llama@.service.
-EXPECTED="$HOME/.claude/env/$INSTANCE.env"
+EXPECTED="$HOME/.config/llm-profile/$INSTANCE.env"
 # 'show' rather than 'cat': cat gives the unit raw, with %i and %h. show names
 # the resolved paths — exactly the ones the service really reads.
 FILES=$(systemctl --user show "llama-user@$INSTANCE" -p EnvironmentFiles 2>/dev/null \
@@ -344,10 +406,12 @@ case "$(printf '%s' "$SERVING" | grep -c .)" in
   1) [ "$SERVING" = "$ACTIVE" ] || old "systemd says $ACTIVE, the running process serves $SERVING" ;;
   *) old "$(printf '%s' "$SERVING" | grep -c .) llama-server processes are running: $(printf '%s' "$SERVING" | tr '\n' ' ')" ;;
 esac
-D=cc-gateway
+D=llm-gateway
 A=$(systemctl --user is-active "$D" 2>/dev/null)
 E=$(systemctl --user is-enabled "$D" 2>/dev/null)
 if [ "$A" = "active" ] && [ "$E" = "enabled" ]; then ok "$D ($A, $E)"
+elif systemctl --user is-active cc-gateway.service >/dev/null 2>&1; then
+  printf "  \033[33m?\033[0m %s (%s, %s) — cc-gateway still serves; the switch-over lines are above\n" "$D" "${A:-?}" "${E:-?}"
 else printf "  \033[33m?\033[0m %s (%s, %s)\n" "$D" "${A:-?}" "${E:-?}"; fi
 L=$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)
 [ "$L" = "yes" ] && ok "linger active — services start at boot" \

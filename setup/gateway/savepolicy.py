@@ -12,7 +12,7 @@ it in milliseconds, and what lets the tests state a rule instead of a timing.
 
 WHY THERE IS A POLICY AT ALL
 ----------------------------
-cc-gateway wrote a prefix on its FIRST cold appearance, in a background task,
+The gateway wrote a prefix on its FIRST cold appearance, in a background task,
 while the machine was at its busiest — the answer had just gone out and the
 next turn was, measured on this stack, a median of 1.0 s away. With one slot,
 saving means putting the prefix INTO that slot, so the save and the next turn
@@ -48,7 +48,7 @@ hole in the first version of this rule.
 """
 
 # What a caller should hand `saw()` for a prefix worth remembering at all. Here
-# so the number has one home; cc-gateway's AUTO_MIN_CHARS decides what reaches
+# so the number has one home; the gateway's AUTO_MIN_CHARS decides what reaches
 # this module.
 DEFAULT_MIN_SIGHTINGS = 2
 DEFAULT_DEBOUNCE_S = 10.0

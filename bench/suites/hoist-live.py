@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""HOIST_SYSTEM on and off, through cc-gateway, on the turn that hurts.
+"""HOIST_SYSTEM on and off, through llm-gateway, on the turn that hurts.
 
 `hoist-cost.py` measures the two prompt SHAPES against llama-server directly:
 hoisting buys nothing on the counter turn and costs everything on the turn a
 new system block appears (203.2 s against 20.4 s). This runs the same three
-turns through cc-gateway with the switch set each way, so what is under the
+turns through llm-gateway with the switch set each way, so what is under the
 clock is the gateway's own correction, id and restore logic together.
 
     turn 1   cold — the baseline, not a result
@@ -17,13 +17,13 @@ counter — which is what the gateway's VOLATILE pattern is written for.
 
     python3 bench/suites/hoist-live.py
 
-IT RESTARTS cc-gateway twice (a systemd drop-in, reverted at the end) and
+IT RESTARTS llm-gateway twice (a systemd drop-in, reverted at the end) and
 takes the one slot for a few minutes. It does not touch llama-server.
 """
 import argparse, json, subprocess, sys, time, urllib.request
 
 GATEWAY = "http://127.0.0.1:8090/v1/messages"
-UNIT = "cc-gateway.service"
+UNIT = "llm-gateway.service"
 
 
 def words(tag, n):
@@ -75,7 +75,7 @@ def restart(value):
             time.sleep(1.5)
             return
         time.sleep(0.5)
-    raise SystemExit("cc-gateway did not come back")
+    raise SystemExit("llm-gateway did not come back")
 
 
 def run(setting, salt, base_words, conv_words):
@@ -101,7 +101,7 @@ def main():
             res[setting] = run(setting, a.salt + setting, a.base_words,
                                a.conv_words)
     finally:
-        print("  putting cc-gateway back")
+        print("  putting llm-gateway back")
         restart(None)
 
     print("\n  %-16s %14s %14s %14s" % ("", "turn 1", "turn 2", "turn 3"))

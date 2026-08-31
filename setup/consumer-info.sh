@@ -33,7 +33,7 @@ for a in "$@"; do
   esac
 done
 
-GW_PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/cc-gateway.env" 2>/dev/null | head -1)"
+GW_PORT="$(sed -n 's/^PORT=//p' "$HOME/.config/llm-gateway.env" 2>/dev/null | head -1)"
 GW_PORT="${GW_PORT:-8090}"
 GW="http://127.0.0.1:$GW_PORT"
 
@@ -49,7 +49,7 @@ else
     exit 1
   fi
   ENDPOINT="https://$HOST"
-  TOKEN_NOTE="a personal token, one line 'name <secret>' in ~/.config/cc-gateway-tokens"
+  TOKEN_NOTE="a personal token, one line 'name <secret>' in ~/.config/llm-gateway-tokens"
 fi
 
 # The model NAMES the gateway serves. Asked, not assumed: they come from
@@ -100,7 +100,7 @@ printf '  Window      %s per slot' "$NCTX"
 [ -n "$CLIENT_CTX" ] && printf ' — set CLAUDE_CODE_MAX_CONTEXT_TOKENS=%s' "$CLIENT_CTX"
 printf '\n  Models      '
 if [ -z "$MODELS" ]; then
-  printf 'not reachable at %s — is cc-gateway running?\n' "$GW"
+  printf 'not reachable at %s — is llm-gateway running?\n' "$GW"
 else
   printf '%s\n' "$MODELS" | sed '1!s/^/              /'
 fi

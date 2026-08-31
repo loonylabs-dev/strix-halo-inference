@@ -19,4 +19,4 @@ Type=oneshot
 # a watchdog that has not seen the model for half an hour must not read as
 # a healthy one.
 Environment=LLAMA_UNIT=llama-user@qwen38
-ExecStart=/usr/bin/python3 %h/.claude/bin/probe.py --restart
+ExecStart=/usr/bin/python3 %h/.local/lib/llm-stack/probe.py --restart

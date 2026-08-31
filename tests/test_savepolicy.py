@@ -10,7 +10,7 @@ import unittest
 
 import common
 
-P = common.load("setup/claude/savepolicy.py", "savepolicy")
+P = common.load("setup/gateway/savepolicy.py", "savepolicy")
 
 
 class TestWhatEarnsAPlaceOnDisk(unittest.TestCase):
@@ -116,7 +116,7 @@ class TestItCannotDecideByItself(unittest.TestCase):
     and what keeps these tests from being about timing."""
 
     def test_the_module_touches_nothing(self):
-        src = (common.REPO / "setup" / "claude" / "savepolicy.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "savepolicy.py").read_text(
             encoding="utf-8")
         for forbidden in ("import os", "import time", "open(", "requests",
                           "urllib", "subprocess"):

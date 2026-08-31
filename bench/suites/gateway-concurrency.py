@@ -2,7 +2,7 @@
 """gateway-concurrency — what the admission control actually does under load.
 
 Every measurement so far went straight to llama-server on 8080. Nothing had
-ever measured cc-gateway itself: the priority gate, the per-access throttle,
+ever measured the gateway itself: the priority gate, the per-access throttle,
 and whether a waiting caller is starved by a busy local user.
 
 Four questions:
@@ -46,7 +46,7 @@ def read_access():
         "ip -4 -o addr show scope global | grep -v docker "
         "| awk '{print $4}' | cut -d/ -f1 | head -1",
         shell=True, capture_output=True, text=True).stdout.strip()
-    with open(os.path.expanduser("~/.config/cc-gateway-tokens"),
+    with open(os.path.expanduser("~/.config/llm-gateway-tokens"),
               encoding="utf-8") as fh:
         for line in fh:
             if line.strip() and not line.startswith("#") \
@@ -84,10 +84,10 @@ import atexit, glob
 def _cleanup():
     ident = None
     try:
-        sys.path.insert(0, os.path.join(REPO, "setup", "claude"))
+        sys.path.insert(0, os.path.join(REPO, "setup", "gateway"))
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "gw", os.path.join(REPO, "setup", "claude", "cc-gateway.py"))
+            "gw", os.path.join(REPO, "setup", "gateway", "gateway.py"))
         gw = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(gw)
         p = body(project=WARM, n_tools=4, question="Say alpha.")
@@ -101,7 +101,7 @@ def _cleanup():
         except OSError:
             pass
 # Everything below RUNS. It is guarded because this file used to do all of
-# it while being imported — including reading ~/.config/cc-gateway-tokens,
+# it while being imported — including reading ~/.config/llm-gateway-tokens,
 # which tests/common.py names outright as the thing an import must not do.
 # The functions above stay importable, which is what makes the rule keepable
 # rather than a rule about this directory being left alone.
@@ -110,7 +110,7 @@ if __name__ == "__main__":
 
     read_access()
     print("=" * 78)
-    print("cc-gateway under load   LAN=%s  token=%s" % (LAN, "yes" if TOKEN else "MISSING"))
+    print("llm-gateway under load   LAN=%s  token=%s" % (LAN, "yes" if TOKEN else "MISSING"))
     print("=" * 78)
 
     WARM = "/tmp/gw-warm"

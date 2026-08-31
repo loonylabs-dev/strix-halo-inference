@@ -1,5 +1,5 @@
 [Unit]
-Description=cc-gateway — the single entrance to the local llama-server
+Description=llm-gateway — the single entrance to the local llama-server
 # No Documentation= with a file:// URI: it would have to be absolute, and
 # this unit is a symlink into a repo that lives wherever it was cloned.
 # The documentation is setup/README.md next to the file this points at.
@@ -8,8 +8,8 @@ After=network.target
 [Service]
 Type=simple
 # Local only. For LAN access set BIND and the named tokens in the env file.
-EnvironmentFile=-%h/.config/cc-gateway.env
-ExecStart=/usr/bin/python3 %h/.claude/bin/cc-gateway.py
+EnvironmentFile=-%h/.config/llm-gateway.env
+ExecStart=/usr/bin/python3 %h/.local/lib/llm-stack/gateway.py
 Restart=on-failure
 RestartSec=3
 # The gateway holds no data; a restart costs nothing.

@@ -31,7 +31,7 @@ import argparse, json, subprocess, sys, time, urllib.request
 GATEWAY = "http://127.0.0.1:8090/v1/messages"
 LLAMA = "http://127.0.0.1:8080"
 SERVER_UNIT = "llama-user@qwen38"
-GATEWAY_UNIT = "cc-gateway.service"
+GATEWAY_UNIT = "llm-gateway.service"
 
 
 def ask(messages, system, label, timeout=1800):

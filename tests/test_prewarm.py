@@ -430,7 +430,7 @@ class TestTheSaveCommandAcceptsWhatTheGatewayPassesIt(unittest.TestCase):
     def test_every_flag_the_gateway_sends_is_accepted(self):
         """Read out of cc-gateway.py rather than listed here, so a flag added
         there without one here cannot pass."""
-        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        gw = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = gw.index('PREWARM, "save",')
         block = gw[start:gw.index("stdout=asyncio.subprocess.PIPE", start)]

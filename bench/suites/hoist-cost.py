@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Does hoisting mid-conversation system messages help the cache or hurt it?
 
-cc-gateway moves the STABLE part of every system message that sits inside the
+The gateway moves the STABLE part of every system message that sits inside the
 conversation to the FRONT of the prompt, leaving only the volatile remainder
 (the counter Claude Code glues to it) where it was. The reason on record is
 that the counter would otherwise change the prefix every turn.

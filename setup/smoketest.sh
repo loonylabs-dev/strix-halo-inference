@@ -29,7 +29,7 @@ LAN="${LAN:-$(ip -4 -o addr show scope global 2>/dev/null | grep -v docker \
 # shellcheck source=lib/models.sh
 . "$(dirname "$0")/lib/models.sh"
 HOST="${HOST:-$(local_var GATEWAY_HOST)}"
-TOKEN_FILE="${TOKEN_FILE:-${TOKENDATEI:-$HOME/.config/cc-gateway-tokens}}"
+TOKEN_FILE="${TOKEN_FILE:-${TOKENDATEI:-$HOME/.config/llm-gateway-tokens}}"
 ERRORS=0
 FULL=0
 LOCAL_ONLY=0
@@ -41,7 +41,7 @@ for arg in "$@"; do
   esac
 done
 
-# Read exactly like cc-gateway: name, whitespace, and the WHOLE rest is the
+# Read exactly like the gateway: name, whitespace, and the WHOLE rest is the
 # secret (split(None, 1) there). With awk '{print $2}' a secret containing a
 # space would have been cut short — every token check would have reported 401
 # and looked like broken protection.

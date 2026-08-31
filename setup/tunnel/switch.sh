@@ -24,7 +24,7 @@ trap 'rm -f "$ANSWER"' EXIT
 # longer set there: under `set -u` the script died at this point with "TOKEN:
 # unbound variable" — and it did so AFTER it had already swapped the
 # configuration and restarted the container.
-TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/cc-gateway-tokens}"
+TOKEN_FILE="${TOKEN_FILE:-$HOME/.config/llm-gateway-tokens}"
 TOKEN="$(awk '!/^#/ && NF>=2 {sub(/^[ \t]*[^ \t]+[ \t]+/, ""); print; exit}' \
          "$TOKEN_FILE" 2>/dev/null)"
 if [ -z "$TOKEN" ]; then

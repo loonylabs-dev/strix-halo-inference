@@ -18,7 +18,7 @@ import unittest
 
 import common
 
-D = common.load("setup/claude/dialects.py", "dialects")
+D = common.load("setup/gateway/dialects.py", "dialects")
 SYN = common.load("tools/synthetic.py", "synthetic")
 
 VOLATILE = [re.compile(r"<total_tokens>\s*\d+\s*tokens left\s*</total_tokens>")]

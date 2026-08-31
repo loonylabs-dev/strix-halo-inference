@@ -1,8 +1,8 @@
 """Shared helpers for the tests.
 
-What is checked here are scripts, not packages: systemd starts cc-gateway.py
-and cc-router.py, prewarm.py is called by hand. They are therefore loaded by
-file path rather than imported.
+What is checked here are scripts, not packages: systemd starts gateway.py,
+the consumer starts cc-router.py, prewarm.py is called by hand. They are
+therefore loaded by file path rather than imported.
 
 The precondition for that is an import without consequences: no network, no
 token file, no web.run_app. That is exactly what the main() guard in each of

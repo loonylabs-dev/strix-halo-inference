@@ -63,10 +63,10 @@ RULES = [
     # %h would have expanded moves to a system location. install.sh puts the
     # files there; setup/README.md's table says which.
     ("-%h/.config/llm-stack.env",     "-/etc/llm-stack.env"),
-    ("%h/.claude/env/%i.env",         "/etc/llm-profile/%i.env"),
-    ("%h/.claude/bin/waitformodel",   "/usr/local/bin/llm-wait-for-model"),
-    ("%h/.claude/bin/checkroom",      "/usr/local/bin/llm-check-room"),
-    ("%h/.claude/bin/llamaexec",      "/usr/local/bin/llm-exec"),
+    ("%h/.config/llm-profile/%i.env", "/etc/llm-profile/%i.env"),
+    ("%h/.local/lib/llm-stack/waitformodel", "/usr/local/bin/llm-wait-for-model"),
+    ("%h/.local/lib/llm-stack/checkroom",    "/usr/local/bin/llm-check-room"),
+    ("%h/.local/lib/llm-stack/llamaexec",    "/usr/local/bin/llm-exec"),
     # Instance names. A template's Conflicts= has to name every instance by
     # hand because systemd has no wildcard for them — so the list is derived
     # here too rather than written twice.

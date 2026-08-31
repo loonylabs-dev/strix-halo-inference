@@ -10,10 +10,10 @@ Two questions this suite exists to answer:
      weights rather than the same ones.
 
   2. Does a warm request get through while another session's cold prefill runs?
-     The measured "98 s wait despite a 100 % cache" may have been cc-gateway's
+     The measured "98 s wait despite a 100 % cache" may have been the gateway's
      own admission limit (MAX_INFLIGHT=2) rather than the GPU.
 
-Talks to llama-server DIRECTLY (8080), bypassing cc-gateway, so that the
+Talks to llama-server DIRECTLY (8080), bypassing the gateway, so that the
 gateway's admission control cannot confound the result. Bodies come from
 tools/synthetic.py — no capture needed.
 

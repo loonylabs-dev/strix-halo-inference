@@ -12,7 +12,7 @@ a cold prompt each time, and compare the chunk timelines.
 
 Usage:
     python3 bench/suites/sse-ping.py --base http://127.0.0.1:8090 \
-        --body <synthetic.json> [--token-file ~/.config/cc-gateway-tokens] \
+        --body <synthetic.json> [--token-file ~/.config/llm-gateway-tokens] \
         [--max-wait 240] [--label gateway-local]
 
 The body is patched in memory, never on disk: stream -> true, max_tokens -> 16

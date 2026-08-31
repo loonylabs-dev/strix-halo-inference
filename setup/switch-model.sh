@@ -25,7 +25,7 @@
 #
 # 2. /etc IS NOT LOAD-BEARING ANY MORE, so it must not be able to block a
 #    switch. Since 25.08. the user service reads its profile from
-#    %h/.claude/env/%i.env (a symlink into this repo). /etc/llm-profile is
+#    %h/.config/llm-profile/%i.env (a symlink into this repo). /etc/llm-profile is
 #    read by /usr/local/bin/llm-profile and by the opt-in system unit, which
 #    is generated on request and which SELinux keeps from running here anyway.
 #    The old script began with an
@@ -53,17 +53,22 @@ GATEWAY="${GATEWAY:-http://127.0.0.1:8090}"
 # have started the model, then waited fifteen minutes on port 8080, then
 # failed with "never served /slots" — with the old model already stopped and
 # disabled. The model was fine. The script was looking in the wrong place.
-GATEWAY_ENV="${GATEWAY_ENV:-$HOME/.config/cc-gateway.env}"
+GATEWAY_ENV="${GATEWAY_ENV:-$HOME/.config/llm-gateway.env}"
+# Half-migrated machine (pulled, install.sh not yet run): fall back to the
+# pre-09/2026 file rather than reading no port at all. check.sh is what
+# reports that state; this script just has to survive it.
+[ -r "$GATEWAY_ENV" ] || ! [ -r "$HOME/.config/cc-gateway.env" ] || \
+  GATEWAY_ENV="$HOME/.config/cc-gateway.env"
 UNIT_FILE="$REPO/setup/systemd/llama-user@.service"
 LOCAL_JSON="$REPO/setup/claude/local.json"
 
 # Is there a gateway on this machine at all?
 #
 # The dependency between the two halves of this repo points ONE way. The
-# harness — cc-gateway, the Claude Code profiles, prewarm — may REQUIRE the
+# harness — the gateway, the Claude Code profiles, prewarm — may REQUIRE the
 # inference layer. The inference layer may NOTICE the harness; it must not
 # NEED it. Until 26.08. this script needed it: it read the gateway's port and
-# aborted when the profile disagreed, restarted cc-gateway unconditionally,
+# aborted when the profile disagreed, restarted the gateway unconditionally,
 # and smoked only through it. On a machine that serves llama-server to
 # anything else, the model could not be switched at all — for reasons that
 # had nothing to do with the model.
@@ -76,9 +81,20 @@ LOCAL_JSON="$REPO/setup/claude/local.json"
 # Either signal is enough: the config file (then we know its port) or the
 # unit (then there is something to restart).
 gateway_present() {
-  [ -r "$GATEWAY_ENV" ] || [ -e "$HOME/.config/systemd/user/cc-gateway.service" ]
+  [ -r "$GATEWAY_ENV" ] || \
+  [ -e "$HOME/.config/systemd/user/llm-gateway.service" ] || \
+  [ -e "$HOME/.config/systemd/user/cc-gateway.service" ]
 }
 if gateway_present; then GW_PRESENT=1; else GW_PRESENT=0; fi
+# Restart what is actually INSTALLED. On a half-migrated machine only the
+# pre-rename unit file cc-gateway.service exists; restarting llm-gateway
+# there would start a second gateway that loses the race for the port.
+# Decided by unit FILES, not by `systemctl is-active`: the tests drive this
+# script in a sandbox $HOME, and an is-active probe would answer from the
+# test machine's real user bus — a result that changes with the weather.
+GW_UNIT="llm-gateway"
+[ -e "$HOME/.config/systemd/user/llm-gateway.service" ] || \
+  ! [ -e "$HOME/.config/systemd/user/cc-gateway.service" ] || GW_UNIT="cc-gateway"
 
 NEW=""; DRY=0; SYNC_ETC=auto
 for a in "$@"; do
@@ -163,9 +179,9 @@ if [ "$GW_PRESENT" = 0 ]; then
   # and the wait in step 5 targets $SERVER from this profile anyway.
   ok "serves on port $PORT — no gateway here, so no port to agree with"
 elif [ "$PORT" = "$GW_PORT" ]; then
-  ok "serves on port $PORT — the port cc-gateway asks ($GW_URL)"
+  ok "serves on port $PORT — the port the gateway asks ($GW_URL)"
 else
-  die "$(model_repo_env "$NEW") serves on port $PORT, but cc-gateway talks to
+  die "$(model_repo_env "$NEW") serves on port $PORT, but the gateway talks to
     $GW_URL.
 
     Switching would start the model and leave every consumer talking to a
@@ -449,7 +465,7 @@ if [ "$DRY" = 0 ]; then
   esac
 fi
 
-# ONLY NOW the gateway, and the order is the whole point. cc-gateway asks the
+# ONLY NOW the gateway, and the order is the whole point. The gateway asks the
 # server for its slot count at startup (query_slots) and falls back to a
 # default of 2 when nobody answers. Restarting it BEFORE the model is up —
 # which is what this script did until 26.08. — therefore left MAX_INFLIGHT at
@@ -460,7 +476,7 @@ fi
 # been reporting it all along.
 if [ "$GW_PRESENT" = 1 ]; then
   step "6/7 restart the gateway (MID_SYSTEM_TO_USER / KWARGS_BY_MODEL, and the slot count)"
-  run systemctl --user restart cc-gateway
+  run systemctl --user restart "$GW_UNIT"
 else
   step "6/7 gateway — none installed, skipped"
 fi
@@ -498,7 +514,7 @@ elif [ "$DRY" = 0 ]; then
     | python3 -c "import json,sys; r=json.load(sys.stdin); \
 assert r.get('content'), r; \
 print('  smoke ok:', [b.get('text','') for b in r['content'] if b.get('type')=='text'][0][:40])" || die "the smoke through the gateway did not answer — check:
-    journalctl --user -u cc-gateway -n 80"
+    journalctl --user -u $GW_UNIT -n 80"
 fi
 
 say

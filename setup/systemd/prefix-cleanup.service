@@ -16,10 +16,10 @@ Type=oneshot
 # Size limit as the main rule, TTL against leftovers after configuration
 # changes. What goes first is always the longest UNUSED — the file date is no
 # good, because a prefix never changes through use.
-EnvironmentFile=-%h/.config/cc-gateway.env
-# AUTO_MAX_GB=0 is a legitimate setting: cc-gateway reads it as "the store may
+EnvironmentFile=-%h/.config/llm-gateway.env
+# AUTO_MAX_GB=0 is a legitimate setting: the gateway reads it as "the store may
 # use no disk" and stops saving. prewarm REFUSES a limit of 0 — deliberately,
 # because in a deleting tool 0 is ambiguous — so the two would have disagreed
 # on the one value that is easiest to type. Translated here instead: no disk
 # means keep nothing.
-ExecStart=/bin/sh -c 'L="${AUTO_MAX_GB:-20}"; if [ "$L" = "0" ]; then exec /usr/bin/python3 %h/.claude/bin/prewarm.py cleanup --purge; else exec /usr/bin/python3 %h/.claude/bin/prewarm.py cleanup --max-gb "$L" --ttl-days 28; fi'
+ExecStart=/bin/sh -c 'L="${AUTO_MAX_GB:-20}"; if [ "$L" = "0" ]; then exec /usr/bin/python3 %h/.local/lib/llm-stack/prewarm.py cleanup --purge; else exec /usr/bin/python3 %h/.local/lib/llm-stack/prewarm.py cleanup --max-gb "$L" --ttl-days 28; fi'

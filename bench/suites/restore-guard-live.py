@@ -2,7 +2,7 @@
 """Does RESTORE_ONLY_WHEN_SERVER_COLD actually help, through the real gateway?
 
 `restore-blinds-cache.py` proves the MECHANISM by driving llama-server's slot
-API by hand. This drives cc-gateway instead, so what is measured is the
+API by hand. This drives llm-gateway instead, so what is measured is the
 decision code that would ship — including the `cold` flag, the prefix ledger
 and the /slots reading.
 
@@ -23,7 +23,7 @@ Run it twice, once with the guard off and once on:
     python3 bench/suites/restore-guard-live.py --guard off
     python3 bench/suites/restore-guard-live.py --guard on
 
-IT RESTARTS cc-gateway AND WRITES A PREFIX FILE. The file is named after the
+IT RESTARTS llm-gateway AND WRITES A PREFIX FILE. The file is named after the
 id the gateway derives, printed at the end, and `--clean <id>` removes it. Do
 not run this while somebody is working: step 2 puts a conversation into the
 one slot, and the restart drops whatever the gateway was serving.
@@ -31,7 +31,7 @@ one slot, and the restart drops whatever the gateway was serving.
 import argparse, json, subprocess, sys, time, urllib.request
 
 GATEWAY = "http://127.0.0.1:8090/v1/messages"
-UNIT = "cc-gateway.service"
+UNIT = "llm-gateway.service"
 
 
 def ask(messages, system, label, timeout=1800):
@@ -54,7 +54,7 @@ def ask(messages, system, label, timeout=1800):
 
 
 def restart(env_line):
-    """Restart cc-gateway with one extra environment line, or without it."""
+    """Restart llm-gateway with one extra environment line, or without it."""
     drop = ["systemctl", "--user", "revert", UNIT]
     if env_line:
         subprocess.run(["systemctl", "--user", "edit", "--stdin", UNIT],
@@ -71,7 +71,7 @@ def restart(env_line):
             time.sleep(1.5)
             return
         time.sleep(0.5)
-    raise SystemExit("cc-gateway did not come back")
+    raise SystemExit("llm-gateway did not come back")
 
 
 def main():
@@ -97,7 +97,7 @@ def main():
     print("  2/2 putting a conversation behind it")
     ask(long_, system, "the conversation")
 
-    print("  restarting cc-gateway (%s)" % a.guard)
+    print("  restarting llm-gateway (%s)" % a.guard)
     restart("RESTORE_ONLY_WHEN_SERVER_COLD=1" if a.guard == "on" else None)
 
     print("  the request that decides it")

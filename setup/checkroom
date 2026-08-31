@@ -44,13 +44,13 @@ TRIES="${LLM_GUARD_TRIES:-6}"
 SLEEP="${LLM_GUARD_SLEEP:-5}"
 
 # budget.py imports systemdfile.py from its OWN directory, so the two travel
-# together — the same rule that keeps dialects.py next to cc-gateway.py. Three
+# together — the same rule that keeps dialects.py next to gateway.py. Three
 # places may hold them: next to this script (the repo, or /usr/local/bin next
 # to the installed copy), the user's bin, and the system-wide library the
 # root unit may execute from. First one wins.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BUDGET=""
-for d in "$HERE" "$HERE/lib" "$HOME/.claude/bin" /usr/local/lib/llm-profile; do
+for d in "$HERE" "$HERE/lib" "$HOME/.local/lib/llm-stack" /usr/local/lib/llm-profile; do
   if [ -r "$d/budget.py" ] && [ -r "$d/systemdfile.py" ]; then BUDGET="$d/budget.py"; break; fi
 done
 # Which copy answered, when it is not the one beside this script. The search

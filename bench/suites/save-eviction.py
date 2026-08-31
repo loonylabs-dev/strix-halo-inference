@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """save-eviction — does saving one prefix throw another out of the slot?
 
-    AUTO_SAVE=0 in ~/.config/cc-gateway.env, restart cc-gateway, then:
+    AUTO_SAVE=0 in ~/.config/llm-gateway.env, restart llm-gateway, then:
     python3 bench/suites/save-eviction.py --label controlled
 
 It does. Measured 28.08.2026, qwen38, a 24-tool synthetic prefix:
@@ -26,7 +26,7 @@ saving it changes nothing. The measurement above shows the harmless case as
 step 5-6.
 
 What makes it bite is that the save is ASYNCHRONOUS —
-`asyncio.create_task(auto_save(...))` in cc-gateway.py — and slow. Measured on
+`asyncio.create_task(auto_save(...))` in gateway.py — and slow. Measured on
 this machine: **101.9 s** for one automatic save. The user does not wait 102
 seconds between requests. So the sequence that actually happens is:
 
@@ -54,7 +54,7 @@ sys.path.insert(0, os.path.join(REPO, "tools"))
 import synthetic as SYN                                       # noqa: E402
 
 # The INSTALLED path, not REPO/tools, and unlike every other suite here that
-# is deliberate: cc-gateway spawns exactly this file (cc-gateway.py, auto_save)
+# is deliberate: the gateway spawns exactly this file (gateway.py, auto_save)
 # and the defect being reproduced is what that spawn does to the serving slot.
 # Measuring the repo copy would measure a different process than production
 # runs. It is a symlink into the repo, so the code is the same either way —
@@ -76,7 +76,7 @@ def ask(url, body, model, timeout=900):
 
 
 def save(body, name, model, workdir):
-    """Exactly what cc-gateway's auto_save does, synchronously."""
+    """Exactly what the gateway's auto_save does, synchronously."""
     tmp = os.path.join(workdir, name + ".json")
     b = json.loads(json.dumps(body))
     b["model"] = model

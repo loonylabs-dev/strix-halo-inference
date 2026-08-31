@@ -141,18 +141,18 @@ class TestAnImportStaysWithoutConsequences(unittest.TestCase):
     """
 
     # Matched as CALLS, not as text. The first version of this test looked
-    # for the strings and flagged cc-gateway.py, which computes the token
+    # for the strings and flagged the gateway, which computes the token
     # path with expanduser at module level and never opens it — the rule is
     # about reading the file, not about naming it.
     CALLED = {"run_app": "starts a server",
               "urlopen": "goes to the network"}
-    OPENS = "cc-gateway-tokens"
+    OPENS = "llm-gateway-tokens"
 
     def files(self):
         import glob as _g
         out = []
         for pattern in ("bench/suites/*.py", "bench/*.py", "setup/claude/*.py",
-                        "tools/*.py", "setup/lib/*.py"):
+                        "setup/gateway/*.py", "tools/*.py", "setup/lib/*.py"):
             out += sorted(_g.glob(str(REPO / pattern)))
         return out
 
@@ -299,7 +299,7 @@ class TestUserUnit(unittest.TestCase):
         """
         files = self._directives("EnvironmentFile")
         self.assertEqual(files, ["-%h/.config/llm-stack.env",
-                                 "%h/.claude/env/%i.env"])
+                                 "%h/.config/llm-profile/%i.env"])
         self.assertTrue(files[0].startswith("-"),
                         "the local config must be optional: install.sh has to "
                         "be able to run before it exists")

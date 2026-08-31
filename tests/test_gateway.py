@@ -21,14 +21,14 @@ import common
 # analysis of that file then reports twelve quarantines that never happened.
 # Found on 29.08.2026 by reading the trace of a real morning and nearly
 # drawing a conclusion from test data.
-GW  = common.load("setup/claude/cc-gateway.py", "cc_gateway",
+GW  = common.load("setup/gateway/gateway.py", "gateway",
                      {"MAX_INFLIGHT": "2", "TOKEN_FILE": "/nonexistent-token",
                       "SLOT_PATH": "/nonexistent-slots",
                       "TRACE_DIR": "/nonexistent-trace"})
 VW  = common.load("tools/prewarm.py", "prewarm",
                      {"SLOT_PATH": "/nonexistent-slots"})
 SYN = common.load("tools/synthetic.py", "synthetic")
-DIA = common.load("setup/claude/dialects.py", "dialects")
+DIA = common.load("setup/gateway/dialects.py", "dialects")
 
 
 # --------------------------------------------------------- Cache-Korrektur ---
@@ -241,7 +241,7 @@ class TestTheServedModelIsAskedForOnce(unittest.TestCase):
             self.assertIsNone(GW.query_served_model())
 
     def test_main_asks_at_startup(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(encoding="utf-8")
         body = src[src.index("def main("):]
         self.assertIn("query_served_model()", body,
                       "main() never learns which model is served")
@@ -251,7 +251,7 @@ class TestTheServedModelIsAskedForOnce(unittest.TestCase):
         this test did, and it stayed green while the second of watch_server's
         two branches left the name stale. Both branches must reach the same
         call."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(encoding="utf-8")
         body = src[src.index("async def watch_server("):src.index("async def note_server_restart(")]
         self.assertEqual(body.count("restarted = True"), 2,
                          "one of the two detectors does not mark a restart")
@@ -930,7 +930,7 @@ class TestModesComeFromTheProfile(GatewayOnTheWire):
                          {"reasoning_effort": "low"})
 
     def test_main_loads_them_at_startup(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(encoding="utf-8")
         body = src[src.index("def main("):]
         self.assertIn("load_profile_modes", body,
                       "main() never reads the served profile's modes")
@@ -1050,7 +1050,7 @@ class TestModelListing(unittest.TestCase):
 
     def test_the_endpoint_passes_the_served_model_in(self):
         """A rule the caller does not apply is a rule in a docstring."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(encoding="utf-8")
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(encoding="utf-8")
         self.assertIn("add_aliases(listing, KWARGS_BY_MODEL, SERVED)", src)
 
     def test_every_configured_name_appears_once(self):
@@ -1635,7 +1635,7 @@ class TestTheSaveIsBracketed(unittest.TestCase):
     """
 
     def test_the_source_counts_what_was_served_and_compares_it(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("served_before = SERVED_COUNT", src)
         self.assertIn("n > served_before", src,
@@ -1644,7 +1644,7 @@ class TestTheSaveIsBracketed(unittest.TestCase):
     def test_the_counter_is_raised_where_the_request_reaches_the_model(self):
         """Not at admission and not at the answer: what matters is that the
         model was asked, because that is what touches the slot."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index("async def handler(")
         body = src[start:src.index("\n    finally:", start)]
@@ -1656,7 +1656,7 @@ class TestTheSaveIsBracketed(unittest.TestCase):
                         "counted after the forward, a save could still race it")
 
     def test_a_dropped_save_names_the_defect_it_avoids(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("saved-prefix-holds-a-foreign-state", src)
 
@@ -1709,7 +1709,7 @@ class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
         sha256[:12] of what is in front. If they drift apart, every restore
         looks like a mismatch — which is exactly why a mismatch must not
         condemn a file."""
-        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        gw = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         pw = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
         for piece in ('hashlib.sha256(', '[:12]', 'find("<user>")',
@@ -1721,7 +1721,7 @@ class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
     def test_a_mismatch_skips_the_restore_and_does_not_condemn(self):
         """The hash is DERIVED. Being wrong here costs one restore; being
         wrong the other way would delete the store."""
-        gw = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        gw = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = gw.index("async def restore_from_disk(")
         body = gw[start:gw.index("def quarantine(", start)]
@@ -1932,7 +1932,7 @@ class TestTheRestoreOnlyEarnsItsKeepOnAColdServer(unittest.IsolatedAsyncioTestCa
         self.assertTrue(ok, "the guard must be inert until it is switched on")
 
     def test_the_default_is_off_and_the_number_says_it_is_untuned(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('"RESTORE_NUR_WENN_SERVER_KALT"', src)
         self.assertRegex(src, r'RESTORE_NUR_WENN_SERVER_KALT",\s*\n\s*"0"\) == "1"')
@@ -1955,7 +1955,7 @@ class TestTheIdIsTakenBeforeThePromptIsRewritten(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
     def test_the_prefix_is_hashed_again_after_the_correction(self):
@@ -2017,7 +2017,7 @@ class TestTheBannerAnswersWhatIsOn(unittest.TestCase):
     verified."""
 
     def setUp(self):
-        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
     def test_the_restore_policy_is_printed(self):
@@ -2054,7 +2054,7 @@ class TestHoistingCostsWhatItWasBuiltToSave(unittest.TestCase):
     hold the switch to being opt-in.
     """
 
-    D = common.load("setup/claude/dialects.py", "dialects_hoist")
+    D = common.load("setup/gateway/dialects.py", "dialects_hoist")
     VOL = [re.compile(r"COUNTER \d+")]
 
     def body(self, counter, extra=False):
@@ -2093,7 +2093,7 @@ class TestHoistingCostsWhatItWasBuiltToSave(unittest.TestCase):
                          self.ident(self.body(3, extra=True), hoist=False))
 
     def test_the_switch_defaults_to_todays_behaviour(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('"SYSTEM_HOCHZIEHEN", "1") == "1"', src)
 
@@ -2171,14 +2171,14 @@ class TestAServerThatRestartedUnderUsIsCold(unittest.TestCase):
         self.assertTrue(GW.server_is_cold([{"id": 0}])[0])
 
     def test_the_check_runs_only_where_it_can_change_something(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("if not cold and ident and ident in SAVED:", src)
 
     def test_it_cannot_break_the_request(self):
         """A gateway that dies over its own bookkeeping is worse than one that
         cannot label a request."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index("if not cold and ident and ident in SAVED:")
         block = src[start:src.index("if cold and ident in SAVED:", start)]
@@ -2218,7 +2218,7 @@ class TestTheSaveSurvivesAThiefItCannotSee(unittest.TestCase):
         self.assertIn("refusing to publish", pw)
 
     def test_one_retry_and_the_reason_for_the_number(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('SAVE_RETRIES = int(env("SAVE_RETRIES", "SICHERN_VERSUCHE", 1))',
                       src)
@@ -2229,7 +2229,7 @@ class TestTheSaveSurvivesAThiefItCannotSee(unittest.TestCase):
         the last 200 characters kept only the explanation, and it cost a
         measurement to notice the log had thrown away the one thing needed to
         read it."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index('log("NOTE        automatic save of %s failed')
         self.assertNotIn("[-200:]", src[start:start + 300])
@@ -2250,12 +2250,12 @@ class TestPrewarmAndTheGatewayHoistTheSameWay(unittest.TestCase):
 
     def test_the_gateway_passes_it_explicitly_rather_than_inheriting(self):
         """Inheriting works until somebody runs prewarm from a shell."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('"--hoist", "1" if HOIST_SYSTEM else "0",', src)
 
     def test_the_render_id_follows_it_too(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index("def render_id_of(")
         block = src[start:src.index("def ", start + 10)]
@@ -2343,14 +2343,14 @@ class TestWhetherThisPrefixRanOnThisServer(unittest.TestCase):
         """Marking a prefix "the server has it" because we chose not to restore
         would make one wrong skip permanent. Zero reuse says otherwise, and
         forgetting the entry makes the next request restore."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn("if reuse[0] > 0:\n                    SEEN[ident] = MAX_TASK_ID",
                       src)
         self.assertIn("SEEN.pop(ident, None)", src)
 
     def test_the_ledger_is_read_at_startup(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertIn('globals()["SEEN"] = load_seen()', src)
 
@@ -2370,7 +2370,7 @@ class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
     def test_a_rival_already_on_disk_stops_the_save(self):
@@ -2411,7 +2411,7 @@ class TestTheTwoPhasesAreSeparableWithoutTheServersHelp(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
     def test_it_times_the_first_DELTA_not_the_first_chunk(self):
@@ -2491,7 +2491,7 @@ class TestARestartingServerIsNotAStackTrace(unittest.IsolatedAsyncioTestCase):
         """A /health call before every request would put a round trip in the
         hot path to describe a state that is rare, and the connection attempt
         answers the same question for free."""
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index("async def forward(")
         block = src[start:src.index("\nasync def status(", start)]
@@ -2501,7 +2501,7 @@ class TestARestartingServerIsNotAStackTrace(unittest.IsolatedAsyncioTestCase):
         self.assertIn("except (OSError, aiohttp.ClientConnectionError)", block)
 
     def test_a_cancelled_request_is_not_swallowed(self):
-        src = (common.REPO / "setup" / "claude" / "cc-gateway.py").read_text(
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         start = src.index("async def forward(")
         block = src[start:src.index("\nasync def status(", start)]

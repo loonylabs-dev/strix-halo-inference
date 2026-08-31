@@ -43,9 +43,9 @@ MODELS_LIB_DIR="${MODELS_LIB_DIR:-$(_models_lib_dir)}"
 MODELS_REPO="${MODELS_REPO:-$(dirname "$(dirname "$MODELS_LIB_DIR")")}"
 MODELS_ENV_DIR="$MODELS_REPO/setup/env"
 # Where install.sh symlinks the profiles to. This is what the USER service
-# really reads (EnvironmentFile=%h/.claude/env/%i.env) — a model whose
+# really reads (EnvironmentFile=%h/.config/llm-profile/%i.env) — a model whose
 # profile is only in the repo cannot start.
-MODELS_USER_ENV_DIR="${MODELS_USER_ENV_DIR:-$HOME/.claude/env}"
+MODELS_USER_ENV_DIR="${MODELS_USER_ENV_DIR:-$HOME/.config/llm-profile}"
 
 # --- what exists ----------------------------------------------------------
 

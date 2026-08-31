@@ -69,26 +69,49 @@ link_() {   # $1 = source in the repo, $2 = target in the system
 }
 
 # --- user side: symlinks, no root ----------------------------------------
-echo "== Claude Code profiles and gateway (symlinks) =="
-link_ "$SRC/claude/local.json"        "$HOME/.claude/profiles/local.json"
-link_ "$SRC/claude/hybrid.json"       "$HOME/.claude/profiles/hybrid.json"
-link_ "$SRC/claude/PROFILE.md"        "$HOME/.claude/profiles/README.md"
-# dialects.py must sit NEXT TO both cc-gateway.py and prewarm.py: they import
+#
+# One directory for everything the stack executes or imports on this machine:
+# ~/.local/lib/llm-stack. Until 09/2026 all of it lived in ~/.claude/bin — a
+# leftover from the first consumer, and a lie once DeepSeek Harness and plain
+# OpenAI clients were served too. The consumer-agnostic layer must not live in
+# one consumer's directory. check.sh reports the old links as leftovers; only
+# cc-router.py and the profiles stay under ~/.claude, because they really are
+# Claude Code's.
+LIB="$HOME/.local/lib/llm-stack"
+echo "== gateway and server tooling (symlinks) =="
+# dialects.py must sit NEXT TO both gateway.py and prewarm.py: they import
 # it by directory, and it is the shared truth about how a request body is read.
 # modes.py is the second such module and was missed when it was added on
 # 28.08.2026 — the gateway kept starting, because Python 3.11+ puts the
 # RESOLVED script directory on sys.path[0] and that is the repo, so the import
 # found it there instead. It worked for a reason the code does not state, which
 # is not the same as working. tests/test_install.py now walks these links.
-link_ "$SRC/claude/dialects.py"       "$HOME/.claude/bin/dialects.py"
-link_ "$SRC/claude/modes.py"          "$HOME/.claude/bin/modes.py"
+link_ "$SRC/gateway/dialects.py"      "$LIB/dialects.py"
+link_ "$SRC/gateway/modes.py"         "$LIB/modes.py"
 # The third such module, added 29.08.2026 — and tests/test_install.py caught
 # it missing the same day it was written, which is what it is for.
-link_ "$SRC/claude/tracelog.py"       "$HOME/.claude/bin/tracelog.py"
-link_ "$SRC/claude/cc-gateway.py"     "$HOME/.claude/bin/cc-gateway.py"
+link_ "$SRC/gateway/tracelog.py"      "$LIB/tracelog.py"
+link_ "$SRC/gateway/gateway.py"       "$LIB/gateway.py"
+link_ "$REPO/tools/prewarm.py"        "$LIB/prewarm.py"
+link_ "$SRC/waitformodel"             "$LIB/waitformodel"
+link_ "$SRC/llamaexec"                "$LIB/llamaexec"
+# The memory guard, and the two modules it is made of. budget.py imports
+# systemdfile.py from its OWN directory, so the pair travels together — the
+# same rule that keeps dialects.py next to gateway.py, and for the same
+# reason: a module that is found by directory has to BE in the directory.
+link_ "$SRC/checkroom"                "$LIB/checkroom"
+link_ "$SRC/lib/budget.py"            "$LIB/budget.py"
+link_ "$SRC/lib/systemdfile.py"       "$LIB/systemdfile.py"
+link_ "$REPO/setup/scripts/probe.py"  "$LIB/probe.py"
+
+echo
+echo "== Claude Code consumer (symlinks) =="
+link_ "$SRC/claude/local.json"        "$HOME/.claude/profiles/local.json"
+link_ "$SRC/claude/hybrid.json"       "$HOME/.claude/profiles/hybrid.json"
+link_ "$SRC/claude/PROFILE.md"        "$HOME/.claude/profiles/README.md"
 link_ "$SRC/claude/cc-router.py"      "$HOME/.claude/bin/cc-router.py"
 # cc-cachefix.py and cc-cachefix2.py are NOT installed. Both were superseded by
-# cc-gateway.py, which does the same job and more, and setup/README.md has said
+# the gateway, which does the same job and more, and setup/README.md has said
 # so since 26.08. — while install.sh kept linking the newer one into
 # ~/.claude/bin anyway. They stay in the tree because docs/measurements/
 # measures against them and the comparison is the argument for the gateway;
@@ -96,8 +119,8 @@ link_ "$SRC/claude/cc-router.py"      "$HOME/.claude/bin/cc-router.py"
 
 echo
 echo "== systemd units (symlinks) =="
-link_ "$SRC/systemd/cc-gateway.service" \
-      "$HOME/.config/systemd/user/cc-gateway.service"
+link_ "$SRC/systemd/llm-gateway.service" \
+      "$HOME/.config/systemd/user/llm-gateway.service"
 link_ "$SRC/systemd/llama-user@.service" \
       "$HOME/.config/systemd/user/llama-user@.service"
 link_ "$SRC/systemd/prefix-cleanup.service" \
@@ -108,26 +131,16 @@ link_ "$SRC/systemd/llama-probe.timer" \
       "$HOME/.config/systemd/user/llama-probe.timer"
 link_ "$SRC/systemd/prefix-cleanup.timer" \
       "$HOME/.config/systemd/user/prefix-cleanup.timer"
-link_ "$REPO/tools/prewarm.py"        "$HOME/.claude/bin/prewarm.py"
 
 # Model profiles for the USER service. A symlink, not a copy: a copy
 # drifts, and the root-owned copies under /etc/llm-profile made every
 # profile change need sudo — which locks out a remote operator entirely.
-# The system unit llama@.service keeps using /etc.
-mkdir -p "$HOME/.claude/env"
+# The system unit llama@.service keeps using /etc — and ~/.config/llm-profile
+# is that directory's user-side twin, which is why the name repeats.
+mkdir -p "$HOME/.config/llm-profile"
 for f in "$SRC"/env/*.env; do
-  link_ "$f" "$HOME/.claude/env/$(basename "$f")"
+  link_ "$f" "$HOME/.config/llm-profile/$(basename "$f")"
 done
-link_ "$SRC/waitformodel"             "$HOME/.claude/bin/waitformodel"
-link_ "$SRC/llamaexec"                "$HOME/.claude/bin/llamaexec"
-# The memory guard, and the two modules it is made of. budget.py imports
-# systemdfile.py from its OWN directory, so the pair travels together — the
-# same rule that keeps dialects.py next to cc-gateway.py, and for the same
-# reason: a module that is found by directory has to BE in the directory.
-link_ "$SRC/checkroom"                "$HOME/.claude/bin/checkroom"
-link_ "$SRC/lib/budget.py"            "$HOME/.claude/bin/budget.py"
-link_ "$SRC/lib/systemdfile.py"       "$HOME/.claude/bin/systemdfile.py"
-link_ "$REPO/setup/scripts/probe.py"  "$HOME/.claude/bin/probe.py"
 # --- this machine's answers, derived once ---------------------------------
 #
 # The one file that says what is specific to this computer. Written before
@@ -168,13 +181,43 @@ else
   echo "  = $LOCAL_ENV (left untouched)"
 fi
 
-if [ ! -e "$HOME/.config/cc-gateway.env" ]; then
-  cp "$SRC/cc-gateway.env.template" "$HOME/.config/cc-gateway.env"
-  echo "  -> ~/.config/cc-gateway.env (from the template; stays local)"
+# The gateway's local config and named tokens, both under the pre-09/2026
+# name on older installations. Migrating means COPYING, never moving: this
+# script creates the new state, check.sh reports the old files, and removing
+# things from a home directory stays the operator's call.
+if [ ! -e "$HOME/.config/llm-gateway.env" ]; then
+  if [ -e "$HOME/.config/cc-gateway.env" ]; then
+    cp -p "$HOME/.config/cc-gateway.env" "$HOME/.config/llm-gateway.env"
+    echo "  -> ~/.config/llm-gateway.env (copied from cc-gateway.env, the pre-rename name)"
+  else
+    cp "$SRC/llm-gateway.env.template" "$HOME/.config/llm-gateway.env"
+    echo "  -> ~/.config/llm-gateway.env (from the template; stays local)"
+  fi
 else
-  echo "  = ~/.config/cc-gateway.env (left untouched)"
+  echo "  = ~/.config/llm-gateway.env (left untouched)"
+fi
+if [ -e "$HOME/.config/cc-gateway-tokens" ] && [ ! -e "$HOME/.config/llm-gateway-tokens" ]; then
+  cp -p "$HOME/.config/cc-gateway-tokens" "$HOME/.config/llm-gateway-tokens"
+  echo "  -> ~/.config/llm-gateway-tokens (copied from the pre-rename name)"
+fi
+# The per-prefix bookkeeping the restore guard builds up. Cheap to lose, free
+# to carry over.
+if [ -e "$HOME/.cache/cc-gateway-seen.json" ] && [ ! -e "$HOME/.cache/llm-gateway-seen.json" ]; then
+  cp -p "$HOME/.cache/cc-gateway-seen.json" "$HOME/.cache/llm-gateway-seen.json"
 fi
 systemctl --user daemon-reload 2>/dev/null || true
+
+# The one production hand-over this rename needs, and the one thing this
+# script only PRINTS: stopping the old unit and starting the new one is the
+# operator's call, like every production change in this repo.
+if systemctl --user is-active cc-gateway.service >/dev/null 2>&1 || \
+   systemctl --user is-enabled cc-gateway.service >/dev/null 2>&1; then
+  echo
+  echo "  ! cc-gateway (the pre-rename unit) is still enabled or running."
+  echo "    Same gateway, new name — switch over when ready:"
+  echo "      systemctl --user disable --now cc-gateway"
+  echo "      systemctl --user enable --now llm-gateway"
+fi
 
 if [ "$USER_ONLY" = "1" ]; then
   echo
@@ -249,7 +292,7 @@ Done. Cross-check:
 Start:
 
   systemctl --user --now enable llama-user@qwen38   # model server
-  systemctl --user --now enable cc-gateway          # gateway
+  systemctl --user --now enable llm-gateway         # gateway
 
   The USER service, not llama@laguna: on Fedora with SELinux a system service
   may not execute a binary from the home directory (AVC denied, 203/EXEC).

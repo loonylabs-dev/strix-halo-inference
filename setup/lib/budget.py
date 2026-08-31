@@ -1015,7 +1015,7 @@ def _profile_path(name):
     if os.path.exists(name):
         return name
     for base in (os.path.join(HERE, "..", "env"),
-                 os.path.expanduser("~/.claude/env"), "/etc/llm-profile"):
+                 os.path.expanduser("~/.config/llm-profile"), "/etc/llm-profile"):
         p = os.path.join(base, name if name.endswith(".env") else name + ".env")
         if os.path.exists(p):
             return os.path.abspath(p)

@@ -39,12 +39,13 @@ Usage:
 import argparse, hashlib, json, os, re, sys, time, urllib.request
 
 # dialects.py is the single source of truth for how a request body is read —
-# shared with cc-gateway.py. Duplicating that logic here is exactly how the
+# shared with gateway.py. Duplicating that logic here is exactly how the
 # id contract broke once before, and tests/test_dialects.py exists because of
-# it: it holds the ONE reading of a request body for both dialects. Both the repo
-# layout and the installed symlinks put the two files side by side.
+# it: it holds the ONE reading of a request body for both dialects. In the
+# repo it sits in setup/gateway/; installed, the symlinks put it side by side
+# with this file in ~/.local/lib/llm-stack.
 for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "..", "setup", "claude"),
+                           "..", "setup", "gateway"),
               os.path.dirname(os.path.abspath(__file__))):
     if os.path.exists(os.path.join(_cand, "dialects.py")):
         sys.path.insert(0, _cand)
@@ -106,7 +107,7 @@ def render_hash(prefix):
     return hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:12]
 
 def gateway_id(body, dialect=DIA.ANTHROPIC):
-    """The same id that cc-gateway computes from a request.
+    """The same id that the gateway computes from a request.
 
     Both sides call dialects.prefix_id now, so they cannot drift apart any
     more. The basis is the RAW body (system head plus tools), not the
@@ -394,7 +395,7 @@ def cleanup(a):
         print("nothing under %s" % SLOT_PATH); return
     doomed = []
 
-    # QUARANTINED FIRST, and under no rule at all. cc-gateway sets a prefix
+    # QUARANTINED FIRST, and under no rule at all. The gateway sets a prefix
     # aside when a restore of it demonstrably carried nothing (see
     # saved-prefix-holds-a-foreign-state): the file cannot be restored, cannot
     # become useful again, and is about a gigabyte. Keeping it until an LRU
@@ -508,7 +509,7 @@ def check(a):
         print("  all %d sidecar files are fine" % len(inv))
     elif not a.repair and affected:
         print("  %d affected — 'prewarm.py check --repair' puts the id right, "
-              "then restart cc-gateway" % len(affected))
+              "then restart llm-gateway" % len(affected))
     return len(affected)
 
 def parse_args(argv=None):

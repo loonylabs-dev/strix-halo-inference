@@ -30,7 +30,10 @@ the bound is.
 import re, subprocess, sys, time
 from collections import defaultdict
 
-GATEWAY_UNIT = "cc-gateway.service"
+# llm-gateway since 09/2026 — and the pre-rename unit beside it, because the
+# measured days live in ITS journal. History is read as it was written; the
+# same reasoning as the German field names accepted further down.
+GATEWAY_UNITS = ("llm-gateway.service", "cc-gateway.service")
 SERVER_UNIT = "llama-user@qwen38"
 
 RESTORED = re.compile(r"RESTORED\s+prefix (\w+) from \S+ -> slot \d+, (\d+) tokens")
@@ -53,9 +56,12 @@ PRESSURE = re.compile(r"removing oldest entry|exceeds cache size limit|"
 
 
 def journal(unit, days):
+    """`unit` is one name or a tuple — journalctl merges repeated -u by time."""
+    cmd = ["journalctl", "--user"]
+    for u in (unit if isinstance(unit, tuple) else (unit,)):
+        cmd += ["-u", u]
     out = subprocess.run(
-        ["journalctl", "--user", "-u", unit, "--since", "-%d days" % days,
-         "--no-pager", "-o", "short-unix"],
+        cmd + ["--since", "-%d days" % days, "--no-pager", "-o", "short-unix"],
         capture_output=True, text=True)
     return out.stdout.splitlines()
 
@@ -69,11 +75,11 @@ def stamp(line):
 
 def main():
     days = int(sys.argv[1]) if len(sys.argv) > 1 else 7
-    gw = journal(GATEWAY_UNIT, days)
+    gw = journal(GATEWAY_UNITS, days)
     srv = journal(SERVER_UNIT, days)
     if not gw:
         print("  nothing to read: no journal for %s in %d days"
-              % (GATEWAY_UNIT, days))
+              % ("/".join(GATEWAY_UNITS), days))
         return 1
 
     restarts = sorted(t for t in (stamp(l) for l in srv if SERVER_UP.search(l))

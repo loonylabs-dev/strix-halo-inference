@@ -94,7 +94,7 @@ def _system_mid_conversation_remap(p):
 
     Production implication, found 24 Aug: if the real bodies carry this
     structure, a Qwen production server rejects every Claude Code request
-    until cc-gateway applies the same remap (MID_SYSTEM_TO_USER).
+    until the gateway applies the same remap (MID_SYSTEM_TO_USER).
 
     Moved here from bench/quality.py on 26.08. UNCHANGED — the first version
     of the move dropped the string-to-block conversion on the last line and

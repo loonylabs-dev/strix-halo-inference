@@ -35,7 +35,7 @@ import json, os, time
 # name beside a script hides it for every import in the same directory —
 # tests/test_scripts.py catches exactly this, and caught this.
 LEVELS = ("off", "summary", "detail", "text")
-DEFAULT_DIR = os.path.expanduser("~/.cache/cc-gateway-trace")
+DEFAULT_DIR = os.path.expanduser("~/.cache/llm-gateway-trace")
 # Total across all days. A debugging session is megabytes; a month of `text`
 # would be gigabytes, and the point at which somebody notices is the point at
 # which the disk is full.
@@ -182,7 +182,7 @@ class Trace:
                 if fresh:
                     f.write(json.dumps({
                         "t": round(self._now(), 3), "kind": "header",
-                        "note": "cc-gateway trace. `text` records contain "
+                        "note": "llm-gateway trace. `text` records contain "
                                 "COMPLETE PROMPTS in the clear — treat this "
                                 "file like the conversations it describes.",
                         "level": self._level}) + "\n")

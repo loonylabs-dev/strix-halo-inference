@@ -21,7 +21,7 @@ import unittest
 import common
 
 EV = common.load("bench/suites/effort-vocabulary.py", "effort_vocabulary")
-M = common.load("setup/claude/modes.py", "modes")
+M = common.load("setup/gateway/modes.py", "modes")
 
 
 def measured(levels, thinking=True, plain="DEFAULT", measurable=True):

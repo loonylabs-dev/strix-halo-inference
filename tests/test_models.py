@@ -502,9 +502,9 @@ class TestSwitchPreflight(unittest.TestCase):
         self.write_profile()
         # a home with the symlink the SERVICE would read, and a binary
         self.home = os.path.join(self.tmp, "home")
-        os.makedirs(os.path.join(self.home, ".claude", "env"))
+        os.makedirs(os.path.join(self.home, ".config", "llm-profile"))
         os.symlink(os.path.join(self.repo, "setup", "env", "ghost.env"),
-                   os.path.join(self.home, ".claude", "env", "ghost.env"))
+                   os.path.join(self.home, ".config", "llm-profile", "ghost.env"))
         binp = os.path.join(self.home, "llama.cpp", "build-vulkan", "bin")
         os.makedirs(binp)
         stub = os.path.join(binp, "llama-server")
@@ -600,7 +600,10 @@ class TestSwitchPreflight(unittest.TestCase):
                                  "the script re-keyed the prefix store")
         cfg = os.path.join(self.home, ".config")
         if os.path.exists(cfg):
-            self.assertEqual(os.listdir(cfg), ["cc-gateway.env"],
+            # The fixture plants llm-profile/ always and llm-gateway.env on
+            # demand; anything beyond those two was written by the script.
+            extra = set(os.listdir(cfg)) - {"llm-profile", "llm-gateway.env"}
+            self.assertEqual(extra, set(),
                              "the script wrote into %s" % cfg)
 
     # --- the aborts -------------------------------------------------------
@@ -680,9 +683,9 @@ class TestSwitchPreflight(unittest.TestCase):
             fh.write(text)
 
     def plant_gateway(self, port=8080):
-        """A gateway config, which is one of the two signals that say a
-        harness lives on this machine."""
-        gwenv = os.path.join(self.home, ".config", "cc-gateway.env")
+        """A gateway config, which is one of the signals that say a
+        gateway lives on this machine."""
+        gwenv = os.path.join(self.home, ".config", "llm-gateway.env")
         os.makedirs(os.path.dirname(gwenv), exist_ok=True)
         with open(gwenv, "w") as fh:
             fh.write("LLAMA_URL=http://127.0.0.1:%d\n" % port)
@@ -746,6 +749,7 @@ class TestSwitchPreflight(unittest.TestCase):
         r = self.switch("ghost", "--dry-run")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("none installed, skipped", r.stdout)
+        self.assertNotIn("restart llm-gateway", r.stdout)
         self.assertNotIn("restart cc-gateway", r.stdout)
         self.assertIn("smoke against the server", r.stdout)
 
@@ -816,7 +820,7 @@ class TestSwitchPreflight(unittest.TestCase):
                           "this line was not announced as a plan: %r" % line)
 
     def test_the_gateway_is_restarted_only_after_the_model_answers(self):
-        """Order, not presence. cc-gateway asks the server for its slot count
+        """Order, not presence. The gateway asks the server for its slot count
         at startup (query_slots) and falls back to a DEFAULT OF 2 when nobody
         answers. Restarting it before the model is up therefore left
         MAX_INFLIGHT at 2 against a one-slot server on every single switch —
@@ -827,7 +831,7 @@ class TestSwitchPreflight(unittest.TestCase):
         text = (REPO / "setup" / "switch-model.sh").read_text(encoding="utf-8")
         body = text[text.index("From here on the system is changed"):]
         wait = body.index("/slots")
-        restart = body.index("restart cc-gateway")
+        restart = body.index('restart "$GW_UNIT"')
         self.assertLess(wait, restart,
                         "the gateway is restarted before the server is known "
                         "to answer — MAX_INFLIGHT will not match the slot count")
@@ -916,7 +920,7 @@ class TestLocalJsonMatchesAModel(unittest.TestCase):
     the user's only other signal is that thinking silently stopped.
     """
 
-    MODES = common.load("setup/claude/modes.py", "modes")
+    MODES = common.load("setup/gateway/modes.py", "modes")
 
     def test_the_configured_model_names_resolve_to_a_profile(self):
         env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]

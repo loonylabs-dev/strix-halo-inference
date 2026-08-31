@@ -5,7 +5,7 @@
     python3 bench/suites/save-policy-sim.py --trace bench/reports/.../trace.tsv --sweep
 
 Needs NO GPU, NO server and NO model. The input is what this stack has already
-done: every START and DONE cc-gateway has logged, and every restart of
+done: every START and DONE the gateway has logged, and every restart of
 llama-server. The output is what a different rule WOULD have done with the
 same traffic.
 
@@ -46,7 +46,7 @@ import argparse, json, os, subprocess, sys, datetime, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-sys.path.insert(0, os.path.join(REPO, "setup", "claude"))
+sys.path.insert(0, os.path.join(REPO, "setup", "gateway"))
 import savepolicy                                             # noqa: E402
 
 # Measured on this machine, 28.08.2026, from the gateway's own SAVED lines:
@@ -74,7 +74,10 @@ def from_journal(days):
         return subprocess.run(cmd, capture_output=True, text=True).stdout
 
     events = []
-    gw = run(["journalctl", "--user", "-u", "cc-gateway",
+    # Both units: llm-gateway is the name since 09/2026, and the days being
+    # replayed live in the pre-rename unit's journal. journalctl merges
+    # repeated -u by time.
+    gw = run(["journalctl", "--user", "-u", "llm-gateway", "-u", "cc-gateway",
               "--since", "-%dd" % days, "--no-pager", "-o", "short-iso"])
     # Both spellings: the gateway logged German field names until 25.08.
     start = re.compile(r"^(\S+) .*\] START\s+\S+\s+\S+\s+(?:who|wer)=(\S+)\s+"

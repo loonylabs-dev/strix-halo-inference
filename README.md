@@ -70,6 +70,23 @@ how a request body is read, which prefix id it produces, when a state may be
 restored — is in [`setup/claude/`](setup/claude/) with the measurements behind
 each step.
 
+## Not a fork
+
+The backend is llama.cpp **master plus a short list of patches**. The list,
+with the defect and the measurement behind each, lives in
+[`setup/patches/`](setup/patches/README.md); `python3 setup/lib/defects.py`
+says whether a given build still needs them. A patch here is a debt being
+worked off, not a feature — each is tied to an upstream issue, and when the
+fix lands on master the local copy is retired. The build script guards the
+set: a binary that silently lost a patch refuses instead of serving the
+defect again.
+
+Custom-format forks tie your model files and your pace to their releases.
+The weights here are standard GGUF from public repositories — no private
+quant format only one binary can read — and because the base is master,
+every upstream improvement arrives at the next build, not at a fork's next
+release.
+
 ## What it is not
 
 - **Not a generic stack.** See the table above; `preflight.sh` says where you

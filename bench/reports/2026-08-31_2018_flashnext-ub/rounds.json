@@ -1,0 +1,98 @@
+{
+  "_meta": {
+    "argv": [
+      "bench/suites/flag-ab.py",
+      "--name",
+      "flashnext-ub",
+      "--build",
+      "b10724-2-g0a716b9f2",
+      "--model",
+      "@MODELS@/Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004.gguf",
+      "--arm",
+      "ub512:-ub 512",
+      "--arm",
+      "ub1024:-ub 1024",
+      "--arm",
+      "ub2048:-ub 2048",
+      "--depths",
+      "0,32768",
+      "--prompt",
+      "2048",
+      "--reps",
+      "2"
+    ],
+    "build": {
+      "build_id": "b10724-2-g0a716b9f2",
+      "backend": "rocm",
+      "family": "rocm-patched",
+      "patched": "yes",
+      "upstream_ref": "flashnext-a",
+      "upstream_commit": "0a716b9f29b23ff3bd6be854c7575597f97e9291",
+      "patch_commit": "0a716b9f29b23ff3bd6be854c7575597f97e9291",
+      "patch_branch": "flashnext-a",
+      "rocm_path": "none",
+      "rocm_version": "none",
+      "built_at": "2026-08-31T19:39:11+02:00",
+      "version": "version: 0.3.0-dev (build 346, commit 0a716b9f2)",
+      "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+    },
+    "axis": {
+      "kind": "flag",
+      "name": "-ub"
+    }
+  },
+  "ub512": {
+    "pp2048 @ d0": [
+      265.967644,
+      264.816634
+    ],
+    "tg64 @ d0": [
+      15.510179,
+      16.804114
+    ],
+    "pp2048 @ d32768": [
+      158.75818,
+      149.243286
+    ],
+    "tg64 @ d32768": [
+      10.795858,
+      11.547102
+    ]
+  },
+  "ub1024": {
+    "pp2048 @ d0": [
+      257.574695,
+      258.751907
+    ],
+    "tg64 @ d0": [
+      16.500303,
+      17.083347
+    ],
+    "pp2048 @ d32768": [
+      152.054022,
+      164.442747
+    ],
+    "tg64 @ d32768": [
+      9.980943,
+      9.729873
+    ]
+  },
+  "ub2048": {
+    "pp2048 @ d0": [
+      237.318799,
+      235.125717
+    ],
+    "tg64 @ d0": [
+      15.757617,
+      14.781749
+    ],
+    "pp2048 @ d32768": [
+      150.744573,
+      149.087673
+    ],
+    "tg64 @ d32768": [
+      11.837135,
+      8.909728
+    ]
+  }
+}

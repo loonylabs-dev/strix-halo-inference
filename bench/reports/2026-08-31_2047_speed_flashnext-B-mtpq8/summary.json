@@ -1,0 +1,78 @@
+{
+ "label": "flashnext-B-mtpq8",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-08-31 20:47:09",
+ "gtt_gib": 83.13,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "workload": "prose",
+   "depth_n": 70,
+   "prompt_n": 70,
+   "cache_n": 0,
+   "cached_pct": 0.0,
+   "pp_tps": 2.2,
+   "predicted_n": 128,
+   "tg_tps": 0.3,
+   "draft_n": 79,
+   "draft_accepted": 48,
+   "draft_accept_pct": 60.8,
+   "wall_s": 426.7,
+   "copied_pct": 2.7,
+   "reps": 3,
+   "reps_ok": 1,
+   "tg_min": 0.3,
+   "tg_max": 0.3,
+   "asked": 0
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "count",
+   "reps": 3,
+   "asked": 0
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "copy",
+   "reps": 3,
+   "asked": 0
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "prose",
+   "reps": 3,
+   "asked": 16384
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "count",
+   "reps": 3,
+   "asked": 16384
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "copy",
+   "reps": 3,
+   "asked": 16384
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "prose",
+   "reps": 3,
+   "asked": 32768
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "count",
+   "reps": 3,
+   "asked": 32768
+  },
+  {
+   "error": "<urlopen error [Errno 111] Connection refused>",
+   "workload": "copy",
+   "reps": 3,
+   "asked": 32768
+  }
+ ]
+}

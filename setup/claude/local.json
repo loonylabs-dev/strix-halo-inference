@@ -2,8 +2,8 @@
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8090",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "qwen38-low",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen38",
+    "ANTHROPIC_MODEL": "flashnext-low",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "flashnext",
     "API_TIMEOUT_MS": "1800000",
     "API_FORCE_IDLE_TIMEOUT": "0",
     "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",

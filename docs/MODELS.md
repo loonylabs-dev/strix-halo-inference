@@ -158,11 +158,20 @@ shallow depth, 12→49 at 37k, prose +6 to +17 % and never negative —
 acceptance 42-100 % by workload
 (`bench/reports/2026-08-31_2149…/` and `…_2158…/`).
 
-**What stops it today is a hang, not a wall.** The exact serving shape —
-that build plus `draft-mtp,ngram-mod` — generated zero tokens in 39 minutes
-at GPU 97 % on one depth-correctness question, found by the last gate before
-switching. Until that is isolated (suspects and the two experiments are in
-`setup/env/flashnext.env`), the profile says DO NOT SERVE, and
+**The hang that stopped it is resolved — it belonged to the old base.** The
+exact serving shape — `draft-mtp,ngram-mod` — generated zero tokens in 39
+minutes at GPU 97 % on one depth-correctness question, found by the last
+gate before switching. Five isolation experiments on 01.09. pinned it to
+`--spec-type draft-mtp` on the pre-#27941 memory path: on master b10743 +
+the same PR commits (build `b10743-15-g62850522e`) the identical shape
+answers that question, correctness holds 16/16 to 52k, decode at depth is
+2-3x the old build's, and the answer-keeping patch holds (the full matrix:
+`setup/defects.json` → `flashnext-mtp-serving-shape-hangs`).
+
+**What stops it today is only sequence.** The profile still pins the old
+build, so it still says DO NOT SERVE; the switch is the operator's go —
+pin move, re-measurement of the memory figures on the new build, then
+`switch-model.sh`. Until then
 
     python3 setup/lib/budget.py --profile flashnext
 

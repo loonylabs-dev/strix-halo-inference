@@ -110,6 +110,58 @@ class TestPatienceRunsOut(unittest.TestCase):
         self.assertFalse(p.forced("a"))
 
 
+class TestAStaleRivalGivesWayToItsSuccessor(unittest.TestCase):
+    """The 31.08. rule refused to save a prefix whose head was already on
+    disk, written against one session whose tool list churned three times.
+    Four days of traces (29.08.-01.09.) say the real pattern is DRIFT: tool
+    sets went 6 -> 13 -> 21 -> 15 -> 19 -> 20 -> 52 -> 64 -> 87 across
+    sessions and a superseded set never returned. Under drift the refusal
+    keeps the dead file and makes every new session start cold — 80,721
+    tokens, 577 s, measured 01.09. 15:39. So the rule turns around: a rival
+    nobody asked for within the grace gives way; one recently in service
+    still protects its place, which is what stops thrash if a client ever
+    does oscillate between two sets."""
+
+    def test_an_idle_rival_is_evicted(self):
+        evict, keep = P.stale_rivals(
+            now=200_000.0, activity={"old": 10_000.0}, grace_s=86_400.0)
+        self.assertEqual(evict, ["old"])
+        self.assertEqual(keep, [])
+
+    def test_a_rival_in_service_protects_its_place(self):
+        evict, keep = P.stale_rivals(
+            now=200_000.0, activity={"live": 199_000.0}, grace_s=86_400.0)
+        self.assertEqual(evict, [])
+        self.assertEqual(keep, ["live"])
+
+    def test_unknown_activity_reads_as_idle(self):
+        """A sidecar without `last_used` (one measured absence, 01.09.2026)
+        belongs to a prefix nobody has asked for since it was written. The
+        worst a wrong eviction costs is one cold start before the prefix
+        earns its file back; the wrong protection costs a cold start on
+        every session of its successor."""
+        evict, keep = P.stale_rivals(
+            now=200_000.0, activity={"ghost": None}, grace_s=86_400.0)
+        self.assertEqual(evict, ["ghost"])
+        self.assertEqual(keep, [])
+
+    def test_a_mixed_field_splits_and_sorts(self):
+        evict, keep = P.stale_rivals(
+            now=200_000.0,
+            activity={"b": None, "a": 10_000.0, "c": 199_999.0},
+            grace_s=86_400.0)
+        self.assertEqual(evict, ["a", "b"])
+        self.assertEqual(keep, ["c"])
+
+    def test_exactly_at_the_grace_is_idle(self):
+        """The boundary reads as expired, not as in service — a rule, stated
+        so the comparison operator cannot drift silently."""
+        evict, keep = P.stale_rivals(
+            now=100_000.0, activity={"edge": 13_600.0}, grace_s=86_400.0)
+        self.assertEqual(evict, ["edge"])
+        self.assertEqual(keep, [])
+
+
 class TestItCannotDecideByItself(unittest.TestCase):
     """No clock, no disk, no network — every time comes from the caller. That
     is what lets seven days of real traffic run through it in milliseconds,

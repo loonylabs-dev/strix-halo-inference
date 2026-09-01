@@ -91,6 +91,9 @@ link_ "$SRC/gateway/modes.py"         "$LIB/modes.py"
 # The third such module, added 29.08.2026 — and tests/test_install.py caught
 # it missing the same day it was written, which is what it is for.
 link_ "$SRC/gateway/tracelog.py"      "$LIB/tracelog.py"
+# The fourth, added 01.09.2026 — caught missing by the same test, before the
+# first restart could fail instead of after.
+link_ "$SRC/gateway/savepolicy.py"    "$LIB/savepolicy.py"
 link_ "$SRC/gateway/gateway.py"       "$LIB/gateway.py"
 link_ "$REPO/tools/prewarm.py"        "$LIB/prewarm.py"
 link_ "$SRC/waitformodel"             "$LIB/waitformodel"

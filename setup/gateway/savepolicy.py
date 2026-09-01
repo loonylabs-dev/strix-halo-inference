@@ -55,6 +55,28 @@ DEFAULT_DEBOUNCE_S = 10.0
 DEFAULT_MAX_DEFERS = 3
 
 
+def stale_rivals(now, activity, grace_s):
+    """Split same-head rivals into (evict, keep) for a replacement decision.
+
+    `activity` maps rival id -> when a request for that saved prefix last
+    arrived (epoch seconds), or None where nothing is recorded. None reads as
+    idle: the worst a wrong eviction costs is one cold start before the
+    prefix earns its file back, while a wrong protection costs a cold start
+    on EVERY session of the successor — the 80,721-token starts of
+    01.09.2026 were that side of the asymmetry.
+
+    A rival asked for within `grace_s` proves the incumbent is still in
+    service; the newcomer is then the churn and nothing should be written.
+    Without one, the incumbent is the leftover of a drifted tool set and
+    gives way. The boundary counts as expired. Both lists come back sorted
+    so logs and traces read stably.
+    """
+    evict, keep = [], []
+    for id_, t in activity.items():
+        (keep if t is not None and (now - t) < grace_s else evict).append(id_)
+    return sorted(evict), sorted(keep)
+
+
 class Policy:
     """The decision, held as state that a caller can persist and restore.
 

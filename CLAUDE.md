@@ -11,7 +11,7 @@ home named below.
   over the baton: run `git log <its sha>..HEAD --oneline` before acting on it.
 - `python3 setup/lib/defects.py --upstream` — not optional. It was right on
   30.08.2026 and walked past twice.
-- The gate is `bash tests/run.sh` (~15 s, no GPU). Green before AND after a
+- The gate is `bash tests/run.sh` (~20 s, no GPU). Green before AND after a
   change; nothing gets committed on a red or unrun gate.
 
 ## Hard rules, each one paid for

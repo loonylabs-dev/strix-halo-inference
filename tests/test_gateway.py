@@ -2367,15 +2367,44 @@ class TestAChurningPrefixIsNotWorthTheWait(unittest.TestCase):
     it. Measured 30.08. 17:46: 80.9 + 454.6 with the save, and ~539 s for the
     same turn computing 53,638 tokens in one pass without it. What the save
     ADDS is the write: 237 ms for 878 MB.
+
+    TURNED AROUND 01.09.2026: the blanket refusal assumed churn — a set that
+    flips back and forth. Four days of traces say the sets DRIFT and never
+    return, so the refusal kept dead files and charged every new session a
+    full cold start (80,721 tokens, 577 s, measured 15:39). Now only a rival
+    that was asked for within RIVAL_GRACE_S still stops the save; an idle one
+    is deleted and its successor takes the disk. The split is
+    savepolicy.stale_rivals, tested where it lives.
     """
 
     def setUp(self):
         self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
 
-    def test_a_rival_already_on_disk_stops_the_save(self):
-        self.assertIn("if saved_rivals:", self.src)
+    def test_an_active_rival_still_stops_the_save(self):
+        self.assertIn("SP.stale_rivals", self.src)
         self.assertIn('"save-skipped"', self.src)
+
+    def test_a_stale_rival_gives_way_to_its_successor(self):
+        self.assertIn('"save-replaced"', self.src)
+        self.assertIn("drop_saved(", self.src)
+
+    def test_replacement_deletes_rather_than_quarantines(self):
+        """Quarantine is for a file that answered WRONGLY and is evidence.
+        A file whose prompt shape no client sends any more is not evidence
+        of anything; keeping it as .unusable would spend the gigabytes the
+        replacement exists to stop wasting."""
+        self.assertIn("Deletion, not quarantine", self.src)
+
+    def test_the_grace_has_one_home_and_is_settable(self):
+        self.assertIn('RIVAL_GRACE_S = float(env("RIVAL_GRACE_S"', self.src)
+
+    def test_the_activity_reading_survives_a_restart(self):
+        """The stamp comes from the sidecar record_use writes, not from
+        gateway memory — a counter that forgets on restart was the hole in
+        the savepolicy ledger once already."""
+        self.assertIn("def last_activity_epoch(", self.src)
+        self.assertIn('d.get("last_used")', self.src)
 
     def test_only_rivals_ON_DISK_count(self):
         """A collision with a prefix merely SEEN is the normal state of two

@@ -55,6 +55,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dialects as DIA                                   # noqa: E402
 import modes as MODES_LIB                                # noqa: E402
 import tracelog as TRACE_LIB                                # noqa: E402
+import savepolicy as SP                                     # noqa: E402
 
 # Off unless somebody switches it on with tools/tracelog.py, re-read per event so
 # the switch works while this is serving. Every call site below is wrapped in
@@ -255,6 +256,12 @@ SAVE_TIMEOUT_S = int(env("SAVE_TIMEOUT_S", default="600"))
 # least-recently-used (see prewarm.py cleanup).
 AUTO_SAVE = env("AUTO_SAVE", "AUTO_SICHERN", "1") == "1"
 AUTO_MAX_GB  = float(os.environ.get("AUTO_MAX_GB", 20))
+# How long a saved same-head rival stays protected after its last request.
+# Heuristic, not derived: the traces of 29.08.-01.09.2026 show same-day reuse
+# dominating and superseded tool sets never returning, so one day separates
+# "still in service" from "leftover" THERE; no oscillating client has been
+# measured against this value.
+RIVAL_GRACE_S = float(env("RIVAL_GRACE_S", "RIVALEN_SCHONFRIST_S", 86400))
 # Below this prefix size saving is not worth it: a few hundred tokens are
 # computed in fractions of a second. Without the limit every smoke test with a
 # minimal body drops a file into the store — in production there was a prefix
@@ -391,6 +398,56 @@ def record_use(id_):
             json.dump(d, f, indent=2, ensure_ascii=False)
     except Exception as e:
         log("use not recorded (%s): %r" % (name, e))
+
+def last_activity_epoch(id_):
+    """When a request for this saved prefix last arrived, from its sidecar.
+
+    `record_use` writes `last_used` beside the file (hourly-capped), so the
+    reading survives gateway restarts — a stamp in gateway memory would make
+    every rival look idle after each restart. None where the sidecar or the
+    field is missing; savepolicy.stale_rivals reads that as idle. `saved_at`
+    deliberately does NOT count: a file can be freshly written for a shape no
+    client sends any more — 023575f5abf6 on 01.09.2026 was exactly that, and
+    counting its save time would have protected it against the successor.
+    """
+    name = SAVED.get(id_)
+    if not name:
+        return None
+    try:
+        with open(os.path.join(SLOT_PATH, name + ".json"),
+                  encoding="utf-8") as f:
+            d = json.load(f)
+        stamp = d.get("last_used")
+        if not stamp:
+            return None
+        return time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M"))
+    except Exception:
+        return None
+
+def drop_saved(id_):
+    """Delete a saved prefix — bin and sidecar — and forget it. Returns the
+    bytes freed.
+
+    Deletion, not quarantine: quarantine is for a file that answered WRONGLY
+    and is evidence worth reading before it goes. A file whose prompt shape
+    no client sends any more is evidence of nothing; keeping it as
+    .unusable would spend the very gigabytes the replacement exists to stop
+    wasting.
+    """
+    global SAVED
+    name = SAVED.get(id_)
+    if not name:
+        return 0
+    freed = 0
+    for ext in (".bin", ".json"):
+        path = os.path.join(SLOT_PATH, name + ext)
+        try:
+            freed += os.path.getsize(path)
+            os.remove(path)
+        except OSError:
+            pass
+    SAVED.pop(id_, None)
+    return freed
 
 def load_saved():
     table = {}
@@ -1816,19 +1873,44 @@ async def handler(req):
         # A collision with a prefix merely SEEN is not enough — that is the
         # normal state of two prompt types in one session, and refusing there
         # would stop the store from ever filling.
+        #
+        # TURNED AROUND 01.09.2026: the blanket refusal above assumed the
+        # sets flip back and forth. Four days of traces say they DRIFT
+        # (6 -> 13 -> 21 -> 15 -> 19 -> 20 -> 52 -> 64 -> 87 tools across
+        # sessions) and a superseded set never returned — so the refusal kept
+        # dead files and charged every new session a full cold start: 80,721
+        # tokens, 577 s, the case this changed for. Now only a rival that was
+        # asked for within RIVAL_GRACE_S still stops the save; an idle one is
+        # deleted and its successor takes the disk. If a client ever does
+        # oscillate, the in-service side of the split is what stops the
+        # thrash.
         saved_rivals = [k for k in SAVED if k != ident
                         and (PREFIXES.get(k) or {}).get("head") == head] \
             if (ident and head) else []
         if (AUTO_SAVE and cold and ident and ident not in SAVED
                 and out is not None
                 and len(prefix_text(p, dialect)) >= AUTO_MIN_CHARS):
-            if saved_rivals:
-                log("NOTE        not saving %s: %s is already on disk with the "
-                    "same head — a churning prefix costs the wait and is stale "
-                    "by the next tool change" % (ident, ", ".join(saved_rivals[:3])))
+            evict, keep = SP.stale_rivals(
+                time.time(),
+                {k: last_activity_epoch(k) for k in saved_rivals},
+                RIVAL_GRACE_S) if saved_rivals else ([], [])
+            if keep:
+                log("NOTE        not saving %s: %s is on disk with the same "
+                    "head and was asked for within %.0f h — the incumbent is "
+                    "in service, this head is the churn"
+                    % (ident, ", ".join(keep[:3]), RIVAL_GRACE_S / 3600))
                 TRACE.record("save-skipped",
-                             summary={"prefix": ident, "rivals": saved_rivals[:5]})
+                             summary={"prefix": ident, "rivals": keep[:5]})
             else:
+                for k in evict:
+                    freed = drop_saved(k)
+                    log("NOTE        replacing %s: same head as %s, idle "
+                        "beyond %.0f h — %.1f GB freed"
+                        % (k, ident, RIVAL_GRACE_S / 3600, freed / 1e9))
+                if evict:
+                    TRACE.record("save-replaced",
+                                 summary={"prefix": ident,
+                                          "evicted": evict[:5]})
                 early = await save_prefix_first(ident, json.loads(out), dialect,
                                                 req=req, resp=early,
                                                 streaming=streaming)

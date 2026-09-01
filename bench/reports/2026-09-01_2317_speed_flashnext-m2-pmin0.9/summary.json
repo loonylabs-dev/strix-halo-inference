@@ -1,0 +1,50 @@
+{
+ "label": "flashnext-m2-pmin0.9",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-09-01 23:17:36",
+ "gtt_gib": 84.08,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "workload": "prose",
+   "depth_n": 70,
+   "prompt_n": 70,
+   "cache_n": 0,
+   "cached_pct": 0.0,
+   "pp_tps": 69.3,
+   "predicted_n": 128,
+   "tg_tps": 18.3,
+   "draft_n": 63,
+   "draft_accepted": 55,
+   "draft_accept_pct": 82.2,
+   "wall_s": 7.32,
+   "copied_pct": 0.0,
+   "reps": 5,
+   "reps_ok": 5,
+   "tg_min": 17.9,
+   "tg_max": 20.1,
+   "asked": 0
+  },
+  {
+   "workload": "prose",
+   "depth_n": 40060,
+   "prompt_n": 40060,
+   "cache_n": 0,
+   "cached_pct": 0.0,
+   "pp_tps": 190.4,
+   "predicted_n": 128,
+   "tg_tps": 13.3,
+   "draft_n": 115,
+   "draft_accepted": 53,
+   "draft_accept_pct": 46.1,
+   "wall_s": 220.06,
+   "copied_pct": 4.6,
+   "reps": 5,
+   "reps_ok": 5,
+   "tg_min": 11.3,
+   "tg_max": 13.8,
+   "asked": 36000
+  }
+ ]
+}

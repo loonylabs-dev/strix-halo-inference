@@ -259,6 +259,16 @@ Building into a directory of its own is not tidiness. `llama-server` is a 12 KB
 executable that maps `libggml-hip.so` out of the same `bin/`; overwriting a
 mapped library is a SIGBUS in the running process, not an error in the build.
 
+And the guard lives in build-llama.sh, NOT in cmake — a direct
+`cmake --build <dir> --target llama-quantize` walks straight past it. Done
+01.09.2026 to get a quantize tool: it relinked seven libraries in the
+directory the PRODUCTION server had mapped, from a source tree that was
+checked out on a DIFFERENT branch — resident pages stay old, re-faulted
+pages read new code, and nothing says so until it crashes. The repair cost a
+production stop, a clean rebuild of the same commit and copying the twin
+libraries back. Build extra tools only into a build directory nothing runs
+from, with the source tree checked out on that directory's own commit.
+
 **Four built-in families plus the ones you name, and only one of them can be
 served.** A build that differs from the serving one is a SUBJECT — something
 to measure against it, never something to point the symlink at:

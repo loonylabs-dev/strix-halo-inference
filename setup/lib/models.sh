@@ -216,7 +216,13 @@ model_source() { model_meta "$1" MODEL_SOURCE ""; }
 # is the honest state. See the note in setup/env/gemma31.env for why an empty
 # value must not be filled in from the profile next door.
 model_kv()      { model_meta "$1" MODEL_KV_KIB_PER_TOKEN ""; }
-model_gtt_gib() { model_meta "$1" MODEL_WEIGHTS_GTT_GIB ""; }
+# MODEL_GTT_BASE_GIB / MODEL_HOST_ANON_GIB — the names budget.py --from-env
+# actually reads. Until 01.09.2026 this read MODEL_WEIGHTS_GTT_GIB, a name no
+# profile declares and budget.py never reads: the switch preflight therefore
+# weighed flashnext by file size (103.7 GiB) instead of its measured 80.8 and
+# refused a profile that fits. tests/test_models.py pins the repaired path.
+model_gtt_gib()  { model_meta "$1" MODEL_GTT_BASE_GIB ""; }
+model_anon_gib() { model_meta "$1" MODEL_HOST_ANON_GIB ""; }
 
 # The binary a profile starts. Same fallback the unit has, so a profile
 # without LLAMA_BIN reads the same here as it behaves there.

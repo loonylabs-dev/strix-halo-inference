@@ -273,7 +273,8 @@ fi
 if [ -r "$REPO/setup/lib/budget.py" ]; then
   if BUDGET_OUT="$(LLAMA_ARGS="$ARGS" \
         MODEL_KV_KIB_PER_TOKEN="$(model_kv "$NEW")" \
-        MODEL_WEIGHTS_GTT_GIB="$(model_gtt_gib "$NEW")" \
+        MODEL_GTT_BASE_GIB="$(model_gtt_gib "$NEW")" \
+        MODEL_HOST_ANON_GIB="$(model_anon_gib "$NEW")" \
         python3 "$REPO/setup/lib/budget.py" --from-env --static --check 2>&1)"; then
     ok "memory budget fits this machine"
     printf '%s\n' "$BUDGET_OUT" | sed 's/^/  /'

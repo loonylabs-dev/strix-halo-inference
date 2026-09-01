@@ -553,15 +553,15 @@ class TestSwitchPreflight(unittest.TestCase):
         with open(budget, "w", encoding="utf-8") as fh:
             fh.write(text)
 
-    def write_profile(self, name="ghost"):
+    def write_profile(self, name="ghost", extra=""):
         with open(os.path.join(self.repo, "setup", "env", name + ".env"),
                   "w", encoding="utf-8") as f:
             f.write("MODEL_TITLE=synthetic model for tests\n"
                     "MODEL_SWA=no\n"
                     "LLAMA_ARGS=--alias %s -m %s \\\n"
                     "  -ngl 999 -c 8192 -np 1 --host 127.0.0.1 --port 8080\n"
-                    "LLAMA_BIN=llama.cpp/build-vulkan/bin/llama-server\n"
-                    % (name, self.gguf))
+                    "LLAMA_BIN=llama.cpp/build-vulkan/bin/llama-server\n%s"
+                    % (name, self.gguf, extra))
 
     def add_to_conflicts(self, name="ghost"):
         p = os.path.join(self.repo, "setup", "systemd", "llama-user@.service")
@@ -607,6 +607,32 @@ class TestSwitchPreflight(unittest.TestCase):
                              "the script wrote into %s" % cfg)
 
     # --- the aborts -------------------------------------------------------
+
+    def test_preflight_weighs_the_profiles_measured_figures(self):
+        """A profile whose FILE-SIZE estimate does not fit but whose measured
+        MODEL_GTT_BASE_GIB / MODEL_HOST_ANON_GIB do must pass the memory
+        preflight — flashnext is exactly this shape (103.7 GiB of file, 80.8
+        in GTT, 0.31 resident). On 01.09.2026 the switch refused it with the
+        file arithmetic because the preflight forwarded MODEL_WEIGHTS_GTT_GIB,
+        a name budget.py --from-env does not read, and forwarded the two
+        measured figures not at all."""
+        self.write_profile("ghost",
+                           extra="MODEL_GTT_BASE_GIB=0.4\n"
+                                 "MODEL_HOST_ANON_GIB=0.05\n")
+        self.add_to_conflicts()
+        # LLM_MODEL_GIB overstates the weights far beyond the shrunk machine
+        # floor; only the measured figures can make this profile fit.
+        u = dict(os.environ)
+        u["HOME"] = self.home
+        u["SLOTS"] = os.path.join(self.home, ".cache", "llama-slots")
+        u["LLM_MODEL_GIB"] = "500"
+        r = subprocess.run(
+            ["bash", os.path.join(self.repo, "setup", "switch-model.sh"),
+             "ghost", "--dry-run"],
+            capture_output=True, text=True, timeout=120, env=u)
+        self.assertNotIn("does not fit", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.untouched()
 
     def test_an_unknown_model_aborts_and_lists_the_real_ones(self):
         r = self.switch("not-a-model", "--dry-run")

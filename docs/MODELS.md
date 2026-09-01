@@ -116,13 +116,13 @@ request time, so prefill sat inside every decode number.
 
 | Name | For |
 |---|---|
-| `qwen38` | coding agent, vision, judge — production |
+| `qwen38` | coding agent, vision, judge — production until 01.09.2026, kept as the way back |
 | `gemma26` | fast sidekick, 13.5 GiB |
 | `gemma31` | prose, 16.4 GiB |
 | `gptoss` | judge and evals, 59.0 GiB, very cheap KV |
 | `laguna` | the predecessor, kept as the way back |
 | `batch` | batch classification, small window |
-| `flashnext` | Qwen3.8-Flash-Next — **runs, not served.** See below |
+| `flashnext` | Qwen3.8-Flash-Next — **production since 01.09.2026.** See below |
 
 ## Not only language models any more
 
@@ -138,7 +138,7 @@ voice cloning; text-to-video — wan2.1-1.3b ~9 min per 2 s clip at 480p
 [../setup/README.md](../setup/README.md) — and `media/README.md` for the
 border that keeps the base install torch-free.
 
-### Why Flash-Next runs and is not served
+### How Flash-Next became production (and why it took a week)
 
 It is not slow, and since 31 August it no longer runs out of memory either.
 Both blockers of the first week fell to measurements:
@@ -168,14 +168,18 @@ answers that question, correctness holds 16/16 to 52k, decode at depth is
 2-3x the old build's, and the answer-keeping patch holds (the full matrix:
 `setup/defects.json` → `flashnext-mtp-serving-shape-hangs`).
 
-**What stops it today is only sequence.** The profile still pins the old
-build, so it still says DO NOT SERVE; the switch is the operator's go —
-pin move, re-measurement of the memory figures on the new build, then
-`switch-model.sh`. Until then
+**It serves since 01.09.2026 ~21:4x**, on the operator's go: pin moved to
+the m2 build, RssAnon re-measured on exactly that binary (0.31 GiB — the
+#27837 lazy path is native), then `switch-model.sh flashnext` — which on
+its first real run surfaced and got fixed a preflight bug of its own (it
+weighed the file size instead of the measured figures; red→green in
+tests/test_models.py). Verified serving: the m2 binary behind the unit,
+smoke through the gateway, RssAnon 0.53 GiB warm.
 
     python3 setup/lib/budget.py --profile flashnext
 
-still prints the arithmetic that guards every start. qwen38 keeps serving.
+still prints the arithmetic that guards every start. qwen38 stays one
+`switch-model.sh qwen38` away.
 
 ---
 

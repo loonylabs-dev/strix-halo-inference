@@ -137,7 +137,7 @@ build — not at a fork's next release.
 | **set the machine up from scratch** — BIOS to first token | [docs/setup/](docs/setup/README.md), six chapters |
 | **run it** — services, boot, the four ceilings | [setup/README.md](setup/README.md) |
 | point **Claude Code or an OpenAI agent** at it — yours or somebody else's | [docs/CONSUMERS.md](docs/CONSUMERS.md), and `bash setup/consumer-info.sh` for the values |
-| decide **which model to take**, and why Flash-Next is not served | [docs/MODELS.md](docs/MODELS.md) |
+| decide **which model to take**, and how Flash-Next became production | [docs/MODELS.md](docs/MODELS.md) |
 | generate **images, speech or video** on the same box | [`setup/workloads/`](setup/workloads/) — the profiles carry every measured number — and the workload-registry section of [setup/README.md](setup/README.md) |
 | **verify** a running box — the gate, the live lanes, the smoke test | [tests/README.md](tests/README.md) |
 | see the **raw measurements** | [docs/measurements/](docs/measurements/README.md) and [`bench/reports/`](bench/reports/) |

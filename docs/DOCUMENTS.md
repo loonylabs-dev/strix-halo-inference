@@ -106,7 +106,7 @@ the maintainer's disk and excluded by `.gitignore`:
 | | |
 |---|---|
 | `docs/HANDOVER.md` | a session log — what was built on which day, what is open. Over 2,000 lines, and it is the record of DEVELOPING this stack, not of running it |
-| `docs/FLASHNEXT-PLAN.md` | the closed plan behind a model that is not served. Its conclusion is public in [MODELS.md](MODELS.md); the plan is the reasoning that got there |
+| `docs/FLASHNEXT-PLAN.md` | the closed plan from the week Flash-Next was put down (it serves since 01.09.2026). Its conclusion is public in [MODELS.md](MODELS.md); the plan is the reasoning of that week |
 | `setup/scripts/watch-flashnext.sh` | a watcher for two upstream conditions. Useful to one person on one machine |
 
 Nothing in this repository depends on them. That is checked rather than

@@ -628,7 +628,7 @@
         "https://github.com/ggml-org/llama.cpp/pull/28068",
         "https://github.com/ggml-org/llama.cpp/pull/28136"
       ],
-      "status": "RESOLVED BY THE BASE MOVING, measured 01.09.2026 evening in five experiments (a)-(e): the hang needs --spec-type draft-mtp AND the pre-#27941 memory path — on master b10743 + the same PR commits (build b10743-15-g62850522e) the identical serving shape answers the hanging question correctly. The three hanging builds (C2, b10664-10, b10664-9-no27977) stay quarantined; the entry stays until a build from the m2 lineage passes the FULL pre-switch gate battery and serves, at which point it retires. Nothing to report upstream: the defect never existed on plain master.",
+      "status": "RETIRED 01.09.2026 ~21:4x — its own retirement condition met the same evening: the m2 build (b10743-15-g62850522e) passed the full gate battery AND serves as production (switch-model.sh on the operator's go, smoke through the gateway ok). The cause stands as measured in five experiments: the hang needed --spec-type draft-mtp AND the pre-#27941 memory path; on the m2 base the identical shape is clean. The three hanging builds (C2 b10726-10, b10664-10, b10664-9-no27977) stay quarantined and must never serve. Nothing to report upstream: the defect never existed on plain master.",
       "first_seen": "2026-08-31",
       "last_checked": "2026-09-01"
     },

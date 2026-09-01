@@ -90,19 +90,23 @@ server actually pinned and holds it against the declaration. A declared figure
 with nothing checking it is an assertion; one that is re-checked after every
 start is a measurement with a shelf life.
 """
-import argparse, glob, json, os, re, sys
+import argparse, glob, hashlib, json, os, re, sys
 from collections import namedtuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from systemdfile import llama_args, variable, flag, expand   # noqa: E402
+from systemdfile import llama_args, args_of, variable, flag, expand  # noqa: E402
 
 __all__ = ["Machine", "Plan", "Verdict", "Comparison", "compare",
            "plan", "verdict", "render", "brief", "cache_windows",
            "declared_kv", "declared_gtt", "declared_anon", "declared_lazy",
            "lazy_relief",
            "read_machine", "weights_gib", "kv_kib_per_token", "cram_gib",
-           "running_argv", "observe", "HOST_RESERVE_GIB", "SLACK"]
+           "running_argv", "observe", "HOST_RESERVE_GIB", "SLACK",
+           "workload_plan", "workload_verdict", "workload_files_gib",
+           "declared_workload_gtt", "declared_workload_rss",
+           "machine_identity", "HF_CACHE_KEYWORD",
+           "WORKLOAD_ADVICE", "WORKLOAD_BRIEF_HINT"]
 
 # --- the constants, and what each one is standing in for ---------------------
 
@@ -507,6 +511,293 @@ def _is_the_observed_binary(env_path, binary):
     return os.path.realpath(binary) == want
 
 
+# --- foreign workloads -------------------------------------------------------
+#
+# setup/workloads/*.env — jobs that are not llama-server and still pin GTT: a
+# diffusion run, later audio and video. The machine does not care whose bytes
+# hang in GTT, so they answer to the same guard. The profile discipline
+# mirrors the model profiles: figures are MEASURED and travel with a date, a
+# method and the machine they were taken on; a profile without them is
+# charged an estimate from its model files, and the verdict says ESTIMATE out
+# loud every time.
+
+# An observed peak of a batch job gets a margin on top; a llama gtt_base does
+# not. The difference is what was observed: gtt_base is a static allocation
+# (weights + buffers, stable across runs), a diffusion peak is workload-shaped
+# — the next resolution or step count can sit above it. 10 % is a heuristic,
+# not derived; overestimating is the direction a guard may err in.
+WORKLOAD_PEAK_MARGIN = 0.10
+
+# WORKLOAD_FILES may declare that the weights live in a framework's own
+# content-addressed cache (Hugging Face hub) whose path cannot be named
+# before the first download. A CONTRACT KEYWORD, not a never-resolving path
+# exploited for its side effect — the first version was exactly that, in one
+# profile's comment, and the next author would have minted a second sentinel.
+HF_CACHE_KEYWORD = "hf-cache"
+_HF_CACHE_ITEM = "framework-cached weights (%s)" % HF_CACHE_KEYWORD
+_FOREIGN_MACHINE_ITEM = "measured on a different machine"
+_UNVERIFIED_MACHINE_ITEM = "figures not tied to this machine"
+_STALE_BUILD_ITEM = "figures measured on another build"
+_STALE_LOCK_ITEM = "figures measured on another venv lock"
+
+# The repo this budget.py belongs to — resolved through the install
+# symlink, so a WORKLOAD_LOCK stays repo-relative (a profile may not
+# carry a repo path; the repo's location is a property of the machine).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.realpath(__file__))))
+
+# The escape hatches a WORKLOAD refusal may honestly name. The default
+# refusal advice names LLM_MODEL_GIB and friends, none of which
+# workload_plan() reads — following it dead-ends at LLM_NO_MEMORY_GUARD=1,
+# the off-switch escalation the design warns about.
+WORKLOAD_ADVICE = (
+    "\n  A wrong workload figure is a declaration in the profile: re-measure\n"
+    "  under bench/sideserver.py --workload and correct WORKLOAD_GTT_GIB /\n"
+    "  WORKLOAD_HOST_RSS_GIB (date, method, machine). LLM_NO_MEMORY_GUARD=1\n"
+    "  switches the guard off, which is a different and worse thing.\n")
+WORKLOAD_BRIEF_HINT = ("  (footprint ESTIMATED — run once under "
+                       "bench/sideserver.py and declare WORKLOAD_GTT_GIB / "
+                       "WORKLOAD_HOST_RSS_GIB)")
+
+
+def declared_workload_gtt(env_path):
+    """WORKLOAD_GTT_GIB from a workload profile, or None."""
+    return _declared_number(env_path, "WORKLOAD_GTT_GIB")
+
+
+def declared_workload_rss(env_path):
+    """WORKLOAD_HOST_RSS_GIB from a workload profile, or None."""
+    return _declared_number(env_path, "WORKLOAD_HOST_RSS_GIB")
+
+
+def workload_files_gib(env_path, size_of=None, models=None):
+    """Every byte WORKLOAD_FILES names, in GiB, or None if any is unreadable.
+
+    None means "not our call" — an unreadable path is not evidence that a
+    workload is small. Same rule as weights_gib(), and since 01.09.2026 the
+    same GLOBBING too: a `part-*.st` entry is expanded, and a pattern that
+    matches nothing is a typo (→ None), not a small workload. The keyword
+    `hf-cache` is the declared framework-cache state — also None here, and
+    workload_plan() names it instead of mumbling "could not be read".
+    """
+    size_of = size_of or os.path.getsize
+    raw = variable(env_path, "WORKLOAD_FILES")
+    if not raw or raw.strip() == HF_CACHE_KEYWORD:
+        return None
+    total = 0
+    for token in expand(raw, models=models).split():
+        # An empty glob falls back to the literal token, whose getsize then
+        # raises — one code path for typo and for missing file. The
+        # fallback also keeps injected size_of fakes (tests) working on
+        # paths that exist nowhere.
+        for path in (sorted(glob.glob(token)) or [token]):
+            try:
+                total += size_of(path)
+            except OSError:
+                return None
+    return total / 1073741824.0
+
+
+def workload_plan(env_path, size_of=None, models=None, what=None,
+                  identity=None):
+    """What starting this workload will cost. Same Plan the llama path uses,
+    so verdict(), render() and refusal() need no second implementation.
+
+    Measured profile: the observed GTT peak plus its margin, and the RssAnon
+    peak as the resident-outside term. Unmeasured profile: the model files
+    plus the buffer term — the same file-size arithmetic a llama profile
+    without declarations gets, and estimated=True so nobody mistakes it.
+
+    `identity` is the running machine (machine_identity() unless a test
+    hands one in). Figures measured on a DIFFERENT gfx keep their numbers —
+    they still beat file sizes — but the plan says ESTIMATE again: on a
+    smaller machine than the one that measured, trusting them is the freeze
+    direction. The Medusa insurance, bought while it costs nothing.
+    """
+    what = what or os.path.basename(env_path).rsplit(".env", 1)[0]
+    gtt = declared_workload_gtt(env_path)
+    if gtt is not None:
+        items = [Item("GTT at peak", gtt, "measured"),
+                 Item("margin on an observed peak (%.0f %%)"
+                      % (WORKLOAD_PEAK_MARGIN * 100),
+                      gtt * WORKLOAD_PEAK_MARGIN, "margin")]
+        gtt_need = gtt * (1.0 + WORKLOAD_PEAK_MARGIN)
+        host_need = gtt_need
+        rss = declared_workload_rss(env_path)
+        if rss is not None:
+            items.append(Item("resident outside GTT (RssAnon at peak)",
+                              rss, "measured"))
+            host_need += rss
+        estimated = False
+        measured_on = variable(env_path, "WORKLOAD_MEASURED_ON") or ""
+        ident = identity if identity is not None else machine_identity()
+        here = (ident or {}).get("gfx")
+        there = re.search(r"gfx[0-9a-f]+", measured_on)
+        if here and there and there.group(0) != here:
+            estimated = True
+            items.append(Item(_FOREIGN_MACHINE_ITEM, 0.0, measured_on))
+        elif not (here and there):
+            # here=None (kfd unreadable, non-AMD box) or a MEASURED_ON
+            # without a gfx token: the figures cannot be TIED to this
+            # machine. `if here and there` used to treat both as "same
+            # machine" — the silent bypass of exactly this insurance, in
+            # the freeze direction it was bought against (re-review sweep,
+            # 01.09.2026). Unknown is not a match.
+            estimated = True
+            items.append(Item(_UNVERIFIED_MACHINE_ITEM, 0.0,
+                              measured_on or "no WORKLOAD_MEASURED_ON"))
+        # The runtime half of tests/test_workloads.py's pinned-build
+        # contract: the tree IS the installation, so a hand-edited
+        # WORKLOAD_CMD (no gate run) must not keep stale figures guarding
+        # as measured — the llama path has _is_the_observed_binary for
+        # the same reason (review, 01.09.2026).
+        cmd = " ".join(args_of(env_path, "WORKLOAD_CMD") or [])
+        pinned = re.search(r"build-vulkan-([0-9a-f]{7,})", cmd)
+        if pinned and measured_on and pinned.group(1) not in measured_on:
+            estimated = True
+            items.append(Item(_STALE_BUILD_ITEM, 0.0,
+                              "CMD pins build-vulkan-%s, figures were "
+                              "measured on %s" % (pinned.group(1),
+                                                  measured_on)))
+        # The torch lane's symmetric check (ultrareview, 01.09.2026): a
+        # venv CMD has no build id — the venv's identity is its
+        # requirements.lock (the torch lane's LLAMA_BIN). A profile that
+        # declares WORKLOAD_LOCK must carry the lock's sha256 in
+        # MEASURED_ON, or `setup-venv.sh --relock` rewrites the measured
+        # stack while the old figures keep guarding. Unknown is not a
+        # match, so an unreadable lock degrades too.
+        lock_rel = variable(env_path, "WORKLOAD_LOCK")
+        if lock_rel:
+            lock_path = lock_rel if os.path.isabs(lock_rel) else \
+                os.path.join(_REPO_ROOT, lock_rel)
+            try:
+                with open(lock_path, "rb") as fh:
+                    digest = hashlib.sha256(fh.read()).hexdigest()
+            except OSError:
+                digest = None
+            stamp = re.search(r"lock sha256:([0-9a-f]{8,})", measured_on)
+            if (digest is None or stamp is None
+                    or not digest.startswith(stamp.group(1))):
+                estimated = True
+                items.append(Item(
+                    _STALE_LOCK_ITEM, 0.0,
+                    "the lock %s is sha256:%s, figures were measured on %s"
+                    % (lock_rel,
+                       (digest or "unreadable")[:12],
+                       ("lock sha256:%s" % stamp.group(1)) if stamp
+                       else "an unstamped venv")))
+        return Plan(what=what, gtt_gib=gtt_need, host_gib=host_need,
+                    items=items, estimated=estimated)
+    raw_files = variable(env_path, "WORKLOAD_FILES") or ""
+    if raw_files.strip() == HF_CACHE_KEYWORD:
+        return Plan(what=what, gtt_gib=None, host_gib=None,
+                    items=[Item(_HF_CACHE_ITEM, 0.0,
+                                "unweighable before the first fenced run")],
+                    estimated=True)
+    files = workload_files_gib(env_path, size_of, models)
+    if files is None:
+        return Plan(what=what, gtt_gib=None, host_gib=None, items=[],
+                    estimated=True)
+    buf = buffers_gib(files)
+    how = "floor" if buf == BUFFER_FLOOR_GIB else "%.0f %%" % (BUFFER_FRACTION * 100)
+    items = [Item("model files", files, "file"),
+             Item("compute buffers and loader", buf, how)]
+    return Plan(what=what, gtt_gib=files + buf, host_gib=files + buf,
+                items=items, estimated=True)
+
+
+def workload_verdict(p, machine, reserve=None):
+    """verdict(), with the estimate note pointed at the WORKLOAD_* fields.
+
+    The llama wording names MODEL_KV_KIB_PER_TOKEN, which a workload profile
+    does not have — a note that sends the reader to a field they cannot fill
+    is worse than none. Two plan shapes carry their own wording: declared
+    hf-cache weights, and figures measured on a different machine.
+    """
+    v = verdict(p, machine, reserve)
+    if not p.estimated:
+        return v
+    notes = [n for n in v.notes if "MODEL_KV_KIB_PER_TOKEN" not in n]
+    tagged = False
+    if any(it.name == _HF_CACHE_ITEM for it in p.items):
+        notes = [n for n in notes if "could not be read" not in n]
+        notes.append("framework-cached weights (%s) — unweighable before "
+                     "the first fenced run declares figures"
+                     % HF_CACHE_KEYWORD)
+        tagged = True
+    if any(it.name == _FOREIGN_MACHINE_ITEM for it in p.items):
+        src = next(it.source for it in p.items
+                   if it.name == _FOREIGN_MACHINE_ITEM)
+        notes.append("the figures were measured on a different machine "
+                     "(%s) — treated as ESTIMATES here; re-measure under "
+                     "bench/sideserver.py and re-declare" % src)
+        tagged = True
+    if any(it.name == _UNVERIFIED_MACHINE_ITEM for it in p.items):
+        src = next(it.source for it in p.items
+                   if it.name == _UNVERIFIED_MACHINE_ITEM)
+        notes.append("the figures cannot be tied to THIS machine (running "
+                     "gfx unknown, or no gfx named in: %s) — treated as "
+                     "ESTIMATES here; re-measure under bench/sideserver.py "
+                     "and re-declare" % src)
+        tagged = True
+    if any(it.name == _STALE_BUILD_ITEM for it in p.items):
+        src = next(it.source for it in p.items
+                   if it.name == _STALE_BUILD_ITEM)
+        notes.append("%s — the CMD was repointed without re-measuring, so "
+                     "the figures are ESTIMATES again; re-measure under "
+                     "bench/sideserver.py and re-declare" % src)
+        tagged = True
+    if any(it.name == _STALE_LOCK_ITEM for it in p.items):
+        src = next(it.source for it in p.items
+                   if it.name == _STALE_LOCK_ITEM)
+        notes.append("%s — the venv was relocked (or the lock is "
+                     "unreadable) without re-measuring, so the figures "
+                     "are ESTIMATES again; re-measure under "
+                     "bench/sideserver.py and re-declare with the new "
+                     "lock hash" % src)
+        tagged = True
+    if not tagged:
+        notes.append("the footprint is an ESTIMATE from file sizes — run "
+                     "the workload once under bench/sideserver.py and "
+                     "declare WORKLOAD_GTT_GIB / WORKLOAD_HOST_RSS_GIB, "
+                     "each with date and method")
+    return Verdict(v.fits, v.problems, notes)
+
+
+def machine_identity(kfd_glob="/sys/class/kfd/kfd/topology/nodes/*/properties"):
+    """Which machine a figure was measured on — explicit, and non-identifying.
+
+    Every number in this repo is true of ONE machine, and until 01.09.2026
+    that machine was implicit ("the one"). A successor box (different gfx,
+    different RAM) makes the implicit wrong silently, so reports carry this
+    dict. DELIBERATELY without the hostname: reports are committed and the
+    repo is public — the architecture and the RAM size reproduce a context,
+    a hostname only names somebody's computer (the same rule that folds
+    paths to @HOME@).
+
+    gfx from the kfd topology: gfx_target_version is major*10000 +
+    minor*100 + step, so 110501 renders as gfx1151 the way LLVM spells it
+    (major decimal, minor and step hex). None off amdgpu/kfd — a laptop
+    reading this repo, a CI runner — and None is an answer, not an error.
+    """
+    gfx = None
+    for path in sorted(glob.glob(kfd_glob)):
+        try:
+            with open(path) as fh:
+                version = None
+                for line in fh:
+                    if line.startswith("gfx_target_version"):
+                        version = int(line.split()[1])
+                        break
+        except (OSError, ValueError, IndexError):
+            continue
+        if version:
+            gfx = "gfx%d%x%x" % (version // 10000, (version // 100) % 100,
+                                 version % 100)
+            break
+    return {"gfx": gfx, "mem_total_gib": _meminfo_gib("MemTotal")}
+
+
 # --- the escape hatches ------------------------------------------------------
 #
 # There has to be a way past a WRONG estimate that is not a way past the guard.
@@ -773,41 +1064,59 @@ def render(p, machine, v):
     return "\n".join(out)
 
 
-def brief(p, machine, v):
+def brief(p, machine, v, estimate_hint=None):
     """One line, for a journal. See --brief.
 
     It names the two numbers a reader would otherwise have to go and compute,
     and it says when the KV figure was guessed — because "it started" and "it
     was checked and fits" look identical in a log otherwise, and the second is
-    the only one that means anything.
+    the only one that means anything. `estimate_hint` lets the workload path
+    name ITS fields; the default wording sent workload readers to
+    MODEL_KV_KIB_PER_TOKEN, which their profiles cannot carry.
     """
+    if estimate_hint is None:
+        estimate_hint = ("  (KV ESTIMATED — measure it and declare "
+                         "MODEL_KV_KIB_PER_TOKEN)")
     if p.gtt_gib is None:
+        # The one line a journal keeps must tell the same story plan and
+        # verdict tell: declared framework-cached weights are a named
+        # state, not an unreadable file (re-review, 01.09.2026).
+        if any(it.name == _HF_CACHE_ITEM for it in p.items):
+            return ("%s: framework-cached weights (%s) — not weighable "
+                    "before the first fenced run" % (p.what, HF_CACHE_KEYWORD))
         return "%s: the weights could not be read — not weighed" % p.what
     total = ("of %.1f" % machine.mem_total) if machine.mem_total else ""
     return ("%s %s: %.1f GiB in GTT, %.1f resident %s%s"
             % (p.what, "fits" if v.fits else "DOES NOT FIT",
                p.gtt_gib, p.host_gib if p.host_gib is not None else p.gtt_gib,
-               total,
-               "  (KV ESTIMATED — measure it and declare "
-               "MODEL_KV_KIB_PER_TOKEN)" if p.estimated else ""))
+               total, estimate_hint if p.estimated else ""))
 
 
-def refusal(p, machine, v):
-    """The message a guard raises. One shape, wherever it is raised from."""
+def refusal(p, machine, v, advice=None):
+    """The message a guard raises. One shape, wherever it is raised from.
+
+    `advice` is the escape-hatch paragraph. The default names the LLM_*
+    overrides, which the WORKLOAD path does not read — a refusal whose
+    advice does nothing funnels the operator to the off switch, so the
+    workload callers pass WORKLOAD_ADVICE instead.
+    """
+    if advice is None:
+        advice = ("\n  Correct a wrong estimate with LLM_MODEL_GIB / "
+                  "LLM_HOST_GIB /\n  LLM_KV_KIB_PER_TOKEN — every check "
+                  "still runs. LLM_NO_MEMORY_GUARD=1\n  switches the guard "
+                  "off, which is a different and worse thing.\n")
     return (
         "\nREFUSING TO START %s: it needs about %.1f GiB and it does not fit.\n"
         "    %s\n"
         "\n%s"
         "\n  GTT is not swappable, so starting anyway does not page — it takes\n"
-        "  the machine down. That happened on 26.08.2026.\n"
-        "\n  Correct a wrong estimate with LLM_MODEL_GIB / LLM_HOST_GIB /\n"
-        "  LLM_KV_KIB_PER_TOKEN — every check still runs. LLM_NO_MEMORY_GUARD=1\n"
-        "  switches the guard off, which is a different and worse thing.\n"
+        "  the machine down. That happened on 26.08.2026.\n%s"
         % (p.what, p.host_gib if p.host_gib is not None else p.gtt_gib,
            "\n    ".join(v.problems),
            # The table WITHOUT the problems: they are already above, and a
            # refusal that states its reasons twice reads like two refusals.
-           render(p, machine, Verdict(v.fits, [], v.notes))))
+           render(p, machine, Verdict(v.fits, [], v.notes)),
+           advice))
 
 
 # --- observation: what it ACTUALLY took --------------------------------------
@@ -1022,6 +1331,16 @@ def _profile_path(name):
     raise SystemExit("no such profile: %s" % name)
 
 
+def _workload_path(name):
+    if os.path.exists(name):
+        return name
+    p = os.path.join(HERE, "..", "workloads",
+                     name if name.endswith(".env") else name + ".env")
+    if os.path.exists(p):
+        return os.path.abspath(p)
+    raise SystemExit("no such workload: %s" % name)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     g = ap.add_mutually_exclusive_group()
@@ -1033,6 +1352,10 @@ def main(argv=None):
                    help="LLAMA_ARGS and the MODEL_* declarations out of this "
                         "process's environment — which is exactly what systemd "
                         "hands a unit, so ExecStartPre needs no path at all")
+    g.add_argument("--workload",
+                   help="a workload name or a setup/workloads/*.env path — "
+                        "the same arithmetic for a job that is not "
+                        "llama-server")
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if it does not fit (this is the guard)")
     ap.add_argument("--static", action="store_true",
@@ -1080,6 +1403,11 @@ def main(argv=None):
         return 0
 
     declared, in_gtt, anon, what, args = None, None, None, "this server", None
+    if a.workload:
+        path = _workload_path(a.workload)
+        p = workload_plan(path)
+        v = workload_verdict(p, machine)
+        return _finish(a, p, v, machine, workload=True)
     if a.from_env:
         # The unit's EnvironmentFile is already IN the environment here. Not
         # guessing a path is the point: the user unit reads %h/.claude/env/%i.env
@@ -1122,6 +1450,15 @@ def main(argv=None):
     p = plan(args, weights_gib(args), declared, what,
              gtt_base=in_gtt, host_anon=anon)
     v = verdict(p, machine)
+    return _finish(a, p, v, machine)
+
+
+def _finish(a, p, v, machine, workload=False):
+    """The shared tail: --static, rendering, and the --check exit code. One
+    tail for the llama path and the workload path, so a flag added to one
+    cannot silently not exist on the other — the WORDING is the only fork
+    (workload refusals and briefs name WORKLOAD_* fields, not LLM_*/MODEL_*
+    knobs their profiles cannot carry)."""
     if a.static:
         ok = fits_the_machine(p, machine)
         v = Verdict(True if ok is None else ok, [] if ok is not False else [
@@ -1135,7 +1472,8 @@ def main(argv=None):
     show = not (a.check and not v.fits)
 
     if a.brief and not a.json:
-        print(brief(p, machine, v))
+        print(brief(p, machine, v,
+                    estimate_hint=WORKLOAD_BRIEF_HINT if workload else None))
         show = False
 
     if a.json:
@@ -1152,7 +1490,9 @@ def main(argv=None):
         if guard_disabled():
             print("  LLM_NO_MEMORY_GUARD=1 — starting anyway", file=sys.stderr)
             return 0
-        print(refusal(p, machine, v), file=sys.stderr)
+        print(refusal(p, machine, v,
+                      advice=WORKLOAD_ADVICE if workload else None),
+              file=sys.stderr)
         return 1
     return 0
 

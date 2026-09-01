@@ -463,12 +463,26 @@ class TestSideserverAfterTheThirdIncident(unittest.TestCase):
 
     def test_the_dead_mans_switch_is_armed_BEFORE_production_is_stopped(self):
         """Order is the whole point. Armed after the stop, a crash in between
-        leaves the machine with no model and no timer."""
+        leaves the machine with no model and no timer.
+
+        Since the workload path landed (01.09.2026) the arm and the stop live
+        in shared helpers, so the order is proven at every CALL SITE — a
+        linear-source index would compare function definitions, which say
+        nothing about who calls whom first."""
+        import re
         s = self.src()
-        armed = s.index("on-active")
-        stopped = s.index('systemctl("stop", a.stop)')
-        self.assertLess(armed, stopped,
-                        "the switch is armed after production is already down")
+        self.assertIn("on-active", s, "nothing arms a systemd timer at all")
+        arms = [m.start() for m in
+                re.finditer(r"(?<!def )arm_deadman\(deadman", s)]
+        stops = [m.start() for m in
+                 re.finditer(r"stop_production_and_settle\(a\.stop\)", s)]
+        self.assertTrue(arms, "no call site arms the switch")
+        self.assertEqual(len(arms), len(stops),
+                         "a caller stops production without arming the switch")
+        for armed, stopped in zip(arms, stops):
+            self.assertLess(armed, stopped,
+                            "the switch is armed after production is already "
+                            "down")
 
     def test_the_teardown_stops_the_unit_by_name(self):
         """A named unit can be stopped by anybody, including somebody cleaning

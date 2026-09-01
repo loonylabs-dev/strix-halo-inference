@@ -68,6 +68,35 @@ model_repo_env()  { printf '%s/%s.env\n' "$MODELS_ENV_DIR" "$1"; }
 model_user_env()  { printf '%s/%s.env\n' "$MODELS_USER_ENV_DIR" "$1"; }
 model_unit()      { printf 'llama-user@%s.service\n' "$1"; }
 
+# --- foreign workloads ----------------------------------------------------
+#
+# setup/workloads/*.env — jobs that are not llama-server and still pin GTT
+# (image, later audio/video). Same file discipline as the model profiles,
+# different lifecycle: a workload is started by bench/sideserver.py as a
+# transient unit, never by llama-user@, so it appears in NO Conflicts= line
+# and switch-model.sh does not offer it. Enumerated here so tests and humans
+# have ONE list — the six-places failure this file exists to prevent.
+MODELS_WORKLOADS_DIR="$MODELS_REPO/setup/workloads"
+
+workloads_all() {       # every workload the repo knows, one per line, sorted
+  local f
+  for f in "$MODELS_WORKLOADS_DIR"/*.env; do
+    [ -e "$f" ] || continue
+    basename "$f" .env
+  done | sort
+}
+
+workload_repo_env() { printf '%s/%s.env\n' "$MODELS_WORKLOADS_DIR" "$1"; }
+
+workload_meta() {       # $1 = workload, $2 = variable, $3 = default
+  local f v
+  f="$(workload_repo_env "$1")"
+  [ -f "$f" ] || { printf '%s\n' "${3-}"; return 0; }
+  v="$(sed -n "s/^$2=//p" "$f" | head -1)"
+  v="${v%\"}"; v="${v#\"}"
+  printf '%s\n' "${v:-${3-}}"
+}
+
 # --- what is running ------------------------------------------------------
 
 models_active() {       # instances of llama-user@ that are ACTIVE right now
@@ -207,6 +236,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
   case "${1:-list}" in
     list)     models_all ;;
+    workloads) workloads_all ;;
     active)   models_active ;;
     enabled)  models_enabled ;;
     serving)  models_serving ;;
@@ -225,7 +255,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
           "${state:-inactive}" "$(model_title "$m")"
       done < <(models_all)
       ;;
-    *) echo "usage: bash setup/lib/models.sh {list|active|enabled|serving|table|known N|args N|meta N VAR|bin N|gguf N}" >&2
+    *) echo "usage: bash setup/lib/models.sh {list|workloads|active|enabled|serving|table|known N|args N|meta N VAR|bin N|gguf N}" >&2
        exit 2 ;;
   esac
 fi

@@ -30,6 +30,11 @@ bench/reports/*/server.log
 __pycache__/
 *.pyc
 
+# Video bench frame sequences: ~25 MB of PNGs per rep. The EVIDENCE stays
+# in the repo — per-rep sequence hashes in result.json, three sample frames
+# and the derived rep1.webm; the full sequences stay on the machine.
+bench/reports/*/frames-*/
+
 # Slot states (546 MB each)
 *.bin
 

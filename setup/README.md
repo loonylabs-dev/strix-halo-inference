@@ -214,9 +214,23 @@ first one is load-bearing and fails silently, the rest fail loudly.
 | `~/.cache/llama-slots/` | saved prefixes (GB-sized), plus `.owner` and parked stores per model | first request per project runs cold again |
 | `~/.cache/llama-slots/.owner` | which model wrote these prefixes | `switch-model.sh` has to guess, and a wrong guess feeds one model's KV state to another |
 
-`bash setup/check.sh` verifies all of them: that the source still carries the
-patch, WHICH build is active, whether the running process comes out of it, and
-who owns the prefix store.
+And since 01.09.2026 the media workloads add their own — none is verified
+by check.sh yet, so each fails at the NEXT FENCED RUN, after a production
+stop/settle cycle has already been paid (the architecture review's first
+finding: a table whose only purpose is not-forgetting had forgotten them):
+
+| Path | What it is | If it is missing |
+|---|---|---|
+| `~/stable-diffusion.cpp` + `build-vulkan-<id>/` | the image/video tree and its pinned builds (`setup/scripts/build-sd.sh`) | every image/video profile's `WORKLOAD_CMD` dies with ENOENT — loud, but only inside the fence |
+| `~/qwentts.cpp` + `build-vulkan-<id>/` | the TTS tree, pinned builds AND the `qwen-tts-p` adapter beside the binary (`build-qwentts.sh`) | qwen3-tts.env dies the same way |
+| `~/.venvs/media-audio` + `~/.local/bin/uv` | the torch lane's venv (uv-managed CPython 3.12 — `media/audio/setup-venv.sh`, pins in `requirements.lock`) | chatterbox.env dies; rebuild from the lock, or the measured figures are claims |
+| `@MODELS@/image/`, `@MODELS@/audio/`, `@MODELS@/video/` | the media weights (~64 GB; provenance per profile in `WORKLOAD_SOURCE`) | the guard refuses UNMEASURED profiles and measured ones fail at start |
+| `~/.cache/huggingface/…ResembleAI--chatterbox` | chatterbox weights at the revision the wrapper pins | first fenced run re-downloads ~4 GB inside the measurement window |
+| `~/SPIRV-Headers` | header fallback while `spirv-headers-devel` is not installed | the two media build scripts refuse with the fix in their message |
+
+`bash setup/check.sh` verifies all of the llama-era ones: that the source
+still carries the patch, WHICH build is active, whether the running process
+comes out of it, and who owns the prefix store.
 
 **The patches are a branch, not a diff.** That is the whole point:
 
@@ -523,6 +537,39 @@ Every one of those clauses is there because something without it failed:
 * And the memory guard checks two numbers against two limits. A measurement
   can tell you what the GPU pins; nothing makes the bytes on disk smaller, and
   `BENCH_MODEL_GIB` may correct the first and not the second.
+
+### Foreign workloads go through the same fence
+
+    python3 bench/sideserver.py --workload setup/workloads/sdxl.env \
+        --stop llama-user@qwen38                    # the profile's own job
+    python3 bench/sideserver.py --workload ... --stop ... -- <command>
+
+Since 01.09.2026 the tenant does not have to be llama-server. A
+text-to-image job (and later audio/video) pins GTT like any model, so it
+gets the same dead man's switch, the same GTT-settle wait, the same weigh-in
+(`budget.py --workload <name>`), and a transient unit with a derived
+ceiling — plus 1 Hz peak metering whose output is the ready-to-paste
+declaration for the profile's measured fields.
+
+## The workload registry
+
+`setup/workloads/*.env` is the list of foreign workloads, same file
+discipline as the model registry below, different lifecycle: started only
+through `bench/sideserver.py --workload`, never by `llama-user@`, so they
+appear in no `Conflicts=` line and `switch-model.sh` does not offer them.
+
+    bash setup/lib/models.sh workloads       what exists
+    python3 setup/lib/budget.py --workload sdxl    what it costs, whether it fits
+
+A profile's footprint fields are **born UNMEASURED**; budget.py then charges
+the model files plus its buffer term and announces ESTIMATE in every
+verdict. After the first fenced run the observed peaks are declared with
+date + method + machine — `tests/test_workloads.py` holds that contract,
+including the refusal case. The first consumers are the image profiles
+(`sdxl.env`, `flux-schnell.env`, `qwen-image.env`) and the audio profiles
+(`qwen3-tts.env` on the ggml/Vulkan side, `chatterbox.env` in the torch
+lane); the Torch-world border that keeps the latter out of the base
+install is `media/README.md`.
 
 ## The model registry
 

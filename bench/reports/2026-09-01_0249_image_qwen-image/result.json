@@ -1,0 +1,85 @@
+{
+  "workload": "qwen-image",
+  "timestamp": "2026-09-01_0249",
+  "machine": {
+    "gfx": "gfx1151",
+    "mem_total_gib": 124.93416976928711
+  },
+  "binary": "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+  "build_stamp": {
+    "build_id": "vulkan-6b3edaaf3",
+    "commit": "6b3edaaf32cc19e5bb2d819c788bd557eddc8eba",
+    "backend": "vulkan",
+    "built_at": "2026-09-01_0120",
+    "cmake_flags": "-DSD_VULKAN=ON -DSD_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release"
+  },
+  "argv": [
+    "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+    "--diffusion-model",
+    "@MODELS@/image/Qwen_Image-Q4_K_M.gguf",
+    "--vae",
+    "@MODELS@/image/Qwen_Image-VAE.safetensors",
+    "--llm",
+    "@MODELS@/image/Qwen2.5-VL-7B-Instruct.Q8_0.gguf",
+    "-H",
+    "1024",
+    "-W",
+    "1024",
+    "--steps",
+    "20",
+    "--cfg-scale",
+    "2.5",
+    "--sampling-method",
+    "euler",
+    "--diffusion-fa",
+    "--flow-shift",
+    "3",
+    "--seed",
+    "42",
+    "-v"
+  ],
+  "prompt": "a lighthouse on a rocky coast at sunset, detailed oil painting, dramatic clouds",
+  "note": "first qwen-image run: smoke, footprint metering and bench in one fence, idle machine",
+  "reps": [
+    {
+      "rep": 1,
+      "seconds": 405.11,
+      "exit": 0,
+      "sha256": "454890ddcd1b364e501c129b8754271f8b90d87a9346b0ade9c66cb477fd1a8f",
+      "ok": true,
+      "reasons": [],
+      "spread": 54.85,
+      "neighbour_r": 0.997
+    },
+    {
+      "rep": 2,
+      "seconds": 409.3,
+      "exit": 0,
+      "sha256": "454890ddcd1b364e501c129b8754271f8b90d87a9346b0ade9c66cb477fd1a8f",
+      "ok": true,
+      "reasons": [],
+      "spread": 54.85,
+      "neighbour_r": 0.997,
+      "image": "identical to an earlier rep \u2014 not stored twice"
+    },
+    {
+      "rep": 3,
+      "seconds": 413.27,
+      "exit": 0,
+      "sha256": "454890ddcd1b364e501c129b8754271f8b90d87a9346b0ade9c66cb477fd1a8f",
+      "ok": true,
+      "reasons": [],
+      "spread": 54.85,
+      "neighbour_r": 0.997,
+      "image": "identical to an earlier rep \u2014 not stored twice"
+    }
+  ],
+  "checker": {
+    "spread_min": 4.0,
+    "neighbour_r_min": 0.35,
+    "thresholds": "heuristic, not derived \u2014 see bench/imagecheck.py"
+  },
+  "median_seconds": 409.3,
+  "min_seconds": 405.11,
+  "max_seconds": 413.27
+}

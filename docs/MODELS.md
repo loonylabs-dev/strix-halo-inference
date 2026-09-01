@@ -124,6 +124,20 @@ request time, so prefill sat inside every decode number.
 | `batch` | batch classification, small window |
 | `flashnext` | Qwen3.8-Flash-Next — **runs, not served.** See below |
 
+## Not only language models any more
+
+Since 01.09.2026 the same machine also renders images, speaks, and films,
+under the same memory authority: `setup/workloads/*.env`, started only
+through `bench/sideserver.py --workload`, benched and judged by the
+`bench/*bench.py` / `bench/*check.py` pairs. Measured that day (n=3 each,
+idle machine): text-to-image — flux-schnell 56 s, sdxl 112 s, qwen-image
+409 s per 1024×1024 image; text-to-speech — qwen3-tts 2.65× realtime on
+Vulkan (German), chatterbox-multilingual 0.29× realtime on CPU torch with
+voice cloning; text-to-video — wan2.1-1.3b ~9 min per 2 s clip at 480p
+(the 5B figures are in its profile). See the workload-registry section of
+[../setup/README.md](../setup/README.md) — and `media/README.md` for the
+border that keeps the base install torch-free.
+
 ### Why Flash-Next runs and is not served
 
 It is not slow, and since 31 August it no longer runs out of memory either.

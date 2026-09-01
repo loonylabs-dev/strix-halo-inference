@@ -126,9 +126,12 @@ person's notebook.
 | [MODELS.md](MODELS.md) | **which model and which settings** — compact, English, no history |
 | [SECURITY.md](SECURITY.md) | zone model, allow list, every security measurement |
 | [measurements/](measurements/) | the raw records: backends, power profiles, prefill depth, the prompt-cache series, the sliding-window finding. [measurements/README.md](measurements/README.md) summarises what each file shows |
-| [../setup/README.md](../setup/README.md) | operations: services, access, tunnel, prefix cache |
+| [../setup/README.md](../setup/README.md) | operations: services, access, tunnel, prefix cache — and since 01.09.2026 the **workload registry** (image, speech, video under the same memory authority) |
 | [../setup/defects.json](../setup/defects.json) | the defect registry: what is known to go wrong on this hardware, as data. `python3 setup/lib/defects.py` says whether this machine is exposed |
-| [../tests/README.md](../tests/README.md) | the three test levels and why the lowest one exists |
+| [../setup/workloads/](../setup/workloads/) | the media workloads — one profile per workload, measured figures with date + method + machine, provenance in `WORKLOAD_SOURCE`, the determinism pin in `WORKLOAD_SMOKE_SHA256` |
+| [../media/README.md](../media/README.md) | the border that keeps the Torch world out of the base install, and the venv convention behind `chatterbox.env` |
+| [../bench/README.md](../bench/README.md) | how anything is measured here — llama suites and the media bench/check pairs alike |
+| [../tests/README.md](../tests/README.md) | the test lanes and why the lowest one exists — including the media determinism lane (`live_media.sh`) |
 
 The documents under `px13/` described the **machine**, not the project. Every
 one of them was cited by something — `gtt.sh` for the memory ladder,

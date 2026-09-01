@@ -41,22 +41,32 @@ jobs:
         # 3.10 is the floor and it is a MEASURED one, not a guess: the syntax
         # parses back to 3.8, and tests/test_scripts.py uses
         # sys.stdlib_module_names, which arrived in 3.10. Development happens
-        # on 3.14. The matrix is here to keep the claim honest — if a version
-        # breaks, that is information rather than an inconvenience.
-        python: ["3.10", "3.12", "3.13"]
+        # on 3.14 — IN the matrix since 01.09.2026, because the version the
+        # code is actually written on was the one version CI never ran. The
+        # matrix is here to keep the claim honest — if a version breaks, that
+        # is information rather than an inconvenience.
+        python: ["3.10", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - name: install aiohttp
-        # The only third-party dependency, and it is the gateway's own — the
-        # tests replace llama-server with a small aiohttp application so that
-        # things which would be a gamble against a real GPU (the per-consumer
-        # throttle, cancelled callers, a reload whose file was deleted) can be
-        # checked deterministically. No pytest: a setup repo whose tests need
-        # an installation first does not get run.
-        run: python -m pip install --disable-pip-version-check aiohttp
+      - name: install aiohttp numpy pillow
+        # aiohttp is the gateway's own dependency — the tests replace
+        # llama-server with a small aiohttp application so that things which
+        # would be a gamble against a real GPU (the per-consumer throttle,
+        # cancelled callers, a reload whose file was deleted) can be checked
+        # deterministically. No pytest: a setup repo whose tests need an
+        # installation first does not get run.
+        #
+        # numpy and pillow joined on 01.09.2026, and their absence was a
+        # SILENT coverage hole: the media checkers' tests carry
+        # skipUnless(numpy/PIL) so a laptop without them still gets a green
+        # gate — but on CI that meant the corruption probes for image, audio
+        # and video were never exercised anywhere automatic. Green without
+        # checking is the failure class this whole suite hunts; two wheels
+        # close it.
+        run: python -m pip install --disable-pip-version-check aiohttp numpy pillow
       - name: unit tests
         run: bash tests/run.sh
 

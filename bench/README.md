@@ -276,6 +276,12 @@ many cells the variant file holds).
 | `suites/slot-tail.py` | Why it pays: whether the slot is still a prefix of the next prompt. Reads `f_keep` out of the ordinary journal — no restart, no `LLAMA_SERVER_SLOTS_DEBUG`. The tokens the server hands back do NOT contain the tail, so nothing here may be derived from them |
 | `compare.py` | The decision table across the variants of one sweep |
 | `run.py` | The cache suites (cold/warm, tool turns, multi-project) |
+| `imagebench.py` | Seconds per image for one `setup/workloads/*.env` profile, N reps at the profile's own settings, every output judged by imagecheck. Runs INSIDE the sideserver fence and refuses beside a serving llama-server |
+| `imagecheck.py` | Is this image broken the way gfx1151 breaks things — (near-)solid color or pure noise, two statistics with printed numbers. `--selftest` proves it can go red; thresholds are heuristic and say so |
+| `audiobench.py` | imagebench's sibling for TTS workloads: wall seconds, audio seconds and the REALTIME FACTOR, hashes recorded so determinism is an observation (`distinct_outputs`), not an assumption |
+| `audiocheck.py` | Is this WAV broken the way a TTS pipeline breaks — silence, clipping, or spectral flatness (codec garbage). Integer-PCM only, refuses float WAVs by name; `--selftest` proves it can go red |
+| `videobench.py` | Seconds per clip for a video workload; the evidence is the PNG frame sequence (hashed per rep), frames-rep*/ stays gitignored, the repo keeps three sample frames and a derived .webm |
+| `videocheck.py` | Is this frame sequence broken — a broken frame (imagecheck per frame), a FROZEN clip, or temporal noise. `--selftest` proves all three go red |
 
 `quality.py` and `tasklib.py` are still here, and only as FIXTURES: two of the
 correctness suites need a request body shaped like Claude Code's and a question

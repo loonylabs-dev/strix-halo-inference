@@ -47,14 +47,14 @@ not invented.
 
 ## Before you open a pull request
 
-    bash tests/run.sh        1046 tests, ~15 s, no GPU and no service needed
+    bash tests/run.sh        1146 tests (01.09.2026), ~16 s, no GPU and no service needed
     bash setup/check.sh      is the repo still what the running system reads?
 
 The test suite is the contract between the parts, and that is where the bugs
 in this stack actually live: the kind where nothing breaks and an effect simply
 fails to appear — a `Conflicts=` line missing a model, a guard that checks the
 wrong number, a cache flag copied from a profile with a different window. CI
-runs the same suite on Python 3.10, 3.12 and 3.13.
+runs the same suite on Python 3.10, 3.12, 3.13 and 3.14.
 
 If you change behaviour, the test that pins it should read like the ones
 already there: it names the failure it prevents, and where possible the day it

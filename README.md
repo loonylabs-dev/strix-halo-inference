@@ -4,18 +4,21 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![GPU](https://img.shields.io/badge/GPU-gfx1151-red)](docs/setup/03-gpu-and-memory.md)
 [![RAM](https://img.shields.io/badge/RAM-128%20GB-orange)](#does-this-fit-your-machine)
-[![backend](https://img.shields.io/badge/backend-llama.cpp%20%C2%B7%20ROCm-lightgrey)](setup/patches/README.md)
-[![python](https://img.shields.io/badge/python-3.10%20%7C%203.12%20%7C%203.13-blue)](.github/workflows/tests.yml)
+[![backend](https://img.shields.io/badge/backends-llama.cpp%20%C2%B7%20sd.cpp%20%C2%B7%20qwentts.cpp-lightgrey)](setup/patches/README.md)
+[![python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.14-blue)](.github/workflows/tests.yml)
 
-**A local coding agent on a Strix Halo, with the settings measured rather than
-guessed.** One configuration — Ryzen AI Max+ 395 (gfx1151), 128 GB of shared
-memory — and every number here was taken on it.
+**A Strix Halo as a measured inference machine: a local coding agent in
+production — and text-to-image, speech and video under the same memory
+authority.** One configuration — Ryzen AI Max+ 395 (gfx1151), 128 GB of
+shared memory — and every number here was taken on it, with the date and
+method beside it.
 
 ```bash
 bash setup/preflight.sh              # is this repo for your machine?
 bash setup/install.sh                # once — writes ~/.config/llm-stack.env
 bash setup/get-model.sh qwen38       # fetch: resumable, sha256-checked
 bash setup/switch-model.sh qwen38    # serve it
+bash tests/run.sh                    # the gate (1146 tests, ~16 s, no GPU)
 ```
 
 The name you fetch is the name you serve. There is no `pull` command, because
@@ -26,8 +29,7 @@ the measurement behind every flag on its command line.
 ## Does this fit your machine?
 
 `bash setup/preflight.sh` answers it in five seconds, without root, changing
-nothing. It filters over measured values and never guesses about unmeasured
-ones:
+nothing:
 
 | RAM | profiles that fit as written |
 |---|---|
@@ -35,8 +37,9 @@ ones:
 | 64 GB | 3 of 7 — `batch`, `gemma26`, `gemma31` |
 | 32 GB | none: 17.6 weights + 6.0 buffer floor + 12 host is already over |
 
-Nothing is scaled down to change that. A scaled number is a guess, and
-measured numbers are the whole argument.
+Nothing is scaled down to change that — a scaled number is a guess. Not a
+generic stack, on purpose; `preflight.sh` says where you stand before you
+spend an afternoon.
 
 ## What you get that `ollama` does not
 
@@ -55,6 +58,11 @@ REFUSING TO START qwen38: it needs about 70.1 GiB and it does not fit.
     the host has 44.2 GiB available, 12 must stay free
 ```
 
+> For the same reason, never start a second model — or a media workload — by
+> hand: `python3 bench/sideserver.py` is the only safe way, and
+> [setup/README.md](setup/README.md) explains the four ceilings before you
+> need them.
+
 **Know the failures that do not announce themselves.** On gfx1151 the
 dangerous defects do not raise. Output degenerates to `////`; a session
 answers from another session's context. No error, no crash, no log line.
@@ -70,32 +78,56 @@ how a request body is read, which prefix id it produces, when a state may be
 restored — is in [`setup/claude/`](setup/claude/) with the measurements behind
 each step.
 
+## Not only a language model — and not a toolbox
+
+Since 01.09.2026 the same machine renders images, speaks and films. Measured
+on this box, n=3 each, idle machine, every output machine-judged:
+
+| workload | what | cost | licence |
+|---|---|---|---|
+| `flux-schnell` | text-to-image, 1024² | 56 s / image | Apache 2.0 |
+| `sdxl` | text-to-image, 1024² | 112 s / image | OpenRAIL++ |
+| `qwen-image` | text-to-image, top quality tier | 409 s / image | Apache 2.0 |
+| `qwen3-tts` | text-to-speech, German included, Vulkan | **2.65× realtime** | Apache 2.0 |
+| `chatterbox` | text-to-speech, voice cloning, 23 languages | 0.29× realtime (CPU) | MIT |
+| `wan21-t2v` | text-to-video, 480p | ~9 min / 2 s clip | Apache 2.0 |
+| `wan22-ti2v` | text-to-video, 5B — faster AND flagged | 288 s / clip, [see its profile](setup/workloads/wan22-ti2v.env) | Apache 2.0 |
+
+Toolbox repos collect start commands. Every workload above is a **tenant of
+the same memory authority** — the freeze story one section up is just as true
+when the bytes pinning GTT come from a diffusion sampler — and lives by the
+same rules:
+
+- **One guard, one fence.** Each declares its measured footprint in
+  [`setup/workloads/`](setup/workloads/), is weighed by `budget.py` before it
+  starts, and runs only through the `sideserver` fence.
+- **Determinism as an instrument.** All seven profiles pin a seed, every
+  measured pipeline is **byte-deterministic**, and each profile carries its
+  exact output hash — `bash tests/live_media.sh` re-derives it. A regression
+  is a hash flip, not a statistical argument.
+- **Machine-judged output.** Image, audio and video each have a corruption
+  probe ([bench/](bench/README.md)) whose selftest was seen red before its
+  green counted.
+- **Honest defects.** The 5B video model shows an artifact in dark regions —
+  its profile says so, with the one-variable A/B that exonerated flash
+  attention.
+- **The Torch border.** The base install stays torch-free (the 16-second
+  gate proves it); torch tenants live behind [`media/`](media/README.md).
+
+And not a model benchmark: others do that at more scale than a home-grown
+battery survives. Measured here is the STACK — what fits, what it costs, and
+whether the output stays CORRECT — which nobody else measures for this
+hardware.
+
 ## Not a fork
 
 The backend is llama.cpp **master plus a short list of patches**. The list,
 with the defect and the measurement behind each, lives in
-[`setup/patches/`](setup/patches/README.md); `python3 setup/lib/defects.py`
-says whether a given build still needs them. A patch here is a debt being
-worked off, not a feature — each is tied to an upstream issue, and when the
-fix lands on master the local copy is retired. The build script guards the
-set: a binary that silently lost a patch refuses instead of serving the
-defect again.
-
-Custom-format forks tie your model files and your pace to their releases.
-The weights here are standard GGUF from public repositories — no private
-quant format only one binary can read — and because the base is master,
-every upstream improvement arrives at the next build, not at a fork's next
-release.
-
-## What it is not
-
-- **Not a generic stack.** See the table above; `preflight.sh` says where you
-  stand before you spend an afternoon.
-- **Not a model benchmark.** Others do that with more scale than a home-grown
-  battery survives, and such a battery ages the week a new model lands. What is
-  measured here is the STACK: what fits, what it costs, and whether the answers
-  stay CORRECT as the window fills — a property of the build and the flags,
-  which nobody else measures for this hardware.
+[`setup/patches/`](setup/patches/README.md); a patch here is a debt being
+worked off, not a feature, and the build script refuses a binary that
+silently lost one. The weights are standard GGUF from public repositories,
+and because the base is master, upstream improvements arrive at the next
+build — not at a fork's next release.
 
 ## Where to start
 
@@ -103,75 +135,13 @@ release.
 |---|---|
 | find out whether this repo is **for your machine** | `bash setup/preflight.sh` — run it first |
 | **set the machine up from scratch** — BIOS to first token | [docs/setup/](docs/setup/README.md), six chapters |
+| **run it** — services, boot, the four ceilings | [setup/README.md](setup/README.md) |
 | point **Claude Code or an OpenAI agent** at it — yours or somebody else's | [docs/CONSUMERS.md](docs/CONSUMERS.md), and `bash setup/consumer-info.sh` for the values |
 | decide **which model to take**, and why Flash-Next is not served | [docs/MODELS.md](docs/MODELS.md) |
+| generate **images, speech or video** on the same box | [`setup/workloads/`](setup/workloads/) — the profiles carry every measured number — and the workload-registry section of [setup/README.md](setup/README.md) |
+| **verify** a running box — the gate, the live lanes, the smoke test | [tests/README.md](tests/README.md) |
 | see the **raw measurements** | [docs/measurements/](docs/measurements/README.md) and [`bench/reports/`](bench/reports/) |
-| **repeat** them | [bench/](bench/) |
-| **install** it | [setup/](setup/) |
+| **repeat or extend** them | [bench/](bench/README.md) |
 | know **what is protected** | [docs/SECURITY.md](docs/SECURITY.md) — the model. [SECURITY.md](SECURITY.md) — where a finding goes |
-| **change** something without breaking it | [tests/](tests/), and [CONTRIBUTING.md](CONTRIBUTING.md) |
+| **change** something without breaking it | [tests/](tests/README.md), and [CONTRIBUTING.md](CONTRIBUTING.md) |
 | report what it did on **your** machine | an issue — the one thing this repo cannot measure for itself |
-
-## Layout
-
-| | |
-|---|---|
-| [`docs/setup/`](docs/setup/README.md) | getting a machine to the starting line: BIOS, Linux, ROCm, the GTT cap, the build, the first token |
-| [`docs/`](docs/) | the model decision, pointing a client at it, the security model, the measurement records |
-| [`setup/env/`](setup/env/) | the model registry — one profile per model, and nothing else holds a list |
-| [`setup/lib/budget.py`](setup/lib/budget.py) | the one memory budget; refuses a start that would not fit |
-| [`setup/defects.json`](setup/defects.json) | what is known to go wrong on this hardware, as data |
-| [`setup/claude/`](setup/claude/) | the gateway: three zones, per-consumer tokens, prefix save and restore |
-| [`setup/scripts/`](setup/scripts/) | the patched llama.cpp build, the GTT cap, model scouting and fetching |
-| [`bench/`](bench/) | repeatable measurements, one report per run |
-| [`tools/`](tools/) | synthetic request bodies, prefix save/restore |
-| [`tests/`](tests/) | unit tests without a GPU, plus three end-to-end against it |
-
-## Running it
-
-```bash
-systemctl --user --now enable llama-user@qwen38
-systemctl --user --now enable llm-gateway
-systemctl --user --now enable prefix-cleanup.timer
-sudo loginctl enable-linger $USER      # so they come up at boot
-```
-
-User services, not system ones — [setup/README.md](setup/README.md) explains
-why, and what SELinux has to do with it.
-
-> **One warning before you measure anything.** GTT is pinned, so a model that
-> does not fit freezes the machine rather than failing. Four ceilings exist to
-> stop that; the first refuses the start before anything is allocated. Never
-> start a second model by hand — use `python3 bench/sideserver.py`.
-> [setup/README.md](setup/README.md) explains all four before you need them.
-
-## Checking it
-
-```bash
-bash tests/run.sh                  # contracts between the parts (1024 tests, ~13 s, no GPU)
-bash setup/check.sh                # configuration and state
-bash setup/smoketest.sh            # function and protection, all three zones
-bash tests/live_prefix.sh          # prefix saving end to end against the GPU
-bash tests/live_concurrency.sh     # admission control under load
-```
-
-All of them return 0 when everything is right. What separates the levels is in
-[tests/README.md](tests/README.md): `check.sh` and `smoketest.sh` look at the
-running system, `tests/run.sh` at the contracts between the parts — which is
-where the bugs live that break nothing and simply let an effect fail to appear.
-
-## Repeating the measurements
-
-```bash
-python3 bench/speed.py --label qwen38-production
-python3 bench/sweep.py --variants bench/variants/qwen38.json --restore qwen38
-python3 bench/compare.py bench/reports/<stamp>_sweep_qwen38
-```
-
-Every run writes a report with full context to
-`bench/reports/<date>_<model>_<build>/`. No captured requests are needed —
-[`tools/synthetic.py`](tools/synthetic.py) produces Claude-Code-shaped bodies.
-
-**And captures do not belong here.** A real one contains an e-mail address, a
-`device_id`, an `account_uuid` and Anthropic's system prompt. `.gitignore`
-covers them; they do not belong in this repository, not even a private one.

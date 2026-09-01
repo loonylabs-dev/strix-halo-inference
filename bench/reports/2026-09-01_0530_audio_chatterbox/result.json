@@ -1,0 +1,74 @@
+{
+  "workload": "chatterbox",
+  "timestamp": "2026-09-01_0530",
+  "machine": {
+    "gfx": "gfx1151",
+    "mem_total_gib": 124.93416976928711
+  },
+  "binary": "@HOME@/.venvs/media-audio/bin/python",
+  "build_stamp": {},
+  "argv": [
+    "@HOME@/.venvs/media-audio/bin/python",
+    "@HOME@/.venvs/media-audio/bin/chatterbox-tts-cli",
+    "--lang",
+    "de",
+    "--seed",
+    "42"
+  ],
+  "prompt": "Es war einmal ein alter Leuchtturm an einer felsigen K\u00fcste, der jede Nacht sein warmes Licht \u00fcber das dunkle Meer schickte.",
+  "note": "chatterbox-multilingual rerun after the PCM_S fix: smoke, RSS metering and bench in one fence, CPU torch, German, default voice",
+  "reps": [
+    {
+      "rep": 1,
+      "seconds": 22.98,
+      "exit": 0,
+      "sha256": "3556f26701949eb4377e108c0f872ba1596ddb0968f72dd56d451ff56b3fbed3",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 6.68,
+      "realtime_factor": 0.291,
+      "rms": 0.1389,
+      "clip_fraction": 0.0,
+      "flatness": 0.013
+    },
+    {
+      "rep": 2,
+      "seconds": 23.0,
+      "exit": 0,
+      "sha256": "3556f26701949eb4377e108c0f872ba1596ddb0968f72dd56d451ff56b3fbed3",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 6.68,
+      "realtime_factor": 0.29,
+      "rms": 0.1389,
+      "clip_fraction": 0.0,
+      "flatness": 0.013,
+      "file": "identical to an earlier rep \u2014 not stored twice"
+    },
+    {
+      "rep": 3,
+      "seconds": 23.27,
+      "exit": 0,
+      "sha256": "3556f26701949eb4377e108c0f872ba1596ddb0968f72dd56d451ff56b3fbed3",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 6.68,
+      "realtime_factor": 0.287,
+      "rms": 0.1389,
+      "clip_fraction": 0.0,
+      "flatness": 0.013,
+      "file": "identical to an earlier rep \u2014 not stored twice"
+    }
+  ],
+  "distinct_outputs": 1,
+  "checker": {
+    "rms_min": 0.003,
+    "clip_fraction_max": 0.01,
+    "flatness_max": 0.4,
+    "thresholds": "heuristic, not derived \u2014 see bench/audiocheck.py"
+  },
+  "median_seconds": 23.0,
+  "min_seconds": 22.98,
+  "max_seconds": 23.27,
+  "median_realtime_factor": 0.29
+}

@@ -195,12 +195,19 @@ class TestSideserverRestoresTheWatchdogLast(unittest.TestCase):
         return (common.REPO / "bench" / "sideserver.py").read_text(encoding="utf-8")
 
     def test_production_is_waited_for_before_the_timer_returns(self):
+        # The restore dance lives in restore_production() since 01.09.2026 —
+        # ONE implementation for the llama path and the workload path, so
+        # this order holds for both by construction.
         src = self.src()
-        i = src.index('systemctl("start", a.stop)')
+        i = src.index('systemctl("start", production_unit)')
         j = src.index('systemctl("start", PROBE_TIMER)')
         self.assertLess(i, j, "the timer must go back after production")
         self.assertIn("wait_for_slots(PRODUCTION_URL", src[i:j],
                       "starting them together is what caused the false alarm")
+        self.assertGreaterEqual(
+            src.count("restore_production("), 3,
+            "a teardown path stopped calling the shared restore — the order "
+            "proven above then covers nothing there")
 
 
 class TestBusyIsNotDown(unittest.TestCase):

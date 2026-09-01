@@ -1,16 +1,23 @@
 # Tests
 
-Five entry points, answering different questions. They do not replace one
+Six entry points, answering different questions. They do not replace one
 another.
 
 | With | What it answers | Needs | Duration |
 |---|---|---|---|
-| `bash tests/run.sh` | Is the logic right? (1046 tests) | nothing | ~15 s |
+| `bash tests/run.sh` | Is the logic right? (1146 tests, 01.09.2026) | nothing | ~16 s |
 | `bash tests/live_prefix.sh` | Do saving **and** restoring really bite? | GPU, running stack | ~4 min |
 | `bash tests/live_answer_freshness.sh` | Does a RESTORED prefix still answer the CURRENT question? | GPU, running stack | ~3 min |
 | `bash tests/live_concurrency.sh` | Does the admission control hold under load? | GPU, running stack, a token | ~2 min |
+| `bash tests/live_media.sh` | Do the media workloads still produce **byte-identical** output? Hashes against each profile's pinned WORKLOAD_SMOKE_SHA256, through the fence | GPU; stops/restores production per workload | `--quick` ~5 min, `--all` ~40 min |
 | `bash setup/smoketest.sh` | Does the protection hold? | running stack, tunnel | ~20 s |
 | `bash setup/check.sh` | Does what the repo says actually run? | running system | ~2 s |
+
+The media lane exists because every measured workload is byte-DETERMINISTIC
+at its pinned seed (measured 01.09.2026, up to six reps across process
+lifetimes and one refactor): a regression is a hash flip, not a statistical
+argument. Its `--selftest` (no GPU) proves the comparison can go red — a
+tampered pin against a real committed report must fail.
 
 ## Why the unit tests
 

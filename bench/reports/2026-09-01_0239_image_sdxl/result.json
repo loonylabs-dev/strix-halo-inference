@@ -1,0 +1,78 @@
+{
+  "workload": "sdxl",
+  "timestamp": "2026-09-01_0239",
+  "machine": {
+    "gfx": "gfx1151",
+    "mem_total_gib": 124.93416976928711
+  },
+  "binary": "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+  "build_stamp": {
+    "build_id": "vulkan-6b3edaaf3",
+    "commit": "6b3edaaf32cc19e5bb2d819c788bd557eddc8eba",
+    "backend": "vulkan",
+    "built_at": "2026-09-01_0120",
+    "cmake_flags": "-DSD_VULKAN=ON -DSD_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release"
+  },
+  "argv": [
+    "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+    "-m",
+    "@MODELS@/image/sd_xl_base_1.0.safetensors",
+    "--vae",
+    "@MODELS@/image/sdxl_vae_fp16_fix.safetensors",
+    "-H",
+    "1024",
+    "-W",
+    "1024",
+    "--steps",
+    "30",
+    "--cfg-scale",
+    "7.0",
+    "--seed",
+    "42",
+    "-v"
+  ],
+  "prompt": "a lighthouse on a rocky coast at sunset, detailed oil painting, dramatic clouds",
+  "note": "clean confirmation run: idle machine, no downloads, no test suite",
+  "reps": [
+    {
+      "rep": 1,
+      "seconds": 112.52,
+      "exit": 0,
+      "sha256": "a077e8556c4032d2e6b55c8489a11253cde7606ffba5c92baf12bc57e7f8bf27",
+      "ok": true,
+      "reasons": [],
+      "spread": 62.26,
+      "neighbour_r": 0.991
+    },
+    {
+      "rep": 2,
+      "seconds": 111.57,
+      "exit": 0,
+      "sha256": "a077e8556c4032d2e6b55c8489a11253cde7606ffba5c92baf12bc57e7f8bf27",
+      "ok": true,
+      "reasons": [],
+      "spread": 62.26,
+      "neighbour_r": 0.991,
+      "image": "identical to an earlier rep \u2014 not stored twice"
+    },
+    {
+      "rep": 3,
+      "seconds": 112.73,
+      "exit": 0,
+      "sha256": "a077e8556c4032d2e6b55c8489a11253cde7606ffba5c92baf12bc57e7f8bf27",
+      "ok": true,
+      "reasons": [],
+      "spread": 62.26,
+      "neighbour_r": 0.991,
+      "image": "identical to an earlier rep \u2014 not stored twice"
+    }
+  ],
+  "checker": {
+    "spread_min": 4.0,
+    "neighbour_r_min": 0.35,
+    "thresholds": "heuristic, not derived \u2014 see bench/imagecheck.py"
+  },
+  "median_seconds": 112.52,
+  "min_seconds": 111.57,
+  "max_seconds": 112.73
+}

@@ -1,0 +1,85 @@
+{
+  "workload": "qwen3-tts",
+  "timestamp": "2026-09-01_0527",
+  "machine": {
+    "gfx": "gfx1151",
+    "mem_total_gib": 124.93416976928711
+  },
+  "binary": "@HOME@/qwentts.cpp/build-vulkan-a8a7716b5/qwen-tts-p",
+  "build_stamp": {
+    "build_id": "vulkan-a8a7716b5",
+    "commit": "a8a7716b530e49fed537c57711247c12fbbb903c",
+    "backend": "vulkan",
+    "built_at": "2026-09-01_0438",
+    "cmake_flags": "-DGGML_VULKAN=ON -DCMAKE_BUILD_TYPE=Release"
+  },
+  "argv": [
+    "@HOME@/qwentts.cpp/build-vulkan-a8a7716b5/qwen-tts-p",
+    "--model",
+    "@MODELS@/audio/qwen-talker-1.7b-customvoice-Q8_0.gguf",
+    "--codec",
+    "@MODELS@/audio/qwen-tokenizer-12hz-Q8_0.gguf",
+    "--speaker",
+    "serena",
+    "--lang",
+    "German",
+    "--seed",
+    "42"
+  ],
+  "prompt": "Es war einmal ein alter Leuchtturm an einer felsigen K\u00fcste, der jede Nacht sein warmes Licht \u00fcber das dunkle Meer schickte.",
+  "note": "first qwen3-tts run: smoke, footprint metering and bench in one fence, idle machine, German text, speaker serena",
+  "reps": [
+    {
+      "rep": 1,
+      "seconds": 4.14,
+      "exit": 0,
+      "sha256": "c7778614ee5d4c35209ebbec6a4928620b4cc19e86e9eb947f9693f81ec23d84",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 9.92,
+      "realtime_factor": 2.396,
+      "rms": 0.0623,
+      "clip_fraction": 0.0,
+      "flatness": 0.052
+    },
+    {
+      "rep": 2,
+      "seconds": 3.75,
+      "exit": 0,
+      "sha256": "c7778614ee5d4c35209ebbec6a4928620b4cc19e86e9eb947f9693f81ec23d84",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 9.92,
+      "realtime_factor": 2.647,
+      "rms": 0.0623,
+      "clip_fraction": 0.0,
+      "flatness": 0.052,
+      "file": "identical to an earlier rep \u2014 not stored twice"
+    },
+    {
+      "rep": 3,
+      "seconds": 3.74,
+      "exit": 0,
+      "sha256": "c7778614ee5d4c35209ebbec6a4928620b4cc19e86e9eb947f9693f81ec23d84",
+      "ok": true,
+      "reasons": [],
+      "audio_seconds": 9.92,
+      "realtime_factor": 2.653,
+      "rms": 0.0623,
+      "clip_fraction": 0.0,
+      "flatness": 0.052,
+      "file": "identical to an earlier rep \u2014 not stored twice"
+    }
+  ],
+  "distinct_outputs": 1,
+  "checker": {
+    "rms_min": 0.003,
+    "clip_fraction_max": 0.01,
+    "flatness_max": 0.4,
+    "thresholds": "heuristic, not derived \u2014 see bench/audiocheck.py"
+  },
+  "median_seconds": 3.75,
+  "min_seconds": 3.74,
+  "max_seconds": 4.14,
+  "median_realtime_factor": 2.647
+}

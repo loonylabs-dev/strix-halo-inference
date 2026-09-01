@@ -538,6 +538,11 @@ def main():
     argv = args_from_env(a.env) if a.env else []
     proc = None
     report = {"timestamp": stamp, "model": name, "build": build,
+               # WHICH machine, explicitly — every figure here is true of one
+               # machine only, and "the one" stops being an answer the day a
+               # second box exists. gfx + RAM, no hostname: see
+               # budget.machine_identity().
+               "machine": budget.machine_identity(),
                "flags": argv, "note": a.note, "suites": {}}
     print("=" * 92)
     print("measurement run  model=%s  build=%s" % (name, build))

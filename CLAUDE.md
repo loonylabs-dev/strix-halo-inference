@@ -16,8 +16,9 @@ home named below.
 
 ## Hard rules, each one paid for
 
-- **Never start a second model by hand.** `python3 bench/sideserver.py` is
-  the only way — it stops production, guards memory, and puts production
+- **Never start a second model — or a media workload — by hand.**
+  `python3 bench/sideserver.py` (`--env` / `--workload`) is the only way —
+  it stops production, guards memory, meters peaks, and puts production
   back. Direct starts froze the machine three times on 26.08.2026.
 - **Numbers are measured, not derived**, and every figure in a profile
   carries its source (date + method) in the comment beside it. Repointing
@@ -28,11 +29,17 @@ home named below.
   one sanctioned exception is an explicit `LLAMA_BIN` pin with a written
   retirement condition — setup/README.md, family table.
 - **Production changes only on the operator's explicit go**: `--activate`,
-  `switch-model.sh`, restarting a unit with a new binary.
+  `switch-model.sh`, restarting a unit with a new binary. And no script
+  hard-wires a production unit — derive it from `models.sh serving`: a
+  hard-wired qwen38 in the determinism lane would have silently SWAPPED
+  the serving model via Conflicts= after a model switch (review,
+  01.09.2026).
 - **The tree IS the installation.** install.sh symlinks `$HOME` (the user
   units, `~/.local/lib/llm-stack`, `~/.config/llm-profile`) into this
   checkout, so a checked-out branch that moves files breaks every service
-  restart. Move files in a `git worktree`; merging to main STARTS the
+  restart — and EDITING code the units execute (budget.py is ExecStartPre)
+  changes production at its next restart, so branch work belongs in a
+  `git worktree` even when it only adds. Merging to main STARTS the
   machine migration — install.sh and the unit switch belong in the same
   sitting (01.09.2026).
 - **One load on the machine at a time.** No compiling while a measurement

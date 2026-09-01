@@ -1,0 +1,101 @@
+{
+  "workload": "wan21-t2v",
+  "timestamp": "2026-09-01_0857",
+  "machine": {
+    "gfx": "gfx1151",
+    "mem_total_gib": 124.93416976928711
+  },
+  "binary": "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+  "build_stamp": {
+    "build_id": "vulkan-6b3edaaf3",
+    "commit": "6b3edaaf32cc19e5bb2d819c788bd557eddc8eba",
+    "backend": "vulkan",
+    "built_at": "2026-09-01_0120",
+    "cmake_flags": "-DSD_VULKAN=ON -DSD_BUILD_EXAMPLES=ON -DCMAKE_BUILD_TYPE=Release"
+  },
+  "argv": [
+    "@HOME@/stable-diffusion.cpp/build-vulkan-6b3edaaf3/bin/sd-cli",
+    "-M",
+    "vid_gen",
+    "--diffusion-model",
+    "@MODELS@/video/wan2.1_t2v_1.3B_fp16.safetensors",
+    "--vae",
+    "@MODELS@/video/wan_2.1_vae.safetensors",
+    "--t5xxl",
+    "@MODELS@/video/umt5-xxl-encoder-Q8_0.gguf",
+    "-W",
+    "832",
+    "-H",
+    "480",
+    "--video-frames",
+    "33",
+    "--steps",
+    "20",
+    "--cfg-scale",
+    "6.0",
+    "--sampling-method",
+    "euler",
+    "--flow-shift",
+    "3.0",
+    "--diffusion-fa",
+    "--seed",
+    "42",
+    "-v",
+    "-n",
+    "\u8272\u8c03\u8273\u4e3d\uff0c\u8fc7\u66dd\uff0c\u9759\u6001\uff0c\u7ec6\u8282\u6a21\u7cca\u4e0d\u6e05\uff0c\u5b57\u5e55\uff0c\u98ce\u683c\uff0c\u4f5c\u54c1\uff0c\u753b\u4f5c\uff0c\u753b\u9762\uff0c\u9759\u6b62\uff0c\u6574\u4f53\u53d1\u7070\uff0c\u6700\u5dee\u8d28\u91cf\uff0c\u4f4e\u8d28\u91cf\uff0cJPEG\u538b\u7f29\u6b8b\u7559\uff0c\u4e11\u964b\u7684\uff0c\u6b8b\u7f3a\u7684\uff0c\u591a\u4f59\u7684\u624b\u6307\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u624b\u90e8\uff0c\u753b\u5f97\u4e0d\u597d\u7684\u8138\u90e8\uff0c\u7578\u5f62\u7684\uff0c\u6bc1\u5bb9\u7684\uff0c\u5f62\u6001\u7578\u5f62\u7684\u80a2\u4f53\uff0c\u624b\u6307\u878d\u5408\uff0c\u9759\u6b62\u4e0d\u52a8\u7684\u753b\u9762\uff0c\u6742\u4e71\u7684\u80cc\u666f\uff0c\u4e09\u6761\u817f\uff0c\u80cc\u666f\u4eba\u5f88\u591a\uff0c\u5012\u7740\u8d70"
+  ],
+  "prompt": "a lighthouse on a rocky coast at sunset, waves crashing against the rocks, dramatic clouds drifting, cinematic",
+  "fps": 16.0,
+  "note": "first wan2.1-t2v-1.3b run: smoke, footprint metering and bench in one fence, idle machine, 832x480, 33 frames, 20 steps",
+  "reps": [
+    {
+      "rep": 1,
+      "seconds": 536.1,
+      "exit": 0,
+      "frames": 33,
+      "sequence_sha256": "170973770f0754cac50d78c1dcbb97bfc23d3ed9ace624d2daff259741c71d26",
+      "ok": true,
+      "reasons": [],
+      "clip_seconds": 2.06,
+      "seconds_per_frame": 16.25,
+      "mean_frame_diff": 0.308,
+      "temporal_r": 1.0
+    },
+    {
+      "rep": 2,
+      "seconds": 536.82,
+      "exit": 0,
+      "frames": 33,
+      "sequence_sha256": "170973770f0754cac50d78c1dcbb97bfc23d3ed9ace624d2daff259741c71d26",
+      "ok": true,
+      "reasons": [],
+      "clip_seconds": 2.06,
+      "seconds_per_frame": 16.27,
+      "mean_frame_diff": 0.308,
+      "temporal_r": 1.0
+    },
+    {
+      "rep": 3,
+      "seconds": 533.6,
+      "exit": 0,
+      "frames": 33,
+      "sequence_sha256": "170973770f0754cac50d78c1dcbb97bfc23d3ed9ace624d2daff259741c71d26",
+      "ok": true,
+      "reasons": [],
+      "clip_seconds": 2.06,
+      "seconds_per_frame": 16.17,
+      "mean_frame_diff": 0.308,
+      "temporal_r": 1.0
+    }
+  ],
+  "distinct_outputs": 1,
+  "frames_kept": "frames-rep*/ is gitignored; evidence = sequence hashes above, rep1-{first,mid,last}.png and the derived rep1.webm",
+  "checker": {
+    "frozen_diff_max": 0.05,
+    "temporal_r_min": 0.5,
+    "thresholds": "heuristic, not derived \u2014 see bench/videocheck.py"
+  },
+  "median_seconds": 536.1,
+  "min_seconds": 533.6,
+  "max_seconds": 536.82
+}

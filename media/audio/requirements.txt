@@ -1,0 +1,14 @@
+# media/audio — the Torch lane's first tenant: Chatterbox-Multilingual TTS.
+#
+# Pinned 01.09.2026 to what uv actually resolved on the managed CPython
+# 3.12 (see setup-venv.sh for why 3.12: python3.14-only machine,
+# spacy-pkuseg does not compile there).
+#
+# OBSERVED, not chosen: this pulls torch 2.6.0 as the cu124 wheel — the
+# package pins torch==2.6.0 and PyPI's default linux wheel carries CUDA,
+# which runs fine on CPU and merely wastes ~2.5 GB of disk. setup-venv.sh's
+# CPU-index preinstall is overridden by this exact pin. Slimming to the
+# +cpu wheel without breaking the resolver is a follow-up, not tonight's
+# fight; the measured figures in setup/workloads/chatterbox.env were taken
+# on this stack as it stands.
+chatterbox-tts==0.1.7

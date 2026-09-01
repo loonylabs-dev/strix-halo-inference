@@ -43,7 +43,8 @@ The two rules, both taken from systemd's own behaviour:
 """
 import glob, os, sys
 
-__all__ = ["llama_args", "variable", "directive", "flag", "expand", "LLAMA_ARGS",
+__all__ = ["llama_args", "args_of", "variable", "directive", "flag", "expand",
+           "LLAMA_ARGS",
            "local_env_path", "local_var", "models_dir", "MODELS_CONVENTIONS"]
 
 LLAMA_ARGS = "LLAMA_ARGS"
@@ -207,6 +208,24 @@ def unexpand(text, home=None, models=None):
     return text.replace(home.rstrip("/"), "@HOME@") if home else text
 
 
+def args_of(path, name, home=None, models=None):
+    """Any assignment as an argv list, or None when the file has none.
+
+    The workload profiles (setup/workloads/*.env, WORKLOAD_CMD) read through
+    this — same continuation rules, same token expansion, quotes passed
+    through as data. Not a convenience wrapper: a second command parser is
+    where the three LLAMA_ARGS readers came from, and the worst of them
+    appended comment lines to a server's command line.
+    """
+    raw = _assignment(path, name)
+    if raw is None:
+        return None
+    # Expand BEFORE splitting, and split afterwards: a home directory with a
+    # space in it would otherwise become two arguments. That is not this
+    # machine's problem, but it is somebody's.
+    return expand(raw, home, models).split()
+
+
 def llama_args(path, home=None, models=None):
     """LLAMA_ARGS as an argv list, exactly as systemd would hand it over.
 
@@ -214,13 +233,10 @@ def llama_args(path, home=None, models=None):
     start llama-server with no arguments at all, which the unit deliberately
     refuses to do.
     """
-    raw = _assignment(path, LLAMA_ARGS)
-    if raw is None:
+    args = args_of(path, LLAMA_ARGS, home, models)
+    if args is None:
         raise SystemExit("no LLAMA_ARGS in %s" % path)
-    # Expand BEFORE splitting, and split afterwards: a home directory with a
-    # space in it would otherwise become two arguments. That is not this
-    # machine's problem, but it is somebody's.
-    return expand(raw, home, models).split()
+    return args
 
 
 def variable(path, name, default=None):

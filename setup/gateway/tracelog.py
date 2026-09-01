@@ -124,6 +124,15 @@ class Trace:
     def level(self):
         return self._level
 
+    @property
+    def expires(self):
+        """Unix time at which `text` gives itself back; 0 = no expiry set.
+
+        Public because the viewer shows the operator how long prompts are
+        still being written — a countdown they can read is worth more than a
+        switch they have to remember."""
+        return self._expires
+
     def on(self, level="summary"):
         return _rank(self._level) >= _rank(level) and self._level != "off"
 

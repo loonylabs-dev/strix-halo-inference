@@ -309,14 +309,14 @@ class TestADerivedRateIsMarkedAsOne(unittest.TestCase):
                          r"function saveRate\(r\) \{[\s\S]{0,200}return \"\";")
 
     def test_the_column_title_says_which_is_which(self):
-        self.assertIn("mit ~ vom Gateway", self.html)
+        self.assertIn("with ~ derived by the gateway", self.html)
 
     def test_a_save_row_says_where_its_seconds_went(self):
         """51.8 in the seconds column and nothing else reads as a slow disk.
         Asked 30.08.2026 in exactly those words; the write was 237 ms of it and
         the rest is a prefill."""
         self.assertIn("function saveHint(r)", self.html)
-        self.assertIn("der Rest ist Prefill", self.html)
+        self.assertIn("the rest is prefill", self.html)
 
     def test_a_save_shows_the_tokens_it_computed(self):
         self.assertIn('if (typeof r.computed === "number") return r.computed;',
@@ -393,7 +393,7 @@ const setInterval = () => {};
 
     def test_the_hint_explains_the_seconds(self):
         out = self.run_js("console.log(saveHint({kind:'save', write_ms:237}));")
-        self.assertIn("Prefill", out[-1])
+        self.assertIn("prefill", out[-1])
         self.assertIn("237", out[-1])
 
     def test_an_old_record_still_shows_its_numbers(self):
@@ -438,3 +438,226 @@ const setInterval = () => {};
             "console.log(inAny(o)); console.log(JSON.stringify(share(o)));")
         self.assertEqual(out[-2], "11005")
         self.assertEqual(out[-1], '""')
+
+    def test_a_non_json_error_answer_still_reaches_the_operator(self):
+        """A stale viewer process without the POST endpoint answers 501 with
+        an HTML body (measured 2026-09-01). The page parsed that body as JSON
+        before looking at the status: the parse threw past the alert, and the
+        select snapped back on the next poll without a word to the operator."""
+        out = self.run_js(
+            'globalThis.alert = m => console.log("ALERT " + m);\n'
+            'levelResponse({ok: false, status: 501,\n'
+            '               json: () => Promise.reject(new SyntaxError())})\n'
+            '  .then(d => console.log("RESULT " + d));')
+        self.assertIn("ALERT HTTP 501", out)
+        self.assertIn("RESULT null", out)
+
+    def test_the_servers_own_error_text_still_wins(self):
+        """The 403/415 answers carry a reason in their JSON body — the
+        fallback must not replace it."""
+        out = self.run_js(
+            'globalThis.alert = m => console.log("ALERT " + m);\n'
+            'levelResponse({ok: false, status: 403,\n'
+            '               json: () => Promise.resolve({error: "not you"})})\n'
+            '  .then(d => console.log("RESULT " + d));')
+        self.assertIn("ALERT not you", out)
+        self.assertIn("RESULT null", out)
+
+
+class TestItCanBeRestarted(unittest.TestCase):
+    """A viewer that cannot be restarted for a minute is a viewer nobody
+    restarts.
+
+    The server holds the port for as long as its last connection sits in
+    TIME-WAIT, so `kill` followed straight away by a fresh `serve` dies with
+    EADDRINUSE — which reads like "it is still running" and invites a second
+    kill on the wrong PID. SO_REUSEADDR is what prevents that, and it is read
+    inside server_bind(), which the constructor calls: setting the attribute
+    on the finished instance is too late to have any effect at all.
+    """
+
+    def test_the_listening_socket_really_carries_so_reuseaddr(self):
+        import http.server
+        import socket
+
+        srv = UI._Server(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+        self.addCleanup(srv.server_close)
+        self.assertTrue(
+            srv.socket.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR),
+            "the bound socket has no SO_REUSEADDR — a restart within the "
+            "TIME-WAIT window will fail with EADDRINUSE")
+
+
+class TestThePageNamesWhatItShows(unittest.TestCase):
+    """The gateway was renamed in 09/2026; the page kept the old name in its
+    title bar for a day, because a rename greps for paths and unit names and
+    nobody greps for headings. An operator reading `cc-gateway trace` above a
+    table has every reason to believe they are looking at a stale viewer —
+    which is exactly the thing this page is used to rule out.
+    """
+
+    def test_no_heading_carries_the_pre_rename_name(self):
+        html = PAGE.read_text(encoding="utf-8")
+        for tag in ("title", "h1"):
+            m = re.search(r"<%s>(.*?)</%s>" % (tag, tag), html, re.S)
+            self.assertIsNotNone(m, "no <%s> on the page" % tag)
+            self.assertIn("llm-gateway", m.group(1))
+            self.assertNotIn("cc-gateway", m.group(1))
+
+
+class TestTheLevelSwitch(unittest.TestCase):
+    """The one endpoint that WRITES — and the page is served to a browser.
+
+    Every other tab that browser has open can send requests to 127.0.0.1, so
+    the question is not whether the operator can flip the switch but whether a
+    page from anywhere else can flip it for them. `text` writes complete
+    prompts to disk in the clear; a switch reachable by a stray <img> would
+    hand that to any site the operator happens to be reading.
+
+    Three guards, and each is tested by performing the attack rather than by
+    reading the source: the method (a GET switches nothing), the content type
+    (application/json forces a CORS preflight this server never answers), and
+    the Origin/Host pair (a rebound DNS name is not this viewer).
+    """
+
+    def setUp(self):
+        import http.server                                  # noqa: F401
+        import threading
+        import urllib.request
+
+        self.request = urllib.request
+        self.dir = tempfile.mkdtemp(prefix="traceui-")
+        self.addCleanup(shutil.rmtree, self.dir, ignore_errors=True)
+        self.trace = UI.TR.Trace(directory=self.dir)
+        self.trace.set_level("detail")
+
+        self.srv = UI._Server(("127.0.0.1", 0), None)
+        self.port = self.srv.server_address[1]
+        self.srv.RequestHandlerClass = UI.make_handler(
+            self.trace, str(PAGE), self.port)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        self.base = "http://127.0.0.1:%d" % self.port
+
+    def post(self, body, ctype="application/json", origin=None, host=None):
+        req = self.request.Request(
+            self.base + "/level", data=json.dumps(body).encode(),
+            method="POST", headers={"Content-Type": ctype})
+        if origin:
+            req.add_header("Origin", origin)
+        if host:
+            req.add_header("Host", host)
+        try:
+            with self.request.urlopen(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode())
+        except Exception as e:
+            return getattr(e, "code", 0), {}
+
+    def level_on_disk(self):
+        with open(os.path.join(self.dir, "level"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_the_operators_own_page_can_switch(self):
+        code, body = self.post({"level": "summary"},
+                               origin=self.base)
+        self.assertEqual(code, 200)
+        self.assertEqual(body.get("level"), "summary")
+        self.assertEqual(self.level_on_disk()["level"], "summary")
+
+    def test_text_always_gets_an_expiry_even_when_none_is_asked_for(self):
+        """The CLI forces one; a switch that did not would be the easier way
+        to leave prompts running for a week."""
+        code, body = self.post({"level": "text"}, origin=self.base)
+        self.assertEqual(code, 200)
+        self.assertGreater(self.level_on_disk()["expires"], 0)
+        self.assertGreater(body.get("expires", 0), 0)
+
+    def test_a_page_from_somewhere_else_cannot_switch(self):
+        code, _ = self.post({"level": "text"}, origin="https://evil.example")
+        self.assertEqual(code, 403)
+        self.assertEqual(self.level_on_disk()["level"], "detail")
+
+    def test_a_rebound_name_is_not_this_viewer(self):
+        code, _ = self.post({"level": "text"}, host="evil.example:%d" % self.port)
+        self.assertEqual(code, 403)
+        self.assertEqual(self.level_on_disk()["level"], "detail")
+
+    def test_a_form_post_is_refused_so_the_preflight_cannot_be_skipped(self):
+        """A cross-origin POST only escapes the preflight while its content
+        type is a form/plain one. Refusing those is what makes the browser
+        ask first."""
+        for ctype in ("text/plain", "application/x-www-form-urlencoded",
+                      "multipart/form-data"):
+            with self.subTest(ctype=ctype):
+                code, _ = self.post({"level": "text"}, ctype=ctype)
+                self.assertEqual(code, 415)
+                self.assertEqual(self.level_on_disk()["level"], "detail")
+
+    def test_a_get_switches_nothing(self):
+        """An <img src> on a foreign page is a GET, and it carries no Origin
+        the server could refuse."""
+        try:
+            with self.request.urlopen(
+                    self.base + "/level?set=text", timeout=5) as r:
+                code = r.status
+        except Exception as e:
+            code = getattr(e, "code", 0)
+        self.assertEqual(code, 404)
+        self.assertEqual(self.level_on_disk()["level"], "detail")
+
+    def test_an_unknown_level_is_refused(self):
+        code, _ = self.post({"level": "everything"}, origin=self.base)
+        self.assertEqual(code, 400)
+        self.assertEqual(self.level_on_disk()["level"], "detail")
+
+    def test_only_text_gets_an_expiry_written(self):
+        """An expiry means one thing: when `text` gives itself back. refresh()
+        applies it to nothing else, so writing one beside `summary` — which
+        the page did on its first outing, because it always sent the minutes
+        field — records a deadline that will never be acted on."""
+        code, body = self.post({"level": "summary", "minutes": 60},
+                               origin=self.base)
+        self.assertEqual(code, 200)
+        self.assertEqual(self.level_on_disk()["expires"], 0)
+        self.assertEqual(body.get("expires"), 0)
+
+
+class TestThePageIsEnglish(unittest.TestCase):
+    """This repo is English, and the viewer was the last German thing in it.
+
+    It was written German-first and translated in pieces — the bar in one
+    sitting, the table and the charts three exchanges later, each time because
+    somebody read a word on screen and asked. A page half in each language is
+    worse than either: `Historie` beside `served/mode` reads as a column that
+    means something different.
+
+    The check is a HEURISTIC, not a language detector: umlauts, plus function
+    words that cannot appear in English prose. It will not catch a German
+    sentence written without either, and it is not meant to — it catches the
+    way this actually regresses, which is a hurried string added in the
+    language the conversation happens to be in.
+    """
+
+    # Matched on WORD BOUNDARIES, which the first version was not: `und`
+    # found itself inside "around" and "background" and reported two English
+    # comments as German. A guard that cries wolf gets deleted by the next
+    # person in a hurry, which costs more than the German it was watching for.
+    WORDS = ("nicht", "und", "wurde", "kamen", "gerechnet", "geladen",
+             "pausiert", "Anfrage[n]?", "Historie", "Anteil", "kalt", "davon",
+             "Zustand", "Dauer", "vom", "Nachrichten", "Schreiben")
+    UMLAUTS = "äöüßÄÖÜ"
+
+    def test_nothing_on_the_page_is_german(self):
+        pattern = re.compile(r"\b(%s)\b" % "|".join(self.WORDS))
+        found = []
+        for i, line in enumerate(PAGE.read_text(encoding="utf-8").splitlines(), 1):
+            hit = pattern.search(line)
+            if not hit:
+                hit = next((c for c in self.UMLAUTS if c in line), None)
+            if hit:
+                found.append("%d: %s (%s)" % (
+                    i, line.strip()[:60],
+                    hit if isinstance(hit, str) else hit.group(0)))
+        self.assertEqual(found, [], "German left on the page:\n  " +
+                         "\n  ".join(found))

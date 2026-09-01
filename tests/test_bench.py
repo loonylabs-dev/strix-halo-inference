@@ -160,5 +160,28 @@ class TestProvenanceEnvironment(unittest.TestCase):
         self.assertNotIn("EDITOR", env)
 
 
+class TestNoSuiteReachesIntoThePreRenameHome(unittest.TestCase):
+    """The stack left ~/.claude in 09/2026; a suite that still points there
+    finds nothing.
+
+    The cost is not the missing file — it is WHEN it is missed:
+    save-eviction.py stops production, restarts the gateway and then spawns
+    prewarm.py, so a dead path aborts the run after the machine has already
+    been taken apart. Found 01.09.2026, three weeks of it being wrong and
+    unnoticed because nothing runs these suites unattended.
+    """
+
+    def test_no_suite_names_the_old_home(self):
+        stale = []
+        for f in sorted((common.REPO / "bench" / "suites").glob("*.py")):
+            src = f.read_text(encoding="utf-8")
+            for i, line in enumerate(src.splitlines(), 1):
+                if "~/.claude" in line and not line.lstrip().startswith("#"):
+                    stale.append("%s:%d" % (f.name, i))
+        self.assertEqual(stale, [],
+                         "these lines still resolve into ~/.claude, which the "
+                         "09/2026 move emptied: %s" % ", ".join(stale))
+
+
 if __name__ == "__main__":
     unittest.main()

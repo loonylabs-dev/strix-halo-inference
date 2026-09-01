@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>cc-gateway trace</title>
+<title>llm-gateway trace</title>
 <!--
   One file, no build, no dependency, nothing loaded from anywhere. It is
   served by `python3 tools/tracelog.py serve` on 127.0.0.1 and reads the
@@ -32,6 +32,12 @@
                         border-radius:5px; padding:4px 8px; font:inherit }
   button { cursor:pointer } button:hover { border-color:var(--acc) }
   button.on { border-color:var(--acc); color:var(--acc) }
+  /* `text` is the one setting with a consequence outside this page: it puts
+     complete prompts on disk. It gets --bad for as long as it is running,
+     and the countdown beside it. NOT --warm: in this palette warm is the
+     green of a reused cache, which is the opposite of a warning. */
+  .warn { color:var(--bad); font-weight:600 }
+  select#level.hot { border-color:var(--bad); color:var(--bad) }
   .sp { flex:1 } .dim { color:var(--dim) }
   table { border-collapse:collapse; width:100%; }
   th,td { text-align:left; padding:3px 10px; border-bottom:1px solid var(--line);
@@ -60,11 +66,11 @@
 </style>
 
 <header>
-  <h1>cc-gateway trace</h1>
+  <h1>llm-gateway trace</h1>
   <select id=day></select>
   <input id=q placeholder="filter: slug, prefix, who, mode…" size=26>
   <select id=kind>
-    <option value="">alle Arten</option>
+    <option value="">all kinds</option>
     <option>request</option><option>save</option><option>restore</option>
     <option>quarantine</option><option>mismatch</option>
   </select>
@@ -72,24 +78,37 @@
   <button id=charts-btn class=on>Charts</button>
   <span class=sp></span>
   <span class=dim id=meta></span>
+  <label class=dim for=level>trace</label>
+  <select id=level title="what the gateway writes; takes effect on its next request">
+    <option value=off>off</option>
+    <option value=summary>summary</option>
+    <option value=detail>detail</option>
+    <option value=text>text — full prompts</option>
+  </select>
+  <select id=mins title="when text gives itself back">
+    <option value=30>30 min</option>
+    <option value=60 selected>60 min</option>
+    <option value=180>180 min</option>
+  </select>
+  <span class=warn id=expiry></span>
 </header>
 <section id=charts>
-  <figure><figcaption>Dauer je Anfrage <span class=dim>· logarithmisch, Farbe = kalt/warm</span></figcaption>
+  <figure><figcaption>Duration per request <span class=dim>· logarithmic, colour = cold/warm</span></figcaption>
     <svg id=c-dur viewBox="0 0 1000 150" preserveAspectRatio=none></svg></figure>
-  <figure><figcaption>Tokens je Anfrage <span class=dim>· grün wiederverwendet, orange gerechnet</span></figcaption>
+  <figure><figcaption>Tokens per request <span class=dim>· green reused, orange computed</span></figcaption>
     <svg id=c-tok viewBox="0 0 1000 120" preserveAspectRatio=none></svg></figure>
-  <figure><figcaption>je Prefix <span class=dim>· Anfragen und gerechnete Tokens</span></figcaption>
+  <figure><figcaption>Per prefix <span class=dim>· requests and computed tokens</span></figcaption>
     <svg id=c-pre viewBox="0 0 1000 130" preserveAspectRatio=none></svg></figure>
 </section>
 <table>
   <thead><tr>
-    <th>Zeit</th><th>Art</th><th>wer</th><th>Client</th><th>slug</th><th>served/mode</th>
+    <th>time</th><th>kind</th><th>who</th><th>client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th></th><th class=num>s</th>
-    <th class=num>in</th><th class=num>Cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>Historie</th><th>Anteil</th>
+    <th class=num>in</th><th class=num>cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>history</th><th>share</th>
   </tr></thead>
   <tbody id=rows></tbody>
 </table>
-<div class=empty id=empty>nichts geladen</div>
+<div class=empty id=empty>nothing loaded</div>
 
 <script>
 const MAX_ROWS = 2000;          // a live view must not grow forever
@@ -169,13 +188,13 @@ function history(r) {
   const rewrote = r.msgs_kept < r.msgs_prev;
   const dropped = r.prev_in != null && r.reused != null && r.reused < r.prev_in * 0.9;
   if (rewrote)
-    return {label: `umgeschrieben ab ${r.msgs_kept + 1}`, bad: false,
-            why: `${r.msgs_kept} von ${r.msgs_prev} Nachrichten kamen unverändert wieder — `
-                 + `der Client hat seine Historie geändert, nicht der Cache verloren`};
+    return {label: `rewritten from ${r.msgs_kept + 1}`, bad: false,
+            why: `${r.msgs_kept} of ${r.msgs_prev} messages came back unchanged — `
+                 + `the client changed its history; the cache lost nothing`};
   if (dropped)
-    return {label: "Zustand verloren", bad: true,
-            why: `die Historie stand (${r.msgs_kept} von ${r.msgs_prev}), aber nur `
-                 + `${r.reused} von zuvor ${r.prev_in} Tokens kamen zurück`};
+    return {label: "state lost", bad: true,
+            why: `the history stood (${r.msgs_kept} of ${r.msgs_prev}), but only `
+                 + `${r.reused} of the previous ${r.prev_in} tokens came back`};
   return {label: "", why: "", bad: false};
 }
 
@@ -232,8 +251,8 @@ function saveHint(r) {
   const p = fromPrewarm(r);
   const ms = r.write_ms != null ? r.write_ms : (p && p.write_ms);
   if (ms == null) return "";
-  return `davon ${ms} ms Schreiben — der Rest ist Prefill, `
-       + `also das Rechnen des KV-Zustands`;
+  return `${ms} ms of that was writing — the rest is prefill, `
+       + `which is computing the KV state`;
 }
 
 function saveRate(r) {
@@ -267,10 +286,10 @@ function row(r, i) {
     <td class=num>${inAny(r) ?? ""}</td>
     <td class=num>${share(r)}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
-    <td class=num title="lesen·schreiben. Ohne ~ vom Server gemessen; mit ~ vom Gateway aus der Zeit bis zum ersten Token abgeleitet">${rates(r)}</td>
+    <td class=num title="read·write. Without ~ measured by the server; with ~ derived by the gateway from the time to the first token">${rates(r)}</td>
     <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=15><pre id=detail>lädt …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=15><pre id=detail>loading …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------
@@ -357,12 +376,12 @@ function drawPrefixes(rows) {
   list.forEach(([pid, e], i) => {
     const y = 4 + i * rowH;
     el("text", {x: 2, y: y + rowH - 4}, s).textContent =
-      `${pid.slice(0, 10)} ${e.n}×${e.cold ? " " + e.cold + " kalt" : ""}`;
+      `${pid.slice(0, 10)} ${e.n}×${e.cold ? " " + e.cold + " cold" : ""}`;
     const g = el("g", {class: "pt"}, s);
     el("rect", {x: P, y: y + 1, width: Math.max(1, (W - P - 60) * e.comp / maxC),
                 height: rowH - 3, fill: "var(--cold)", opacity: .85}, g);
     el("title", {}, g).textContent =
-      `${pid}  ${e.slug || ""}  ${e.n} Anfragen, ${e.comp.toLocaleString()} Tokens gerechnet`;
+      `${pid}  ${e.slug || ""}  ${e.n} requests, ${e.comp.toLocaleString()} tokens computed`;
     el("text", {x: W - 56, y: y + rowH - 4}, s).textContent = e.comp.toLocaleString();
   });
 }
@@ -382,7 +401,7 @@ function render() {
   listed = [...shown].reverse();
   $("#rows").innerHTML = listed.map(row).join("");
   $("#empty").style.display = shown.length ? "none" : "block";
-  $("#meta").textContent = `${shown.length}/${records.length} Zeilen · ${file || ""}`;
+  $("#meta").textContent = `${shown.length}/${records.length} rows · ${file || ""}`;
   drawCharts(shown);
   if (openAt !== null) loadDetail();
 }
@@ -425,12 +444,58 @@ async function poll(force) {
     render();
   }
   document.title = `trace · ${d.level}`;
+  showLevel(d.level, d.expires);
 }
 
 async function days() {
   const d = await (await fetch("/days")).json();
   $("#day").innerHTML = d.days.map(x =>
     `<option${x === file ? " selected" : ""}>${x}</option>`).join("");
+  showLevel(d.level, d.expires);
+}
+
+// The switch. The level lives in the gateway's control file, not in this
+// page: the select shows what is set, and every poll corrects it — somebody
+// on the CLI, or `text` giving itself back, must not leave a stale reading
+// here of all places.
+function showLevel(level, expires) {
+  if (!level) return;
+  $("#level").value = level;
+  $("#level").classList.toggle("hot", level === "text");
+  $("#mins").style.display = level === "text" ? "" : "none";
+  const left = expires ? Math.max(0, Math.round((expires * 1000 - Date.now()) / 60000)) : 0;
+  $("#expiry").textContent =
+    level === "text" ? `prompts in the clear · ${left} min left` : "";
+}
+
+$("#level").onchange = async e => {
+  const level = e.target.value;
+  // The one place this page asks before acting: everything else it does is
+  // reading. This writes the operator's prompts to disk in full.
+  if (level === "text" && !confirm(
+        "Write COMPLETE PROMPTS to disk in the clear for " +
+        $("#mins").value + " minutes?\n\n" +
+        "They land beside the trace files and are readable by anything that " +
+        "can read your home directory. It switches itself back afterwards.")) {
+    return days();                       // put the select back where it was
+  }
+  const r = await fetch("/level", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({level, minutes: Number($("#mins").value)})});
+  const d = await levelResponse(r);
+  if (!d) return days();                 // put the select back where it was
+  showLevel(d.level, d.expires);
+};
+
+// The switch's answer, parsed so that failing can only end in the alert: a
+// stale viewer process without the POST endpoint answers 501 with an HTML
+// body, and parsing that before looking at the status threw past the alert
+// — the select snapped back without a word (2026-09-01).
+async function levelResponse(r) {
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { alert(d.error || "HTTP " + r.status); return null; }
+  return d;
 }
 
 $("#day").onchange = e => { file = e.target.value; offset = 0; records = []; render(); poll(); };
@@ -443,7 +508,7 @@ $("#charts-btn").onclick = () => {
 $("#q").oninput = render;
 $("#kind").onchange = render;
 $("#live").onclick = () => { live = !live; $("#live").classList.toggle("on", live);
-                             $("#live").textContent = live ? "live" : "pausiert"; if (live) poll(); };
+                             $("#live").textContent = live ? "live" : "paused"; if (live) poll(); };
 // Scrolling away pauses by itself: nothing is worse than a row that jumps
 // while it is being read.
 addEventListener("scroll", () => {

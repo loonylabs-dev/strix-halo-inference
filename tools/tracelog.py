@@ -6,11 +6,13 @@
     python3 tools/tracelog.py off
     python3 tools/tracelog.py status
 
-    python3 tools/tracelog.py serve            a table in the browser, live
+    python3 tools/tracelog.py serve            a table in the browser, live,
+                                               with the same switch in its bar
     python3 tools/tracelog.py show             the last events, compact
     python3 tools/tracelog.py lies             warm that was not warm
     python3 tools/tracelog.py prefixes         per prefix: cost and reuse
-    python3 tools/tracelog.py saves            every save, restore, quarantine
+    python3 tools/tracelog.py saves            every save, skip, replacement,
+                                               restore, quarantine
     python3 tools/tracelog.py diff             where a history stopped being
                                                an append, and what it cost
 
@@ -20,8 +22,13 @@ turned the trace on to look at.
 
 `show`, `lies` and the rest are the questions this stack keeps asking. They
 exist so that reading a trace is not an exercise in jq.
+
+`serve` is the only part that writes: its POST /level sets the same control
+file the commands above set. It is guarded against the browser it is served
+to, not against the operator — see make_handler, where the guards are, and
+tests/test_traceui.py, where they are attacked.
 """
-import argparse, json, os, re, sys, time
+import argparse, json, os, re, socketserver, sys, time
 from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -329,7 +336,8 @@ def _head_changes(records):
 
 def cmd_saves(a):
     for r in _load(a):
-        if r.get("kind") in ("save", "restore", "quarantine", "mismatch"):
+        if r.get("kind") in ("save", "save-skipped", "save-replaced",
+                             "restore", "quarantine", "mismatch"):
             print("  %s %-11s %s" % (_clock(r), r.get("kind"),
                                      json.dumps({k: v for k, v in r.items()
                                                  if k not in ("t", "kind")},
@@ -416,10 +424,31 @@ def read_one(path, at):
     return json.loads(line.decode("utf-8"))
 
 
-def cmd_serve(a):
-    import http.server, socketserver, urllib.parse
-    t = _tr()
-    ui = os.path.join(HERE, "traceui.html")
+class _Server(socketserver.ThreadingTCPServer):
+    """The viewer's server. Both attributes must be CLASS attributes.
+
+    `allow_reuse_address` is read inside server_bind(), which the constructor
+    calls — setting it on the finished instance, as this did until 01.09.2026,
+    never reaches a single setsockopt. The port then stays taken for the
+    TIME-WAIT of the last connection, and a restart right after a `kill` dies
+    with EADDRINUSE while reading like the old process is still alive.
+    """
+
+    allow_reuse_address = True
+    # ctrl-c should end the viewer, not wait for a browser tab that is still
+    # holding a keep-alive connection open.
+    daemon_threads = True
+
+
+def make_handler(t, ui, port):
+    """The viewer's request handler, built for one trace and one port.
+
+    A factory rather than a class body inside cmd_serve: the guards below
+    decide whether a browser tab from somewhere else can switch this machine
+    into writing prompts in the clear, and a guard that can only be exercised
+    by starting the real program is a guard nobody tests.
+    """
+    import http.server, urllib.parse
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def _send(self, code, body, ctype="application/json"):
@@ -448,18 +477,19 @@ def cmd_serve(a):
                 days = sorted(f for f in os.listdir(t.dir)
                               if DAY_FILE.match(f)) if os.path.isdir(t.dir) else []
                 return self._send(200, json.dumps(
-                    {"days": days, "level": t.refresh(), "dir": t.dir}))
+                    {"days": days, "level": t.refresh(), "dir": t.dir,
+                     "expires": t.expires}))
             if u.path == "/events":
                 name = one("file") or os.path.basename(t.path_for_today())
                 path = _safe_file(name, t.dir)
                 if not path:
                     return self._send(200, json.dumps(
                         {"file": name, "offset": 0, "records": [],
-                         "level": t.refresh()}))
+                         "level": t.refresh(), "expires": t.expires}))
                 recs, off = read_since(path, int(one("since", "0") or 0))
                 return self._send(200, json.dumps(
                     {"file": name, "offset": off, "records": recs,
-                     "level": t.refresh()}))
+                     "level": t.refresh(), "expires": t.expires}))
             if u.path == "/record":
                 path = _safe_file(one("file"), t.dir)
                 if not path:
@@ -470,8 +500,70 @@ def cmd_serve(a):
                     return self._send(404, json.dumps({"error": repr(e)}))
             return self._send(404, json.dumps({"error": "no such path"}))
 
-    with socketserver.ThreadingTCPServer(("127.0.0.1", a.port), Handler) as srv:
-        srv.allow_reuse_address = True
+        # --- the one endpoint that writes ---------------------------------
+        # Everything above answers questions; this changes what the gateway
+        # does with the operator's prompts. The page is served to a browser,
+        # and every other tab that browser has open can reach 127.0.0.1 — so
+        # the guards are about the CALLER, not about the operator.
+        def _from_this_page(self):
+            # A rebound DNS name resolves here but arrives with its own Host,
+            # which is how a foreign page gets same-origin treatment from a
+            # server that only checks the address it bound to.
+            host = (self.headers.get("Host") or "").strip()
+            if host not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+                return False
+            # No Origin at all is a non-browser caller — curl, or the operator
+            # scripting it. Those already have the CLI and the file itself;
+            # what must not pass is an Origin belonging to somebody else.
+            origin = self.headers.get("Origin")
+            return origin is None or origin in ("http://127.0.0.1:%d" % port,
+                                                "http://localhost:%d" % port)
+
+        def do_POST(self):
+            u = urllib.parse.urlparse(self.path)
+            if u.path != "/level":
+                return self._send(404, json.dumps({"error": "no such path"}))
+            # Checked FIRST and strictly: a cross-origin POST escapes the
+            # browser's preflight only while its content type is a form or
+            # plain one. Refusing those is the whole reason the preflight
+            # happens, and the preflight is what this server never answers.
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0]
+            if ctype.strip().lower() != "application/json":
+                return self._send(415, json.dumps(
+                    {"error": "application/json only — a form post would skip "
+                              "the browser's preflight"}))
+            if not self._from_this_page():
+                return self._send(403, json.dumps(
+                    {"error": "this switch answers only to the viewer's own page"}))
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(min(n, 4096)).decode("utf-8"))
+                # An expiry says when `text` gives itself back, and
+                # refresh() applies it to nothing else. Carrying one on any
+                # other level writes a deadline that will never be acted on —
+                # the page sends the field on every switch, so it is dropped
+                # here rather than trusted.
+                minutes = body.get("minutes")
+                minutes = (int(minutes)
+                           if minutes and body.get("level") == "text" else None)
+            except Exception as e:
+                return self._send(400, json.dumps({"error": repr(e)}))
+            try:
+                # set_level forces an expiry on `text` itself — the switch
+                # inherits that rather than reimplementing it.
+                t.set_level(body.get("level"), minutes=minutes)
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            return self._send(200, json.dumps(
+                {"level": t.level, "expires": t.expires, "dir": t.dir}))
+
+    return Handler
+
+
+def cmd_serve(a):
+    t = _tr()
+    ui = os.path.join(HERE, "traceui.html")
+    with _Server(("127.0.0.1", a.port), make_handler(t, ui, a.port)) as srv:
         print("trace ui: http://127.0.0.1:%d   (level %s, %s)"
               % (a.port, t.level, t.dir))
         print("  ctrl-c to stop")

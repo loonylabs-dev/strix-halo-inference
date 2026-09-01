@@ -59,7 +59,22 @@ import synthetic as SYN                                       # noqa: E402
 # Measuring the repo copy would measure a different process than production
 # runs. It is a symlink into the repo, so the code is the same either way —
 # only the path the gateway uses is reproduced.
-PREWARM = os.path.expanduser("~/.claude/bin/prewarm.py")
+#
+# Resolved rather than written out, the way gateway.py resolves it: the hard
+# path this used to carry (~/.claude/bin) survived the 09/2026 move by three
+# weeks, and it would have failed at the worst possible moment — after
+# production has been stopped for the measurement.
+#
+# Falling back to the repo copy keeps the suite runnable uninstalled, but it
+# is then no longer reproducing the spawn production performs. That changes
+# what the numbers mean, so it says so instead of quietly measuring something
+# else.
+PREWARM = os.path.expanduser("~/.local/lib/llm-stack/prewarm.py")
+if not os.path.exists(PREWARM):
+    PREWARM = os.path.join(REPO, "tools", "prewarm.py")
+    print("NOTE: %s is not installed — running the repo copy, which is NOT "
+          "the file the gateway spawns" % "~/.local/lib/llm-stack/prewarm.py",
+          file=sys.stderr)
 
 
 def ask(url, body, model, timeout=900):

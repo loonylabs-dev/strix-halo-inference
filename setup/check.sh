@@ -217,6 +217,24 @@ if [ -d "$HOME/.cache/cc-gateway-trace" ]; then
   printf "  \033[33m?\033[0m ~/.cache/cc-gateway-trace is left over — the trace dir is llm-gateway-trace since 09/2026.\n"
   printf "      mv ~/.cache/cc-gateway-trace ~/.cache/llm-gateway-trace\n"
 fi
+# A viewer that was started before the move keeps the OLD directory: the path
+# is read once at import, so the process goes on serving an empty table from a
+# directory that no longer exists while the gateway writes to the new one —
+# and the page says "no rows", not "wrong directory" (01.09.2026, an hour).
+# Ask the running viewer instead of guessing from its start time; it reports
+# the directory it is reading in /days.
+for vpid in $(pgrep -f "tracelog\.py serve" 2>/dev/null); do
+  vport=$(tr '\0' ' ' < "/proc/$vpid/cmdline" 2>/dev/null \
+          | sed -n 's/.*--port  *\([0-9][0-9]*\).*/\1/p')
+  [ -n "$vport" ] || vport=8092          # tools/tracelog.py's own default
+  vdir=$(curl -s -m3 "http://127.0.0.1:$vport/days" 2>/dev/null \
+         | sed -n 's/.*"dir": *"\([^"]*\)".*/\1/p')
+  if [ -n "$vdir" ] && [ ! -d "$vdir" ]; then
+    old "the trace viewer on :$vport (pid $vpid) reads $vdir, which does not exist — started before the directory moved, or given a TRACE_DIR that is gone; either way the table stays empty"
+    printf "      kill %s && python3 %s/tools/tracelog.py serve --port %s\n" \
+           "$vpid" "$REPO" "$vport"
+  fi
+done
 if systemctl --user is-active cc-gateway.service >/dev/null 2>&1; then
   old "the pre-rename unit cc-gateway is RUNNING; llm-gateway is the name since 09/2026"
   printf "      systemctl --user disable --now cc-gateway\n"

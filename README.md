@@ -18,7 +18,7 @@ bash setup/preflight.sh              # is this repo for your machine?
 bash setup/install.sh                # once — writes ~/.config/llm-stack.env
 bash setup/get-model.sh qwen38       # fetch: resumable, sha256-checked
 bash setup/switch-model.sh qwen38    # serve it
-bash tests/run.sh                    # the gate (1146 tests, ~16 s, no GPU)
+bash tests/run.sh                    # the gate (1183 tests, ~20 s, no GPU)
 ```
 
 The name you fetch is the name you serve. There is no `pull` command, because

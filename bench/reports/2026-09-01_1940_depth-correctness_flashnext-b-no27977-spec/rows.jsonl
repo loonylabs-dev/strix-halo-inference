@@ -1,0 +1,6 @@
+{"target": 8000, "depth": 8034, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 34.29, "prompt_n": 8116}
+{"target": 8000, "depth": 8034, "question": "anchor:first", "want": "10000", "got": "10000", "ok": true, "wall": 0.32, "prompt_n": 4}
+{"target": 8000, "depth": 8034, "question": "anchor:middle", "want": "17919", "got": "17919", "ok": true, "wall": 30.96, "prompt_n": 8087}
+{"target": 8000, "depth": 8034, "question": "anchor:middle", "want": "17919", "got": "17919", "ok": true, "wall": 0.33, "prompt_n": 4}
+{"target": 8000, "depth": 8034, "question": "anchor:last", "want": "17919", "got": "17919", "ok": true, "wall": 0.31, "prompt_n": 4}
+{"target": 8000, "depth": 8034, "question": "anchor:last", "want": "17919", "got": "17919", "ok": true, "wall": 0.32, "prompt_n": 4}

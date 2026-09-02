@@ -1936,7 +1936,7 @@ async def handler(req):
                 async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
                     async with s_.get(LLAMA + "/slots") as r_:
                         slots_now = await r_.json()
-                if await session_restore(ident, slots_now):
+                if await session_restore(ident, slots_now, p, dialect):
                     cold = False
             except Exception as e:
                 # Never fatal. Without this the request simply runs the way it
@@ -2256,7 +2256,7 @@ async def handler(req):
             elif ok is None and restored:
                 log("NOTE        restore of %s unverified: %s"
                     % (restored[0], why))
-            await session_save(ident, reuse)
+            await session_save(ident, reuse, p)
         else:
             log("ABORTED     %-15s %-6s who=%-12s prefix=%s after=%.1fs — no "
                 "answer, nothing saved"
@@ -2268,10 +2268,29 @@ SESSION_SAVED_AT = {}          # prefix -> when its state was last written
 
 
 def session_file(ident):
-    return os.path.join(SLOT_PATH, "session-%s.bin" % ident)
+    return os.path.join(SLOT_PATH, "%s%s.bin" % (SESSION_PREFIX, ident))
 
 
-async def session_restore(ident, slots):
+def session_sidecar(ident):
+    return os.path.join(SLOT_PATH, "%s%s.json" % (SESSION_PREFIX, ident))
+
+
+def session_meta(ident):
+    """What the file beside the state says about it, or None.
+
+    None means "cannot judge", and the caller must then NOT restore. A state
+    whose shape is unknown cannot be shown to be a prefix of anything, and
+    restoring one that is not costs a FULL prefill — see session_restore().
+    """
+    try:
+        with open(session_sidecar(ident), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+async def session_restore(ident, slots, body=None, dialect=DIA.ANTHROPIC):
     """Put a saved conversation back, when the server cannot have it any more.
 
     WHEN, and the two answers cover different failures:
@@ -2303,6 +2322,25 @@ async def session_restore(ident, slots):
     path = session_file(ident)
     if not os.path.exists(path):
         return None
+    # THE STATE MUST BE A PREFIX OF WHAT IS BEING ASKED, or llama.cpp discards
+    # it WHOLE rather than trimming it back (bench/reports/
+    # 2026-08-29_restore-semantics/). A save captures the prompt PLUS what the
+    # model wrote, so a request repeated verbatim — a retry, a client resending
+    # after an abort — meets a state exactly one token too long. Measured live
+    # 02.09.2026 23:54: restored 60,191 tokens against a 60,190-token prompt,
+    # reuse 0, computed 60,190, 367.6 s. The restore did not merely fail to
+    # help; it bought a full prefill.
+    saved = session_meta(ident)
+    if saved is None:
+        log("NOTE        not restoring %s: nothing beside the file says what "
+            "it holds, so it cannot be shown to be a prefix" % ident)
+        return None
+    n_msgs = len((body or {}).get("messages") or []) if body is not None else None
+    if n_msgs is not None and n_msgs <= (saved.get("n_messages") or 0):
+        log("NOTE        not restoring %s: %d messages against the %d the "
+            "state holds — it is not a prefix of this request"
+            % (ident, n_msgs, saved.get("n_messages") or 0))
+        return None
     cold, _, why = prefix_is_cold_on_this_server(ident, slots)
     if not cold:
         if SESSION_RESTORE != "displaced":
@@ -2326,7 +2364,7 @@ async def session_restore(ident, slots):
     return n
 
 
-async def session_save(ident, reuse):
+async def session_save(ident, reuse, body=None):
     """Write the slot AS IT STANDS, so a restart does not throw the day away.
 
     A DIFFERENT MECHANISM FROM save_prefix_first, and the difference is the
@@ -2392,6 +2430,21 @@ async def session_save(ident, reuse):
         SESSION_SAVED_AT[ident] = now
         return
     SESSION_SAVED_AT[ident] = time.time()
+    # HOW LONG THE STATE IS, written beside it. The restore side needs this
+    # BEFORE it decides, and a gateway restart must not lose it — see
+    # session_restore(): a state longer than the incoming prompt is discarded
+    # whole by llama.cpp, so restoring one costs a full prefill and gains
+    # nothing.
+    try:
+        with open(session_sidecar(ident), "w", encoding="utf-8") as f:
+            # n_messages is the load-bearing one: a request whose history has
+            # not grown past what the state holds is not one this state is a
+            # prefix of, and restoring into it costs a full prefill.
+            json.dump({"n_saved": r.get("n_saved"), "at": time.time(),
+                       "n_messages": len((body or {}).get("messages") or [])}, f)
+    except OSError as e:
+        log("NOTE        could not write the session sidecar for %s: %s"
+            % (ident, e))
     log("SESSION     saved %s: %s tokens, %.0f MB, %.0f ms"
         % (ident, r.get("n_saved"), (r.get("n_written") or 0) / 1e6,
            (r.get("timings") or {}).get("save_ms", 0)))
@@ -2810,6 +2863,26 @@ def main():
     log("  automatic saving: %s%s"
         % ("on" if AUTO_SAVE else "off",
            ", limit %g GB" % AUTO_MAX_GB if AUTO_SAVE else ""))
+    # SAID AT STARTUP, because a feature nobody can see is one nobody can
+    # switch off. Live since 02.09.2026, and the operator reading this log is
+    # the one who would have to take it back out — the flashnext profile's
+    # --slot-save-path block names the symptom that would call for it (output
+    # quality drifting without an error).
+    if SESSION_SAVE or SESSION_RESTORE != "off":
+        n_files = len(session_files())
+        log("  session persistence: save %s, restore %s, %d state(s) on disk, "
+            "limit %g GB"
+            % ("every %gs at the earliest, from %d tokens up"
+               % (SESSION_SAVE_COOLDOWN_S, SESSION_SAVE_MIN_TOKENS)
+               if SESSION_SAVE else "off",
+               SESSION_RESTORE, n_files, SESSION_MAX_GB))
+        if SESSION_RESTORE == "displaced":
+            log("    `displaced` restores over a live server, which needs the "
+                "prompt-cache lookup fix in the binary — without it a restore "
+                "can hide a longer cached state (330x, see the profile's "
+                "LLAMA_BIN block). Use `cold` on a server without it.")
+    else:
+        log("  session persistence: off")
     log("  access: %s" % (", ".join(sorted(set(TOKENS.values()))) or "NONE — reachable locally only"))
     if TUNNEL_PORT:
         log("  tunnel port %s:%d — everything from there counts as 'remote'"

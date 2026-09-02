@@ -2658,6 +2658,12 @@ class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
         self.restores = []
         self.log_lines = []
         open(os.path.join(self.dir, "session-abc.bin"), "w").close()
+        # The sidecar is what says the state CAN be a prefix. Without it the
+        # restore is refused — see TestSessionRestoreNeedsAPrefix. These cells
+        # are about WHEN a restore is due, so they hand it a state that is
+        # eligible and vary only the timing.
+        with open(os.path.join(self.dir, "session-abc.json"), "w") as f:
+            json.dump({"n_saved": 40000, "n_messages": 2}, f)
         GW.SEEN.clear()
         GW.SERVED_TRAIL.clear()
         self.patches = [
@@ -2776,3 +2782,73 @@ class TestSessionStoreCeiling(unittest.TestCase):
         self._write("session-aaa.bin", 8000, age=9999)
         GW.session_prune()
         self.assertTrue(os.path.exists(os.path.join(self.dir, "session-aaa.bin")))
+
+
+class TestSessionRestoreNeedsAPrefix(unittest.IsolatedAsyncioTestCase):
+    """A state longer than the request is worse than no state at all.
+
+    llama.cpp discards a restored state WHOLE rather than trimming it back to
+    the common part (bench/reports/2026-08-29_restore-semantics/). A save
+    captures the prompt PLUS what the model wrote, so a request repeated
+    verbatim meets a state exactly one token too long. Measured live
+    02.09.2026 23:54: restored 60,191 against a 60,190-token prompt, reuse 0,
+    computed 60,190, 367.6 s — the restore bought a full prefill.
+    """
+
+    async def asyncSetUp(self):
+        self.dir = tempfile.mkdtemp(prefix="sessp-")
+        self.old_path, GW.SLOT_PATH = GW.SLOT_PATH, self.dir
+        self.old_mode, GW.SESSION_RESTORE = GW.SESSION_RESTORE, "cold"
+        self.restores, self.log_lines = [], []
+        open(os.path.join(self.dir, "session-abc.bin"), "w").close()
+        GW.SEEN.clear()
+        GW.SERVED_TRAIL.clear()
+        self.patches = [
+            mock.patch.object(GW, "log",
+                              lambda *a: self.log_lines.append(" ".join(map(str, a)))),
+            mock.patch.object(GW, "_post_json",
+                              lambda u, p_, t: (self.restores.append(p_),
+                                                {"n_restored": 40000})[1]),
+        ]
+        for p_ in self.patches:
+            p_.start()
+
+    async def asyncTearDown(self):
+        for p_ in self.patches:
+            p_.stop()
+        GW.SLOT_PATH = self.old_path
+        GW.SESSION_RESTORE = self.old_mode
+        GW.SEEN.clear()
+        GW.SERVED_TRAIL.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _sidecar(self, n_messages):
+        with open(os.path.join(self.dir, "session-abc.json"), "w") as f:
+            json.dump({"n_saved": 60191, "n_messages": n_messages}, f)
+
+    SLOTS = [{"id": 0, "id_task": 500}]
+
+    async def test_a_grown_conversation_is_restored(self):
+        self._sidecar(n_messages=4)
+        body = {"messages": [{}, {}, {}, {}, {}, {}]}
+        self.assertEqual(await GW.session_restore("abc", self.SLOTS, body), 40000)
+
+    async def test_the_same_request_again_is_NOT(self):
+        """The live 367.6 s case: identical request, state one token too long."""
+        self._sidecar(n_messages=4)
+        body = {"messages": [{}, {}, {}, {}]}
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS, body))
+        self.assertEqual(self.restores, [])
+
+    async def test_a_shortened_conversation_is_NOT(self):
+        self._sidecar(n_messages=8)
+        body = {"messages": [{}, {}]}
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS, body))
+
+    async def test_no_sidecar_means_no_restore(self):
+        """Unknown shape cannot be shown to be a prefix, so it must not be
+        assumed to be one — the failure it guards against costs a full
+        prefill, the caution costs one cold start."""
+        body = {"messages": [{}, {}, {}, {}, {}, {}]}
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS, body))
+        self.assertEqual(self.restores, [])

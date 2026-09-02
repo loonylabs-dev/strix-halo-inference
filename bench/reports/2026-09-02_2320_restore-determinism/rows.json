@@ -1,0 +1,44 @@
+{
+ "url": "http://127.0.0.1:8081",
+ "facts": 600,
+ "needle_at": 300,
+ "needle_value": 424242,
+ "n_ctx_tokens": 14187,
+ "n_full_tokens": 14217,
+ "cells": {
+  "fresh_1": {
+   "wall_s": 62.12,
+   "text": "424242",
+   "cache_n": 0,
+   "prompt_n": 14217
+  },
+  "fresh_2": {
+   "wall_s": 62.22,
+   "text": "424242",
+   "cache_n": 0,
+   "prompt_n": 14217
+  },
+  "warm": {
+   "wall_s": 0.87,
+   "text": "424242",
+   "cache_n": 14187,
+   "prompt_n": 30
+  },
+  "restored": {
+   "wall_s": 0.79,
+   "text": "424242",
+   "cache_n": 14187,
+   "prompt_n": 30
+  }
+ },
+ "n_saved": 14187,
+ "n_restored": 14187,
+ "verdict": {
+  "deterministic": true,
+  "fresh_eq_restored": true,
+  "warm_eq_fresh": true,
+  "warm_eq_restored": true,
+  "needle_fresh": true,
+  "needle_restored": true
+ }
+}

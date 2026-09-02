@@ -84,6 +84,9 @@ BINARIES = {"rocm-patched": os.path.join(LLAMA_SRC, "build-rocm-patched/bin/llam
             "rocm": os.path.join(LLAMA_SRC, "build-rocm/bin/llama-server"),
             "vulkan": os.path.join(LLAMA_SRC, "build-vulkan/bin/llama-server")}
 BINARY = BINARIES["rocm-patched"]
+# The profile a run was given, or None. Reaches the memory guard through
+# start(); see there for what leaving it out costs.
+PROFILE = None
 SLOT_DIR = os.path.expanduser("~/.cache/llama-slots")
 BASE = ["--alias", "qwen38-bench",
         "-m", os.path.join(MODELS, "Qwen3.8-27B-UD-Q4_K_XL.gguf"),
@@ -94,6 +97,49 @@ BASE = ["--alias", "qwen38-bench",
         "--jinja", "--host", "127.0.0.1", "--port", "8080"]
 SPEC = ["--spec-type", "draft-mtp,ngram-mod",
         "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24"]
+
+
+def base_from_profile(env_path, port="8080"):
+    """BASE and SPEC for a model this suite was not written for.
+
+    The list above is qwen38's, down to `-c 65536` and `-np 2`. Asking whether
+    a restore poisons THIS server means asking it about the flags THIS server
+    runs, so they are read from the profile rather than retyped — the same
+    source systemd starts the unit from, via the same reader bench/sideserver.py
+    uses.
+
+    WHY THIS EXISTS AT ALL, 02.09.2026: setup/env/flashnext.env removed
+    `--slot-save-path` on two upstream reviews of #27742, the QSA indexer
+    carrying state the restore path does not know about, and recorded that the
+    flag stays out "until `restore-safety.py` has run against THIS model.
+    Nobody has run it." Nobody could: the suite could only load qwen38.
+
+    `--slot-save-path` is ADDED here even though the profile omits it — the
+    omission is what is under test, and the whole point of the cell is to find
+    out whether it may come back.
+
+    The spec flags are returned separately because the caller runs a
+    spec/nospec pair; a profile that carries none gets an empty list, and the
+    pair then measures the same configuration twice, which the report says.
+    """
+    argv = systemdfile.llama_args(env_path)
+    base, spec, i = [], [], 0
+    while i < len(argv):
+        tok = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+        if tok.startswith("--spec-"):
+            spec.append(tok)
+            if nxt is not None and not nxt.startswith("-"):
+                spec.append(nxt)
+                i += 1
+        elif tok in ("--port", "--host", "--slot-save-path"):
+            i += 1 if nxt is not None and not nxt.startswith("-") else 0
+        else:
+            base.append(tok)
+        i += 1
+    base += ["--slot-save-path", SLOT_DIR,
+             "--host", "127.0.0.1", "--port", port]
+    return base, spec
 
 # How long a probe may take. The healthy value is the one that has always
 # stood here: a probe queues behind two 2,500-token generations, and without
@@ -260,7 +306,13 @@ def join_all(threads, budget):
 
 
 def start(argv, log):
-    proc = runlib.start_server(argv, log, BINARY)
+    # PROFILE reaches the memory guard, and leaving it out is not a smaller
+    # check — check_room_for's own docstring calls it "a DIFFERENT and wronger
+    # one", and names Qwen3.8-Flash-Next as the model the profile figures were
+    # written for. Measured 02.09.2026 on exactly that model: without the
+    # profile the guard asked for 155.6 GiB and refused a server that
+    # sideserver.py starts at 89.9 GiB of GTT with the same argv.
+    proc = runlib.start_server(argv, log, BINARY, env=PROFILE)
     if not sweep.slots_ready(URL, 240):
         raise RuntimeError("/slots never answered")
     return proc
@@ -451,9 +503,31 @@ def main():
                          "queues behind the slot it targets, so a bound "
                          "below the cell's own workload measures the bound "
                          "(default: %(default)s)")
+    ap.add_argument("--env",
+                    help="a setup/env/*.env profile: take the model, its flags "
+                         "and LLAMA_BIN from there instead of the qwen38 list "
+                         "built into this file. Required to answer the "
+                         "question for any other model")
     a = ap.parse_args()
-    global BINARY, RESTORE_TIMEOUT
+    global BINARY, RESTORE_TIMEOUT, BASE, SPEC, PROFILE
     RESTORE_TIMEOUT = a.restore_timeout
+    profile = None
+    if a.env:
+        if not os.path.exists(a.env):
+            raise SystemExit("no such profile: %s" % a.env)
+        PROFILE = a.env
+        BASE, SPEC = base_from_profile(a.env)
+        if a.spec == "both" and not SPEC:
+            print("NOTE %s carries no --spec-* flags, so the spec/nospec pair "
+                  "measures the same configuration twice." % a.env)
+        # A profile that pins LLAMA_BIN pins it for a reason (setup/README.md,
+        # family table). Honour it unless the caller names a binary outright —
+        # measuring a profile's model on some other build answers about
+        # neither.
+        if not a.binary:
+            pinned = systemdfile.variable(a.env, "LLAMA_BIN")
+            if pinned:
+                a.binary = os.path.expanduser("~/" + pinned)
     BINARY = resolve_binary(a.binary, BINARIES[a.backend])
     cells = {c.strip() for c in a.cells.split(",") if c.strip()}
 

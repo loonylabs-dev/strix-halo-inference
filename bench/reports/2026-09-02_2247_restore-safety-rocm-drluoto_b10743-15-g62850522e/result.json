@@ -1,0 +1,58 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-drluoto-b10743-15-g62850522e/bin/llama-server",
+  "build_from_binary": "b378-6285052",
+  "build_id": "b10743-15-g62850522e",
+  "env": {},
+  "stamp": {
+   "build_id": "b10743-15-g62850522e",
+   "backend": "rocm",
+   "family": "rocm-drluoto",
+   "patched": "yes",
+   "upstream_ref": "drluoto-m2",
+   "upstream_commit": "62850522eb05ec7bbb0291e14db7ba5bf122a9c4",
+   "patch_commit": "62850522eb05ec7bbb0291e14db7ba5bf122a9c4",
+   "patch_branch": "drluoto-m2",
+   "rocm_path": "none",
+   "rocm_version": "none",
+   "built_at": "2026-09-01T20:22:26+02:00",
+   "version": "version: 0.3.0-dev (build 378, commit 62850522e)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "restore_timeout": 300,
+  "label": "rocm-drluoto"
+ },
+ "save-spec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-spec": {
+  "phase": "restore",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 0.2,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ },
+ "save-nospec": {
+  "phase": "done",
+  "clean": true
+ },
+ "idle-nospec": {
+  "phase": "restore",
+  "restore_timeout": 300,
+  "restore_returned": true,
+  "restore_seconds": 0.2,
+  "clean": true,
+  "probes": [
+   "391",
+   "391",
+   "391"
+  ]
+ }
+}

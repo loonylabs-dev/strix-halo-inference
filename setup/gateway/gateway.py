@@ -292,6 +292,17 @@ SESSION_SAVE_MIN_TOKENS = int(env("SESSION_SAVE_MIN_TOKENS", default="20000"))
 # what keeps a hung server from holding the gate indefinitely; it is not a
 # tuning knob.
 SESSION_SAVE_TIMEOUT_S = float(env("SESSION_SAVE_TIMEOUT_S", default="60"))
+# When a saved conversation may be put back. See session_restore() for what
+# each value covers and what it costs.
+#   off        never
+#   cold       only when this llama-server life has not served the prefix —
+#              the cache cannot be hiding anything, so this is safe anywhere
+#   displaced  also when another prefix took the slot in between. Covers the
+#              02.09. eviction incident, and REQUIRES the server to carry the
+#              prompt-cache lookup fix (bench/reports/2026-09-02_2230_restore-
+#              lookup-patch); without it a restore can hide a longer cached
+#              state, measured at 330x.
+SESSION_RESTORE = env("SESSION_RESTORE", default="off")
 # Restore a prefix from disk ONLY when llama-server is cold. 0 = off, and off
 # is what runs today.
 #
@@ -1845,6 +1856,26 @@ async def handler(req):
             restored = await restore_from_disk(ident, p, dialect)
             if restored:
                 cold = False
+        # THE SESSION STORE, which is a different store from SAVED above. That
+        # one holds bare PREFIXES written by prewarm; this one holds whole
+        # conversations written by session_save() after a turn. A prefix can
+        # have an entry in either, both or neither, and the two are asked in
+        # this order on purpose: a prefix restore only ever brings back the
+        # head, a session restore brings back the head AND everything the
+        # conversation had grown since, so it is the better answer wherever it
+        # applies. Reading /slots costs one localhost GET and only happens when
+        # there is a file this could change the fate of.
+        if SESSION_RESTORE != "off" and ident and os.path.exists(session_file(ident)):
+            try:
+                async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
+                    async with s_.get(LLAMA + "/slots") as r_:
+                        slots_now = await r_.json()
+                if await session_restore(ident, slots_now):
+                    cold = False
+            except Exception as e:
+                # Never fatal. Without this the request simply runs the way it
+                # ran before session restore existed.
+                log("NOTE        session restore skipped for %s: %r" % (ident, e))
         t_start = time.time()
         if ident:
             record_use(ident)
@@ -2168,6 +2199,65 @@ async def handler(req):
         IN_FLIGHT_PER_TOKEN[who] = max(0, IN_FLIGHT_PER_TOKEN.get(who, 1) - 1)
 
 SESSION_SAVED_AT = {}          # prefix -> when its state was last written
+
+
+def session_file(ident):
+    return os.path.join(SLOT_PATH, "session-%s.bin" % ident)
+
+
+async def session_restore(ident, slots):
+    """Put a saved conversation back, when the server cannot have it any more.
+
+    WHEN, and the two answers cover different failures:
+
+      `cold`       the prefix has not been served in THIS llama-server life, so
+                   llama.cpp's own RAM cache cannot be holding it and the file
+                   is the only source. Covers a server RESTART, which today
+                   discards every resident conversation — the deepest costs
+                   ~30 min to rebuild (2026-09-02_1856_slot-save-cost).
+                   Safe without any patch: an empty cache cannot be hidden.
+
+      `displaced`  additionally when the LAST prefix this gateway served was a
+                   different one, i.e. somebody took the slot in between.
+                   Covers the 02.09. incident, where a second session evicted
+                   an 80k state and the next turn prefilled 80,394 tokens in
+                   599.4 s. NOT free: a restore into a server whose RAM cache
+                   still holds a LONGER state hides it, measured at 330x
+                   (2026-09-02_2050_restore-vs-cram) — unless the server
+                   carries the two-commit fix from
+                   2026-09-02_2230_restore-lookup-patch, which turns that into
+                   0.53 s. Do not run `displaced` on a server without it.
+
+    The health probe goes straight to llama-server and never appears in this
+    gateway's trail, so `displaced` does not see it. Two sessions alternating
+    it does see.
+    """
+    if SESSION_RESTORE == "off" or not ident:
+        return None
+    path = session_file(ident)
+    if not os.path.exists(path):
+        return None
+    cold, _, why = prefix_is_cold_on_this_server(ident, slots)
+    if not cold:
+        if SESSION_RESTORE != "displaced":
+            return None
+        last = SERVED_TRAIL[-1][1] if SERVED_TRAIL else None
+        if last is None or last == ident:
+            return None
+        why = "the slot was last used by %s" % last
+    try:
+        r = await asyncio.to_thread(
+            _post_json, "%s/slots/0?action=restore" % LLAMA,
+            {"filename": os.path.basename(path)}, SESSION_SAVE_TIMEOUT_S)
+    except (urllib.error.URLError, OSError, TimeoutError,
+            json.JSONDecodeError) as e:
+        log("NOTE        session restore of %s failed: %s" % (ident, e))
+        return None
+    n = r.get("n_restored")
+    log("SESSION     restored %s: %s tokens — %s" % (ident, n, why))
+    TRACE.record("session-restore",
+                 summary={"prefix": ident, "n_restored": n, "why": why})
+    return n
 
 
 async def session_save(ident, reuse):

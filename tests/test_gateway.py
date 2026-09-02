@@ -2640,3 +2640,79 @@ class TestSessionSave(unittest.IsolatedAsyncioTestCase):
         one consumer this exists for."""
         await GW.session_save("abc123", None)
         self.assertEqual(len(self.posts), 1)
+
+
+class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
+    """WHEN a saved conversation may go back, which is the half that can hurt.
+
+    `cold` is safe anywhere: an empty cache cannot be hidden. `displaced` also
+    covers the 02.09. eviction but needs a server carrying the prompt-cache
+    lookup fix, because without it a restore can hide a longer cached state
+    (330x, bench/reports/2026-09-02_2050_restore-vs-cram).
+    """
+
+    async def asyncSetUp(self):
+        self.dir = tempfile.mkdtemp(prefix="sess-")
+        self.old_path, GW.SLOT_PATH = GW.SLOT_PATH, self.dir
+        self.old_mode = GW.SESSION_RESTORE
+        self.restores = []
+        self.log_lines = []
+        open(os.path.join(self.dir, "session-abc.bin"), "w").close()
+        GW.SEEN.clear()
+        GW.SERVED_TRAIL.clear()
+        self.patches = [
+            mock.patch.object(GW, "log",
+                              lambda *a: self.log_lines.append(" ".join(map(str, a)))),
+            mock.patch.object(GW, "_post_json", self._fake),
+        ]
+        for p in self.patches:
+            p.start()
+
+    async def asyncTearDown(self):
+        for p in self.patches:
+            p.stop()
+        GW.SLOT_PATH = self.old_path
+        GW.SESSION_RESTORE = self.old_mode
+        GW.SEEN.clear()
+        GW.SERVED_TRAIL.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _fake(self, url, payload, timeout):
+        self.restores.append(payload)
+        return {"n_restored": 40000}
+
+    SLOTS = [{"id": 0, "id_task": 500}]
+
+    async def test_off_never_restores(self):
+        GW.SESSION_RESTORE = "off"
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS))
+        self.assertEqual(self.restores, [])
+
+    async def test_cold_restores_a_prefix_this_server_never_served(self):
+        GW.SESSION_RESTORE = "cold"
+        self.assertEqual(await GW.session_restore("abc", self.SLOTS), 40000)
+
+    async def test_cold_does_not_restore_over_a_live_cache(self):
+        """Served in this server life -> llama.cpp's own cache is the better
+        source, and restoring over it is the 330x case."""
+        GW.SESSION_RESTORE = "cold"
+        GW.SEEN["abc"] = 100
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS))
+        self.assertEqual(self.restores, [])
+
+    async def test_displaced_restores_when_another_prefix_took_the_slot(self):
+        GW.SESSION_RESTORE = "displaced"
+        GW.SEEN["abc"] = 100
+        GW.SERVED_TRAIL.extend([(1, "abc"), (2, "other")])
+        self.assertEqual(await GW.session_restore("abc", self.SLOTS), 40000)
+
+    async def test_displaced_does_nothing_when_we_still_hold_the_slot(self):
+        GW.SESSION_RESTORE = "displaced"
+        GW.SEEN["abc"] = 100
+        GW.SERVED_TRAIL.extend([(1, "other"), (2, "abc")])
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS))
+
+    async def test_no_file_no_restore(self):
+        GW.SESSION_RESTORE = "cold"
+        self.assertIsNone(await GW.session_restore("nosuch", self.SLOTS))
+        self.assertEqual(self.restores, [])

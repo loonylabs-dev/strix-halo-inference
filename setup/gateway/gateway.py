@@ -303,6 +303,13 @@ SESSION_SAVE_TIMEOUT_S = float(env("SESSION_SAVE_TIMEOUT_S", default="60"))
 #              lookup-patch); without it a restore can hide a longer cached
 #              state, measured at 330x.
 SESSION_RESTORE = env("SESSION_RESTORE", default="off")
+# Ceiling for the session store, in GB. Its own budget, NOT AUTO_MAX_GB: both
+# stores share the one --slot-save-path directory, and a few deep
+# conversations (~6 GB each at 180k tokens) would otherwise spend the prefix
+# store's allowance and stop its saves without saying so. Pruned oldest-first
+# by mtime, which here means least-recently-saved — an active conversation
+# rewrites its own file and keeps moving to the back of the queue.
+SESSION_MAX_GB = float(env("SESSION_MAX_GB", default="50"))
 # Restore a prefix from disk ONLY when llama-server is cold. 0 = off, and off
 # is what runs today.
 #
@@ -525,17 +532,76 @@ def refresh_saved(force=False):
         SAVED = load_saved()
     return SAVED
 
+SESSION_PREFIX = "session-"    # what tells the two stores apart on disk
+
+
 def disk_used_gb():
     try:
         # `.bin.unusable` counts too. quarantine() renames rather than
         # deletes, and a file this budget cannot see is a file AUTO_MAX_GB
         # cannot govern — 1.1 GB of it per quarantined prefix, invisible.
         # Found in review the same evening the quarantine shipped.
+        #
+        # SESSION FILES ARE NOT COUNTED HERE, and that is not a detail. Both
+        # stores live in the ONE directory llama-server was given as
+        # --slot-save-path, so without this filter a few deep conversations
+        # (~6 GB each) would fill AUTO_MAX_GB and silently stop the prefix
+        # saves — a budget for one thing spent by another. They have their own
+        # ceiling in session_prune().
         return sum(os.path.getsize(os.path.join(SLOT_PATH, f))
                    for f in os.listdir(SLOT_PATH)
-                   if f.endswith(".bin") or f.endswith(".bin.unusable")) / 1e9
+                   if (f.endswith(".bin") or f.endswith(".bin.unusable"))
+                   and not f.startswith(SESSION_PREFIX)) / 1e9
     except FileNotFoundError:
         return 0.0
+
+
+def session_files():
+    """(path, size, mtime) per saved conversation, oldest use first."""
+    try:
+        out = []
+        for f in os.listdir(SLOT_PATH):
+            if f.startswith(SESSION_PREFIX) and f.endswith(".bin"):
+                p = os.path.join(SLOT_PATH, f)
+                try:
+                    st = os.stat(p)
+                except FileNotFoundError:
+                    continue
+                out.append((p, st.st_size, st.st_mtime))
+        return sorted(out, key=lambda t: t[2])
+    except FileNotFoundError:
+        return []
+
+
+def session_prune(keep=None):
+    """Hold the session store under its ceiling, oldest first.
+
+    By mtime, which for this store means LEAST RECENTLY SAVED — every save
+    rewrites the file, so a conversation that is still being worked on keeps
+    moving to the back of the queue by itself. No separate bookkeeping, and
+    none that a gateway restart could lose.
+
+    `keep` is the file about to be written: it is never the victim, because
+    deleting the one state the current turn is about to produce would be a
+    budget that defeats its own purpose.
+    """
+    files = session_files()
+    total = sum(s for _, s, _ in files)
+    limit = SESSION_MAX_GB * 1e9
+    freed = 0
+    for path, size, _ in files:
+        if total - freed <= limit:
+            break
+        if keep and os.path.basename(path) == os.path.basename(keep):
+            continue
+        try:
+            os.remove(path)
+            freed += size
+            log("SESSION     pruned %s (%.1f GB) — store over %.0f GB"
+                % (os.path.basename(path), size / 1e9, SESSION_MAX_GB))
+        except OSError as e:
+            log("NOTE        could not prune %s: %s" % (path, e))
+    return freed
 
 # At most this many prefixes wait for their save at the same time. A second
 # concurrent save used to be dropped without replacement. That was worse than
@@ -2304,7 +2370,8 @@ async def session_save(ident, reuse):
     last = SESSION_SAVED_AT.get(ident)
     if last is not None and now - last < SESSION_SAVE_COOLDOWN_S:
         return
-    name = "session-%s.bin" % ident
+    name = "%s%s.bin" % (SESSION_PREFIX, ident)
+    session_prune(keep=name)
     try:
         r = await asyncio.to_thread(
             _post_json, "%s/slots/0?action=save" % LLAMA,

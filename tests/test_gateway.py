@@ -6,7 +6,7 @@ deterministically against the real stack: the per-access throttle, cancelled
 callers, and above all the contract between the gateway's id and the store on
 disk.
 """
-import asyncio, json, os, re, shutil, tempfile, unittest, urllib.error
+import asyncio, json, os, re, shutil, tempfile, time, unittest, urllib.error
 from unittest import mock
 
 import aiohttp
@@ -2716,3 +2716,63 @@ class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
         GW.SESSION_RESTORE = "cold"
         self.assertIsNone(await GW.session_restore("nosuch", self.SLOTS))
         self.assertEqual(self.restores, [])
+
+
+class TestSessionStoreCeiling(unittest.TestCase):
+    """The session store has its OWN budget, and the two stores share one
+    directory — so the first thing to check is that neither spends the
+    other's."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="sessgb-")
+        self.old_path, GW.SLOT_PATH = GW.SLOT_PATH, self.dir
+        self.old_gb, GW.SESSION_MAX_GB = GW.SESSION_MAX_GB, 0.000010  # 10 kB
+        self.log_lines = []
+        self.patch = mock.patch.object(
+            GW, "log", lambda *a: self.log_lines.append(" ".join(map(str, a))))
+        self.patch.start()
+
+    def tearDown(self):
+        self.patch.stop()
+        GW.SLOT_PATH = self.old_path
+        GW.SESSION_MAX_GB = self.old_gb
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, name, size, age=0):
+        p = os.path.join(self.dir, name)
+        with open(p, "wb") as f:
+            f.write(b"x" * size)
+        if age:
+            os.utime(p, (time.time() - age, time.time() - age))
+        return p
+
+    def test_session_files_do_not_count_against_the_prefix_budget(self):
+        self._write("session-aaa.bin", 5000)
+        self._write("plainprefix.bin", 3000)
+        self.assertAlmostEqual(GW.disk_used_gb(), 3000 / 1e9, places=12)
+
+    def test_prefix_files_are_not_pruned_by_the_session_ceiling(self):
+        self._write("plainprefix.bin", 50000, age=9999)
+        self._write("session-aaa.bin", 4000)
+        GW.session_prune()
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "plainprefix.bin")))
+
+    def test_oldest_goes_first(self):
+        self._write("session-old.bin", 8000, age=9999)
+        self._write("session-new.bin", 8000, age=1)
+        GW.session_prune()
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "session-old.bin")))
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "session-new.bin")))
+
+    def test_the_file_about_to_be_written_is_never_the_victim(self):
+        """Deleting the state this very turn is about to produce would be a
+        budget defeating its own purpose."""
+        self._write("session-mine.bin", 20000, age=9999)
+        GW.session_prune(keep="session-mine.bin")
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "session-mine.bin")))
+
+    def test_under_the_ceiling_nothing_is_touched(self):
+        GW.SESSION_MAX_GB = 100
+        self._write("session-aaa.bin", 8000, age=9999)
+        GW.session_prune()
+        self.assertTrue(os.path.exists(os.path.join(self.dir, "session-aaa.bin")))

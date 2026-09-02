@@ -278,5 +278,12 @@ the point. It is not deletion.
   ONE slot since 26.08., see `setup/env/qwen38.env` for the two defects that
   force it. All at 100 % cache, 0.3 s to swap in. `-np`
   therefore only decides how many *compute* at once, not how many stay warm.
+  **Do not carry that ratio to Flash-Next.** Re-measured 02.09.2026
+  (`bench/suites/cram-state-size.py`): an entry there costs 336.7 MiB fixed
+  plus 39.12 KiB per token, and a served session another ~534 MiB on top, so
+  one ~80k Claude Code session is 3,946 MiB — `-cram 4096` holds exactly one
+  of them and nothing else, not even the health probe's 226 MiB. How many
+  prefixes a budget carries is a property of the MODEL and the depth, never
+  of the flag.
 - **Speculative decoding** is unusable with eagle3 (factor 2.2–2.7 slower).
 - **The internal speakers** need kernel ≥ 7.0 plus firmware from Windows.

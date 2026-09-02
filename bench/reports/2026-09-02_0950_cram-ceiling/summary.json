@@ -1,0 +1,48 @@
+{
+  "label": "cram-ceiling",
+  "url": "http://127.0.0.1:8080",
+  "started": "2026-09-02 09:39:41",
+  "pid": 2111999,
+  "points": [],
+  "purge": {
+    "rss_before_mib": 4660.8,
+    "rss_after_mib": 4661.0,
+    "rss_delta_mib": 0.2,
+    "evicted_mib": [],
+    "lru": true,
+    "prefill": {
+      "wall_s": 0.25,
+      "prompt_n": 4,
+      "cache_n": 20
+    }
+  },
+  "ceiling": {
+    "tokens": 90000,
+    "prefill": {
+      "wall_s": 658.07,
+      "prompt_n": 90000,
+      "cache_n": 0
+    },
+    "takeover": {
+      "wall_s": 1.41,
+      "prompt_n": 24,
+      "cache_n": 0
+    },
+    "rss_delta_mib": -674.5,
+    "refused": [],
+    "evicted_mib": [
+      232.38,
+      226.004,
+      413.087,
+      226.004,
+      642.29,
+      226.004,
+      1100.694,
+      226.004,
+      338.833,
+      338.615
+    ],
+    "stored": true
+  },
+  "fit": null
+}

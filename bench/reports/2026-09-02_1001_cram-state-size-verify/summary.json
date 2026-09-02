@@ -1,0 +1,109 @@
+{
+  "label": "cram-state-size-verify",
+  "url": "http://127.0.0.1:8080",
+  "started": "2026-09-02 09:57:12",
+  "pid": 2111999,
+  "seed": 1788335832,
+  "probe_stopped": true,
+  "points": [
+    {
+      "tokens": 2000,
+      "prefill": {
+        "wall_s": 7.6,
+        "prompt_n": 2000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.49,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": false,
+      "rss_delta_mib": 649.3,
+      "stored": true
+    },
+    {
+      "tokens": 8000,
+      "prefill": {
+        "wall_s": 31.57,
+        "prompt_n": 8000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.56,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": false,
+      "rss_delta_mib": 623.3,
+      "stored": true
+    },
+    {
+      "tokens": 20000,
+      "prefill": {
+        "wall_s": 89.92,
+        "prompt_n": 20000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 7.15,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": true,
+      "rss_delta_mib": 1771.5,
+      "stored": true
+    }
+  ],
+  "flush": {
+    "requests": 3,
+    "evicted_mib": [
+      226.004,
+      226.216,
+      226.004,
+      413.087,
+      642.29,
+      1100.694
+    ],
+    "inserted": [
+      {
+        "what": "point",
+        "tokens": 2000,
+        "mib": 413.087
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      },
+      {
+        "what": "point",
+        "tokens": 8000,
+        "mib": 642.29
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      },
+      {
+        "what": "point",
+        "tokens": 20000,
+        "mib": 1100.694
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      }
+    ],
+    "complete": true,
+    "takeover_entry_mib": 226.0,
+    "matched": true
+  },
+  "refused": [],
+  "fit": {
+    "from_tokens": 2000,
+    "to_tokens": 20000,
+    "kib_per_token": 39.12,
+    "fixed_mib": 336.7,
+    "n_points": 3
+  }
+}

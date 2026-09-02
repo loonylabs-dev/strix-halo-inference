@@ -485,6 +485,70 @@ that did not now carry the arithmetic in a comment, so the next reader sees a
 number that was CHECKED — which is the whole complaint against this flag.
 `tests/test_budget.py` fails on anything above 50 windows.
 
+### Raising it for your own load, which is a different arithmetic
+
+A WINDOW IS THE WRONG UNIT for this decision, and reading it as the right one
+is what cost 599 s on 02.09.2026. Two things a window-count cannot see:
+
+* every entry pays a FIXED part, whatever it holds — a 24-token health probe
+  leaves a 226 MiB entry behind, so a 4 GiB budget holds at most 18 entries
+  however small they are;
+* a SERVED session costs more than a prefill of the same length.
+
+Measured on Flash-Next (`bench/suites/cram-state-size.py`, report
+`bench/reports/2026-09-02_1002_cram-state-size-verify/`), from llama-server's
+own eviction lines and reproduced twice with different prompts, a plain prefill
+is a straight line over five points:
+
+    entry = 336.7 MiB + 39.12 KiB/token          2,000 to 90,000 tokens
+
+**Do not size a budget from it.** A SERVED session costs more than its length,
+and the surcharge grows with depth — which two points at one depth cannot show,
+and which is exactly how `8704` was chosen and found wanting 90 minutes later:
+
+     80,507 tokens   3946.260 MiB    line 3412    +534 MiB    ( 6.8 KiB/token)
+    148,485 tokens   8422.274 MiB    line 6009   +2413 MiB    (16.6 KiB/token)
+
+So size from what the machine has actually logged, not from the line:
+
+    journalctl --user -u 'llama-user@*' | grep "making room"
+
+Every one of those names a real entry in MiB. Take the deepest, add one probe
+entry (226 MiB here) per takeover you expect between two turns, and round up.
+The coefficients above are this model's; a different model, window or draft
+head gives different ones, and the suite re-measures them in about four minutes
+on any of them.
+
+WHAT THE CEILING DOES, because it is silent. An entry larger than the WHOLE
+limit is not shrunk and not partly stored: it is skipped, and that conversation
+is uncacheable from that turn on. At 4096 MiB on this profile the line above
+puts that at ~98,400 tokens for a bare prompt and ~84,400 for a served session.
+Leave room above the deepest session you actually run.
+
+CHECKING IT BEFORE THE RESTART IS HARDER THAN IT LOOKS, and both obvious ways
+mislead. `--check` refuses EVERY value while the server is running, including
+the one it is running with — it asks whether a second server fits beside the
+first, and a restart stops the first one. A correct value was withdrawn here on
+the strength of misreading that. But `--static` is not the answer either: it
+prints the balance against `machine has …` and stays SILENT on the verdict, so
+a value it shows without complaint can still be refused at start. The guard
+weighs `available minus the 12 GiB reserve` — on this machine 116.5 − 12 =
+104.5 GiB, which refused a 105.1 GiB profile that `--static` had shown plainly.
+
+    python3 setup/lib/budget.py --profile <name> --static   # the balance
+    python3 setup/lib/budget.py --profile <name> --check    # the verdict,
+                                                            # server STOPPED
+
+AND IF A START FAILS TWICE, RESET BEFORE RETRYING. systemd rate-limits with
+"Start request repeated too quickly" and goes on displaying the PREVIOUS
+attempt's error, so a corrected value reads as though it changed nothing:
+
+    systemctl --user reset-failed llama-user@<profile>.service
+
+AND AFTERWARDS, ASK THE MACHINE RATHER THAN THE ARITHMETIC. `check.sh` counts
+the evictions llama-server logged in the last 24 h. Nonzero means the budget is
+smaller than the load actually served; each line names the MiB it threw away.
+
 ### And the declaration is re-checked, or it is only an assertion
 
 Every figure in this repo that was DERIVED turned out wrong — KV from the

@@ -136,6 +136,18 @@ def cmd_lies(a):
     The defect of 28.08.2026 in one query: a request called `warm` that
     reused nothing. Reading it out of a trace takes a second; finding it by
     hand took an evening.
+
+    WHAT THIS CANNOT ANSWER, and saying so is the point. A collapsed reuse has
+    two causes that look identical from here — the state was lost, or the
+    client rewrote its history — and `msgs_kept` separates them: agreeing
+    shapes mean the state went, diverging shapes mean the client edited. The
+    third case is BOTH, and it is not separable from these records at all.
+    Measured 02.09.2026: two Claude Code sessions on one prefix, msgs_kept 0
+    of 2 because the first message really had changed ('hi' against 'hallo'),
+    while the cache entry holding the 80k prefix had just been evicted by the
+    health probe. The divergence was worth ~2,000 tokens and the eviction
+    80,394 — and the shape rule points at the small one. Only llama-server's
+    own journal has the missing half, so the footer below names it.
     """
     bad = [r for r in _load(a)
            if r.get("kind") == "request" and r.get("cold") is False
@@ -145,10 +157,21 @@ def cmd_lies(a):
         print("  nothing: every request called warm actually reused its prefix")
         return
     for r in bad:
-        print("  %s prefix=%s took=%ss reused=%s computed=%s%s"
+        kept, prev = r.get("msgs_kept"), r.get("msgs_prev")
+        shape = ("  kept=%s/%s" % (kept, prev)) if prev is not None else ""
+        print("  %s prefix=%s took=%ss reused=%s computed=%s%s%s"
               % (_clock(r), r.get("prefix"), r.get("took_s"), r["reused"],
-                 r["computed"],
+                 r["computed"], shape,
                  "  (restored %s)" % r["restored"] if r.get("restored") else ""))
+    print("")
+    print("  kept=0/N does NOT settle it — a rewritten history and an evicted")
+    print("  cache entry can be true of the same request, and then the cheap")
+    print("  cause is the one this tool sees. The server knows which:")
+    print("    journalctl --user -u 'llama-user@*' --since <that time> \\")
+    print("      | grep -E 'making room for prompt cache entry|selected slot by'")
+    print("  An eviction line whose MiB is a whole conversation, immediately")
+    print("  before the request, is the expensive cause — see")
+    print("  `cram-holds-only-one-claude-code-state` in setup/defects.json.")
 
 
 def cmd_prefixes(a):

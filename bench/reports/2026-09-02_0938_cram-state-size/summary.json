@@ -1,0 +1,90 @@
+{
+  "label": "cram-state-size",
+  "url": "http://127.0.0.1:8080",
+  "started": "2026-09-02 09:35:49",
+  "pid": 2111999,
+  "points": [
+    {
+      "tokens": 2000,
+      "prefill": {
+        "wall_s": 8.35,
+        "prompt_n": 2000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.52,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "rss_before_mib": 2135.9,
+      "rss_after_mib": 2425.7,
+      "rss_delta_mib": 289.8,
+      "evicted_mib": [],
+      "selected_by_lru": true,
+      "entry_mib_est": 289.8,
+      "kib_per_token": 148.36,
+      "clean": true
+    },
+    {
+      "tokens": 8000,
+      "prefill": {
+        "wall_s": 33.02,
+        "prompt_n": 8000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.58,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "rss_before_mib": 2781.0,
+      "rss_after_mib": 3290.8,
+      "rss_delta_mib": 509.8,
+      "evicted_mib": [],
+      "selected_by_lru": true,
+      "entry_mib_est": 509.8,
+      "kib_per_token": 65.25,
+      "clean": true
+    },
+    {
+      "tokens": 20000,
+      "prefill": {
+        "wall_s": 88.8,
+        "prompt_n": 20000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.68,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "rss_before_mib": 3770.7,
+      "rss_after_mib": 4660.9,
+      "rss_delta_mib": 890.3,
+      "evicted_mib": [],
+      "selected_by_lru": true,
+      "entry_mib_est": 890.3,
+      "kib_per_token": 45.58,
+      "clean": true
+    }
+  ],
+  "purge": {
+    "rss_before_mib": 1663.3,
+    "rss_after_mib": 1776.0,
+    "rss_delta_mib": 112.7,
+    "evicted_mib": [],
+    "lru": true,
+    "prefill": {
+      "wall_s": 0.21,
+      "prompt_n": 4,
+      "cache_n": 20
+    }
+  },
+  "fit": {
+    "from_tokens": 2000,
+    "to_tokens": 20000,
+    "kib_per_token": 34.16,
+    "fixed_mib": 223.1,
+    "n_clean_points": 3
+  }
+}

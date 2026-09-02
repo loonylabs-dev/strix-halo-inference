@@ -649,6 +649,58 @@ if curl -s -m3 http://127.0.0.1:8090/gateway/status >/dev/null 2>&1; then
 else
   printf "  \033[33m?\033[0m gateway is not running\n"
 fi
+# The RAM prompt cache is a MiB budget (-cram), and llama-server says when the
+# budget is too small for the load it is actually asked to hold: one WARN line
+# per entry it throws out to make room. Counting those asks the machine,
+# instead of computing an entry size from a declared KiB/token — the derived
+# route is the one this repo keeps getting wrong, and an entry turns out to
+# carry the draft head and the checkpoints on top of the KV (measured
+# 02.09.2026, bench/suites/cram-state-size.py).
+#
+# An eviction is not a fault by itself: a cache that never evicts is merely a
+# cache nobody filled. What it means is that whatever was evicted has to be
+# prefilled again if its conversation comes back, and for a Claude-Code-sized
+# prefix that is minutes, not seconds. See
+# `cram-holds-only-one-claude-code-state` in setup/defects.json.
+#
+# grep -c, not grep -q — same pipefail trap the SWA count above documents.
+N_EVICT=$(( $(journalctl --user -u 'llama-user@*' --since "-24h" --no-pager 2>/dev/null | grep -c "making room for prompt cache entry")
+          + $(journalctl        -u 'llama@*'      --since "-24h" --no-pager 2>/dev/null | grep -c "making room for prompt cache entry") ))
+if [ "$N_EVICT" = "0" ]; then
+  ok "no prompt-cache evictions in the last 24 h"
+else
+  printf "  \033[33m?\033[0m %s prompt-cache evictions in the last 24 h — -cram is smaller\n" "$N_EVICT"
+  printf "    than the load this machine actually serves. Each one is a conversation\n"
+  printf "    that pays a full prefill if it comes back:\n"
+  printf "    journalctl --user -u 'llama-user@*' | grep 'making room'\n"
+fi
+
+# AUTO_SAVE against a profile that cannot be saved. The serving profile may
+# deliberately omit --slot-save-path — flashnext does, because the QSA indexer
+# has no state save/load and a poisoned restore degrades output rather than
+# failing. The gateway does not know that: it auto-saves every warmed prefix,
+# the save cannot succeed, the id never enters SAVED, and it is retried on the
+# NEXT cold prefix. Each retry is a prewarm subprocess that holds the one slot
+# for its full 600 s timeout while nothing in Claude Code shows a request at
+# all — measured 02.09.2026, found only because the GPU was at full load with
+# an empty request log after a restart.
+#
+# Cold prefixes are exactly what a restart produces, so this fires when it
+# costs most. The profile names AUTO_SAVE=0 in its checklist; a checklist is
+# what gets missed at 12:20, which is why it is checked here.
+if pgrep -x llama-server >/dev/null 2>&1; then
+  SAVEPATH=$(tr '\0' '\n' < "/proc/$(pgrep -x llama-server | head -1)/cmdline" 2>/dev/null \
+             | grep -c -- "--slot-save-path")
+  AS=$(grep -sE "^[[:space:]]*AUTO_SAVE=" "$HOME/.config/llm-gateway.env" | tail -1 | cut -d= -f2)
+  if [ "${SAVEPATH:-0}" = "0" ] && [ "${AS:-1}" != "0" ]; then
+    old "the served profile has no --slot-save-path, but AUTO_SAVE is ${AS:-unset}"
+    printf "    Every automatic save will fail and be retried on the next cold\n"
+    printf "    prefix, each retry holding the slot for 600 s. Set AUTO_SAVE=0 in\n"
+    printf "    ~/.config/llm-gateway.env and restart llm-gateway.\n"
+  elif [ "${SAVEPATH:-0}" = "0" ]; then
+    ok "AUTO_SAVE=0, matching a profile without --slot-save-path"
+  fi
+fi
 
 head_ "The watchdog for the silent failure modes"
 # The registry above says WHAT can go wrong. This says whether anything would

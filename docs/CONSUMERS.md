@@ -25,21 +25,22 @@ this page carried a sentence about a model that had been replaced, and claimed
 
 ## Which model name to send
 
-One loaded model (Qwen 3.8 27B, vision-capable) serves three modes; the
+One loaded model (Qwen 3.8 Flash-Next, text-only) serves several modes; the
 gateway maps the model NAME to a thinking level. Switching names costs
 nothing — no reload, and the prompt cache stays warm across switches
 (measured; see docs/MODELS.md).
 
 | Name | Thinking | Use for |
 |---|---|---|
-| `qwen38-think` | low | **daily default** — best correctness per second |
-| `qwen38` | off | mechanical edits, title generation, quick answers |
-| `qwen38-deep` | medium | the hardest problems only — it can overthink |
+| `flashnext-low` | low | **daily default** — best correctness per second |
+| `flashnext` | off | mechanical edits, title generation, quick answers |
+| `flashnext-medium` | medium | the hardest problems only — it can overthink |
+| `flashnext-high` | high | the deepest the template renders (it aliases `high` to `xhigh`) |
 
-(The names above exist while the `qwen38` profile is the one being served.
+(The names above exist while the `flashnext` profile is the one being served.
 Which names are live right now is what `/v1/models` answers, and what
 `bash setup/consumer-info.sh` prints — a list in a document is a list from the
-day it was written. This one named a model that had already been replaced.)
+day it was written. This one has named an already-replaced model twice.)
 
 **Context window:** configure your client a little BELOW the slot size, so a
 long turn cannot overrun it. The server reports the real number as `n_ctx` in
@@ -64,7 +65,7 @@ Set the placeholder once, so every command on this page can be pasted:
       -H "anthropic-version: 2023-06-01" \
       -H "content-type: application/json" \
       -d '{
-            "model": "qwen38",
+            "model": "flashnext",
             "max_tokens": 64,
             "stream": true,
             "messages": [{"role": "user", "content": "Say only the word test."}]
@@ -229,8 +230,8 @@ untouched:
   "env": {
     "ANTHROPIC_BASE_URL": "$ENDPOINT",
     "ANTHROPIC_AUTH_TOKEN": "<your token>",
-    "ANTHROPIC_MODEL": "qwen38-think",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "qwen38",
+    "ANTHROPIC_MODEL": "flashnext-low",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "flashnext",
     "API_TIMEOUT_MS": "1800000",
     "API_FORCE_IDLE_TIMEOUT": "0",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
@@ -277,12 +278,12 @@ llm-pi-ai:
       baseURL: $ENDPOINT/v1
       defaultContextWindow: 200000   # slot holds 204800, see below
       models:
-        - id: qwen38-think
-          name: Qwen 3.8 27B (low thinking)
-        - id: qwen38
-          name: Qwen 3.8 27B (no thinking)
-        - id: qwen38-deep
-          name: Qwen 3.8 27B (medium thinking)
+        - id: flashnext-low
+          name: Qwen Flash-Next (low thinking)
+        - id: flashnext
+          name: Qwen Flash-Next (no thinking)
+        - id: flashnext-medium
+          name: Qwen Flash-Next (medium thinking)
 ```
 
 The provider key and `displayName` are yours to choose — they are labels in
@@ -474,12 +475,13 @@ contains no text block at all. Size it generously even for short answers.
 
 ## What you should not expect
 
-- **Vision works** with the model currently served: `qwen38` is started with
-  its projector (`--mmproj`), and `/v1/models` reports
-  `capabilities: ["completion", "multimodal"]`. This entry said "no vision"
-  until 25.08. — it was written for a text-only model and never revisited.
-  Whether image input works is a property of the SERVED MODEL, so check
-  `/v1/models` rather than trusting this list.
+- **Vision is a property of the SERVED MODEL**, so check `/v1/models`
+  (`capabilities`) rather than trusting this list. The model served since
+  01.09. (`flashnext`) is text-only — no converted projector exists for it —
+  and `/v1/models` reports `capabilities: ["completion"]` (checked
+  02.09.2026). This entry has been wrong in both directions now: it said
+  "no vision" while a projector was loaded (until 25.08.) and "vision works"
+  while a text-only model served (until 02.09.).
 - **One active user at a time.** There is one GPU and one model in memory. A
   foreign cold start blocks everyone else for its duration (measured: 98 s).
   That is why the gateway prioritises local requests over remote ones.

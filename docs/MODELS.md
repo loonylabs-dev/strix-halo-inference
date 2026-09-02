@@ -89,7 +89,9 @@ So: **nothink for everyday work, `low` when something is actually hard.**
 `medium` is not "more careful", it is a different failure mode.
 
 Switching costs nothing. In Claude Code pick the model name — `qwen38`,
-`qwen38-think` (low), `qwen38-deep` (medium). One model stays loaded, and the
+`qwen38-low`, `qwen38-medium` (the level suffixes are the API's standard
+vocabulary; whichever profile serves uses the same scheme, e.g.
+`flashnext-low`). One model stays loaded, and the
 prompt cache survives the switch **100 % warm**: 71 s cold becomes 0.2–0.3 s.
 
 ## What the speed depends on

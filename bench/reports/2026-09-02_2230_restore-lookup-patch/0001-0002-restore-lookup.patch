@@ -1,0 +1,153 @@
+From f8d3b3c913b2a9677a5de56dd2c5eb4624047ad8 Mon Sep 17 00:00:00 2001
+From: loonylabs-dev <info@loonylabs.dev>
+Date: Wed, 2 Sep 2026 21:43:34 +0200
+Subject: [PATCH 1/2] server: look for a better cached prompt even when the
+ slot keeps most of its context
+
+update_cache gates both halves of the prompt cache step: saving the outgoing
+state, and looking for a cached one that fits the incoming prompt better. It is
+set only when f_keep < 0.5, a condition written for the saving half ("if we are
+about to lose a large portion of the existing context"). A slot that keeps most
+of its context therefore never gets to find a longer cached state.
+
+The clearest case is a slot state restore: afterwards the slot holds exactly
+what was loaded, f_keep is 1.0, and a deeper state of the same conversation
+sitting in the cache is not looked for.
+
+server_prompt_cache::load already picks a cached state only when it beats what
+the slot holds, so the lookup is safe to reach more often. Its search loop is
+split out as find_best() and exposed as has_better(), letting the caller ask
+whether a load would find anything before paying for the save that must precede
+it. No duplicated logic and no change to the selection rule.
+---
+ tools/server/server-context.cpp |  9 +++++++++
+ tools/server/server-task.cpp    | 10 +++++++++-
+ tools/server/server-task.h      | 10 ++++++++++
+ 3 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 361aa7632..7f539bdf1 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1595,6 +1595,15 @@ private:
+                 if (f_keep < 0.5f) {
+                     update_cache = true;
+                 }
++
++                // the same flag also gates the prompt cache LOOKUP below, so a slot that keeps
++                // most of its context never gets to find a longer cached state for this prompt.
++                // that is the common case after a slot state restore: the slot then holds exactly
++                // what was loaded, f_keep is 1.0, and a deeper state of the same conversation
++                // sitting in the cache is never looked for
++                if (!update_cache && prompt_cache && prompt_cache->has_better(ret->prompt, task.tokens)) {
++                    update_cache = true;
++                }
+             }
+         }
+ 
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 0d3beb313..198c5b60c 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1790,7 +1790,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
+     return &states.back();
+ }
+ 
+-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
++std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best(const server_prompt & prompt, const server_tokens & tokens_new) {
+     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
+ 
+     float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
+@@ -1824,7 +1824,15 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
+ 
+     if (it_best != states.end()) {
+         SRV_TRC(" - found better prompt with f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
++    }
++
++    return it_best;
++}
+ 
++bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
++    auto it_best = find_best(prompt, tokens_new);
++
++    if (it_best != states.end()) {
+         {
+             auto & data = it_best->data.main;
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index 9c99143f8..10703c3c9 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -629,6 +629,16 @@ struct server_prompt_cache {
+ 
+     server_prompt_cache_state * alloc(const server_prompt & prompt, size_t state_size_main, size_t state_size_drft);
+ 
++    // the cached state that would serve tokens_new better than prompt does,
++    // or states.end() if there is none
++    std::list<server_prompt_cache_state>::iterator find_best(const server_prompt & prompt, const server_tokens & tokens_new);
++
++    // whether such a state exists - lets a caller find out that a load is
++    // worth doing before paying for the save that has to precede it
++    bool has_better(const server_prompt & prompt, const server_tokens & tokens_new) {
++        return find_best(prompt, tokens_new) != states.end();
++    }
++
+     bool load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot);
+ 
+     void update();
+-- 
+2.55.0
+
+
+From 6bbb3eecfe6143963f9a187581cf52ca8a4275d1 Mon Sep 17 00:00:00 2001
+From: loonylabs-dev <info@loonylabs.dev>
+Date: Wed, 2 Sep 2026 22:04:20 +0200
+Subject: [PATCH 2/2] server: let a cached prompt win on similarity when the
+ slot is already a complete prefix
+
+find_best requires a candidate to improve on both f_keep and f_sim. Once the
+incumbent is a complete prefix of the new prompt its f_keep is 1.0, and no entry
+can beat that: reaching further past the common prefix is exactly what lowers
+f_keep. The incumbent is then unbeatable however much more of the prompt an
+entry covers.
+
+Measured on a 40k-token prompt with the slot holding a 20k prefix of it and the
+cache holding the full 40k:
+
+    slot    f_keep = 1.00000   f_sim = 0.49990
+    cache   f_keep = 0.99998   f_sim = 0.99980
+
+The cached entry covers twice as much of the prompt and is rejected over a
+0.00002 difference in f_keep.
+
+When f_keep cannot discriminate, let f_sim decide alone. The incumbent is saved
+to the cache before a load replaces it, so the trade costs no context. Every
+other case keeps its previous outcome, including the f_keep < 0.25 guard against
+trashing large prompts and the rejection of entries that cover less.
+---
+ tools/server/server-task.cpp | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/tools/server/server-task.cpp b/tools/server/server-task.cpp
+index 198c5b60c..878e82fa2 100644
+--- a/tools/server/server-task.cpp
++++ b/tools/server/server-task.cpp
+@@ -1814,7 +1814,14 @@ std::list<server_prompt_cache_state>::iterator server_prompt_cache::find_best(co
+             continue;
+         }
+ 
+-        if (f_keep_best < f_keep_cur && f_sim_best < f_sim_cur) {
++        // f_keep cannot discriminate once the incumbent is a complete prefix of the new
++        // prompt: it is then 1.0, and any entry that reaches further is necessarily below
++        // it, because reaching further past the common prefix is exactly what lowers
++        // f_keep. Requiring an improvement in both would make such an incumbent
++        // unbeatable however much more of the prompt an entry covers. Let f_sim decide
++        // alone in that case; the incumbent is saved to the cache before it is replaced,
++        // so the trade costs no context
++        if ((f_keep_best >= 1.0f || f_keep_best < f_keep_cur) && f_sim_best < f_sim_cur) {
+             f_keep_best = f_keep_cur;
+             f_sim_best  = f_sim_cur;
+ 
+-- 
+2.55.0
+

@@ -1,0 +1,18 @@
+{
+ "url": "http://127.0.0.1:8081",
+ "shallow": 20000,
+ "deep": 40000,
+ "seed": 1788374838,
+ "cells": {
+  "arm1_cache_only": {
+   "wall_s": 0.33,
+   "cache_n": 40000,
+   "prompt_n": 4
+  },
+  "arm2_after_restore": {
+   "wall_s": 108.97,
+   "cache_n": 20000,
+   "prompt_n": 20008
+  }
+ }
+}

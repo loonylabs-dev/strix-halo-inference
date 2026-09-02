@@ -1,0 +1,80 @@
+{
+ "url": "http://127.0.0.1:8081",
+ "points": [
+  2000,
+  20000,
+  80000,
+  140000,
+  180000
+ ],
+ "seed": 1788368012,
+ "build": "b378-62850522e",
+ "n_ctx": 204800,
+ "rows": [
+  {
+   "file": "@HOME@/.cache/slot-save-cost/slot-save-cost-0.bin",
+   "n_saved": 2000,
+   "n_written": 185728056,
+   "save_ms": 49.086,
+   "wall_ms": 50,
+   "point": 2000,
+   "disk_bytes": 188043264,
+   "prefill_s": 7.93,
+   "cache_n": 0
+  },
+  {
+   "file": "@HOME@/.cache/slot-save-cost/slot-save-cost-1.bin",
+   "n_saved": 20000,
+   "n_written": 794920056,
+   "save_ms": 231.554,
+   "wall_ms": 234,
+   "point": 20000,
+   "disk_bytes": 799006720,
+   "prefill_s": 76.57,
+   "cache_n": 2000
+  },
+  {
+   "file": "@HOME@/.cache/slot-save-cost/slot-save-cost-2.bin",
+   "n_saved": 80000,
+   "n_written": 2825560056,
+   "save_ms": 817.329,
+   "wall_ms": 819,
+   "point": 80000,
+   "disk_bytes": 2843258880,
+   "prefill_s": 426.77,
+   "cache_n": 20000
+  },
+  {
+   "file": "@HOME@/.cache/slot-save-cost/slot-save-cost-3.bin",
+   "n_saved": 140000,
+   "n_written": 4856200056,
+   "save_ms": 1363.71,
+   "wall_ms": 1365,
+   "point": 140000,
+   "disk_bytes": 4870152192,
+   "prefill_s": 687.31,
+   "cache_n": 80000
+  },
+  {
+   "file": "@HOME@/.cache/slot-save-cost/slot-save-cost-4.bin",
+   "n_saved": 180000,
+   "n_written": 6209960056,
+   "save_ms": 1889.007,
+   "wall_ms": 1891,
+   "point": 180000,
+   "disk_bytes": 6226841600,
+   "prefill_s": 601.56,
+   "cache_n": 140000
+  }
+ ],
+ "baseline": 12025856,
+ "restore_check": {
+  "n_restored": 180000,
+  "n_read": 6209960056,
+  "restore_ms": 1250.396,
+  "wall_ms": 1252,
+  "cache_n": 180000,
+  "carried": true,
+  "n_gen": 1
+ }
+}

@@ -1,0 +1,94 @@
+{
+ "url": "http://127.0.0.1:8081",
+ "tools": 24,
+ "turns": 3,
+ "n_saved": 15024,
+ "n_restored": 15024,
+ "rows": [
+  {
+   "cell": "build turn 1",
+   "s": 71.7,
+   "reused": 0,
+   "computed": 14942
+  },
+  {
+   "cell": "build turn 2",
+   "s": 0.8,
+   "reused": 14943,
+   "computed": 25
+  },
+  {
+   "cell": "build turn 3",
+   "s": 1.0,
+   "reused": 14970,
+   "computed": 25
+  },
+  {
+   "cell": "settle (state is now S)",
+   "s": 0.9,
+   "reused": 14997,
+   "computed": 25
+  },
+  {
+   "cell": "save",
+   "s": 0.1,
+   "n_saved": 15024,
+   "n_written": 626512312,
+   "save_ms": 128.594
+  },
+  {
+   "cell": "displacing request",
+   "s": 71.3,
+   "reused": 0,
+   "computed": 14944
+  },
+  {
+   "cell": "continuation, no restore",
+   "s": 68.3,
+   "reused": 0,
+   "computed": 15049
+  },
+  {
+   "cell": "displacing request",
+   "s": 67.2,
+   "reused": 0,
+   "computed": 14944
+  },
+  {
+   "cell": "restore",
+   "s": 0.1,
+   "n_restored": 15024,
+   "restore_ms": 142.168
+  },
+  {
+   "cell": "continuation, restored",
+   "s": 0.8,
+   "reused": 15024,
+   "computed": 25
+  },
+  {
+   "cell": "follow-up, warm",
+   "s": 0.8,
+   "reused": 15051,
+   "computed": 25
+  },
+  {
+   "cell": "displacing request",
+   "s": 67.1,
+   "reused": 0,
+   "computed": 14944
+  },
+  {
+   "cell": "restore (for the old shape)",
+   "s": 0.1,
+   "n_restored": 15024,
+   "restore_ms": 135.281
+  },
+  {
+   "cell": "fresh body, other question",
+   "s": 67.4,
+   "reused": 0,
+   "computed": 14942
+  }
+ ]
+}

@@ -355,6 +355,40 @@ def _head_changes(records):
                   % (kept, len(old),
                      "the history was not the cause" if kept >= len(old) - 3
                      else "the history moved too"))
+        _print_tool_delta(prev, cur)
+
+
+def _print_tool_delta(prev, cur):
+    """WHICH tools came and went, where the count only said that they did.
+
+    The whole point of the head-change section is naming a culprit, and until
+    02.09.2026 it could not: `tools 87 -> 64` says a tool set changed and
+    leaves the reader to guess whether an MCP server dropped, a plugin
+    unloaded, or a deferred schema arrived. Two sessions lost 34 minutes each
+    to that on 02.09. and the trace could not tell them apart.
+
+    Records written before the gateway carried `tool_names` have no answer
+    here and must say so rather than print an empty delta — an absent list
+    and an unchanged list are different facts, and only one of them is good
+    news.
+    """
+    a, b = prev.get("tool_names"), cur.get("tool_names")
+    if a is None or b is None:
+        if (prev.get("tools") or 0) != (cur.get("tools") or 0):
+            print("      which tools: not recorded — this gateway wrote no "
+                  "`tool_names`. Re-run with a build that does.")
+        return
+    gone, came = sorted(set(a) - set(b)), sorted(set(b) - set(a))
+    if not gone and not came:
+        print("      the tools: same set, so the head moved for another "
+              "reason (system text or chat_template_kwargs)")
+        return
+    for label, names in (("gone", gone), ("new ", came)):
+        if names:
+            shown = ", ".join(names[:12])
+            print("      %s (%d): %s%s"
+                  % (label, len(names), shown,
+                     " …" if len(names) > 12 else ""))
 
 
 def cmd_saves(a):

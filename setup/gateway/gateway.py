@@ -2074,6 +2074,23 @@ async def handler(req):
                         "ua": (req.headers.get("user-agent") or "")[:120],
                         "kwargs": (p or {}).get("chat_template_kwargs"),
                         "tools": len(((p or {}).get("tools") or [])),
+                        # WHICH tools, not just how many — the count alone
+                        # cannot answer the question it raises. 02.09.2026:
+                        # two sessions lost 34 minutes each to a tool set that
+                        # changed mid-conversation (87 -> 64 -> 88 while all
+                        # 206 messages stayed identical), and the trace could
+                        # say THAT it changed and never WHICH, so the culprit
+                        # — an MCP server connecting or dropping, a deferred
+                        # schema loading — stayed unidentifiable without
+                        # arming `text` and writing whole prompts to disk.
+                        # Names only: a few hundred bytes, no schemas, no
+                        # prompt content, so this belongs at `detail` where
+                        # `text` does not. Sorted, because a reordered list is
+                        # not a changed tool set and a reader comparing two
+                        # records must not have to know that.
+                        "tool_names": sorted(
+                            t.get("name") for t in ((p or {}).get("tools") or [])
+                            if isinstance(t, dict) and t.get("name")),
                         "messages": len(((p or {}).get("messages") or [])),
                         "head_chars": len(head or ""),
                         "prefix_chars": len(prefix_text(p, dialect)) if p else None,

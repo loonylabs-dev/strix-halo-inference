@@ -6,7 +6,7 @@ deterministically against the real stack: the per-access throttle, cancelled
 callers, and above all the contract between the gateway's id and the store on
 disk.
 """
-import asyncio, json, os, re, shutil, tempfile, unittest
+import asyncio, json, os, re, shutil, tempfile, unittest, urllib.error
 from unittest import mock
 
 import aiohttp
@@ -2540,3 +2540,103 @@ class TestARestartingServerIsNotAStackTrace(unittest.IsolatedAsyncioTestCase):
                       "CancelledError is not an error here — it is a client "
                       "that left, and swallowing it would turn an abort into "
                       "a 503 nobody asked for")
+
+
+class TestSessionSave(unittest.IsolatedAsyncioTestCase):
+    """The save that writes the slot AS IT STANDS — cooldown, floor, and the
+    one failure mode that must stay loud.
+
+    Not to be confused with TestAutoSave above: that one covers the prewarm
+    path, which re-creates a bare prefix in a subprocess. This one is a single
+    HTTP call after a turn and shares nothing with it but the word "save".
+    """
+
+    async def asyncSetUp(self):
+        self.posts = []
+        self.old = {k: getattr(GW, k) for k in
+                    ("SESSION_SAVE", "SESSION_SAVE_COOLDOWN_S",
+                     "SESSION_SAVE_MIN_TOKENS")}
+        GW.SESSION_SAVE = True
+        GW.SESSION_SAVE_COOLDOWN_S = 300.0
+        GW.SESSION_SAVE_MIN_TOKENS = 20000
+        GW.SESSION_SAVED_AT.clear()
+        self.log_lines = []
+        self.patches = [
+            mock.patch.object(GW, "log",
+                              lambda *a: self.log_lines.append(" ".join(map(str, a)))),
+            mock.patch.object(GW, "_post_json", self._fake_post),
+        ]
+        for p in self.patches:
+            p.start()
+
+    async def asyncTearDown(self):
+        for p in self.patches:
+            p.stop()
+        for k, v in self.old.items():
+            setattr(GW, k, v)
+        GW.SESSION_SAVED_AT.clear()
+
+    def _fake_post(self, url, payload, timeout):
+        self.posts.append((url, payload))
+        return {"n_saved": 42000, "n_written": 1_500_000_000,
+                "timings": {"save_ms": 1900}}
+
+    async def test_saves_a_deep_turn(self):
+        await GW.session_save("abc123", (40000, 2000))
+        self.assertEqual(len(self.posts), 1)
+        url, payload = self.posts[0]
+        self.assertIn("action=save", url)
+        self.assertEqual(payload["filename"], "session-abc123.bin")
+
+    async def test_off_by_default_does_nothing(self):
+        GW.SESSION_SAVE = False
+        await GW.session_save("abc123", (40000, 2000))
+        self.assertEqual(self.posts, [])
+
+    async def test_shallow_state_is_not_worth_a_file(self):
+        await GW.session_save("abc123", (1000, 500))
+        self.assertEqual(self.posts, [])
+
+    async def test_cooldown_holds_the_second_turn_back(self):
+        await GW.session_save("abc123", (40000, 2000))
+        await GW.session_save("abc123", (41000, 2000))
+        self.assertEqual(len(self.posts), 1, "the cooldown did not hold")
+
+    async def test_cooldown_expires(self):
+        await GW.session_save("abc123", (40000, 2000))
+        GW.SESSION_SAVED_AT["abc123"] -= GW.SESSION_SAVE_COOLDOWN_S + 1
+        await GW.session_save("abc123", (41000, 2000))
+        self.assertEqual(len(self.posts), 2)
+
+    async def test_cooldown_is_per_prefix(self):
+        await GW.session_save("aaa", (40000, 2000))
+        await GW.session_save("bbb", (40000, 2000))
+        self.assertEqual(len(self.posts), 2, "one prefix blocked another")
+
+    async def test_a_server_without_the_flag_is_reported_once(self):
+        def refuse(url, payload, timeout):
+            raise urllib.error.HTTPError(url, 501, "not supported", {}, None)
+        with mock.patch.object(GW, "_post_json", refuse):
+            await GW.session_save("abc123", (40000, 2000))
+            GW.SESSION_SAVED_AT["abc123"] -= GW.SESSION_SAVE_COOLDOWN_S + 1
+            await GW.session_save("abc123", (40000, 2000))
+        said = [l for l in self.log_lines if "session save unavailable" in l]
+        self.assertEqual(len(said), 1, "should say so once, not every turn")
+
+    async def test_a_programming_error_is_NOT_swallowed(self):
+        """The clause is narrow on purpose. A NameError reported as "the server
+        does not support this" is a lie that looks like a configuration — and
+        it was the actual state of this function in review on 02.09.2026,
+        where the constant was LLAMA_URL instead of LLAMA."""
+        def boom(url, payload, timeout):
+            raise NameError("LLAMA_URL")
+        with mock.patch.object(GW, "_post_json", boom):
+            with self.assertRaises(NameError):
+                await GW.session_save("abc123", (40000, 2000))
+
+    async def test_unknown_token_count_still_saves(self):
+        """The Anthropic route carries no timings, so `reuse` is None there.
+        Refusing to save would mean never saving for Claude Code, which is the
+        one consumer this exists for."""
+        await GW.session_save("abc123", None)
+        self.assertEqual(len(self.posts), 1)

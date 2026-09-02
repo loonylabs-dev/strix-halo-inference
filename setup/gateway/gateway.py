@@ -46,7 +46,7 @@ Environment variables
 import asyncio, heapq, ipaddress, json, os, re, sys, time
 import aiohttp
 from aiohttp import web, ClientSession, ClientTimeout
-import hashlib, urllib.request
+import hashlib, urllib.error, urllib.request
 
 # dialects.py sits next to this file — both in the repo and as a symlink in
 # ~/.local/lib/llm-stack. Importing by directory instead of by package keeps
@@ -268,6 +268,30 @@ RIVAL_GRACE_S = float(env("RIVAL_GRACE_S", "RIVALEN_SCHONFRIST_S", 86400))
 # of SEVEN tokens in there, which on the next start would have occupied one of
 # the two slots that a real project belongs in.
 AUTO_MIN_CHARS = int(env("AUTO_MIN_CHARS", "AUTO_MIN_ZEICHEN", 4000))
+# Write the slot AS IT STANDS after a turn, so a server restart does not
+# discard every resident conversation. OFF by default and opt-in per machine:
+# it needs a server started with --slot-save-path, and a profile that omits
+# that flag omits it for a reason (flashnext did, on two upstream reviews of
+# llama.cpp#27742 — see setup/env/flashnext.env and the two reports of
+# 02.09.2026 that answered it).
+#
+# This is NOT AUTO_SAVE. That one saves a bare PREFIX through a prewarm
+# subprocess; this saves the whole conversation with one HTTP call and no
+# prefill. See session_save().
+SESSION_SAVE = env("SESSION_SAVE", default="0") == "1"
+# Seconds between two writes of the same prefix. A wear decision, not a
+# latency one: 6.21 GB per save at 180k tokens, so 5 minutes over three
+# working hours is ~224 GB a day (bench/reports/2026-09-02_1856_slot-save-cost,
+# and the drive's own SMART reading beside it). Event-driven on top of this —
+# no turns, no writes — so an idle machine writes nothing at all.
+SESSION_SAVE_COOLDOWN_S = float(env("SESSION_SAVE_COOLDOWN_S", default="300"))
+# Below this the fixed 118 MB every state pays dominates, and a session that
+# shallow is cheap to recompute anyway.
+SESSION_SAVE_MIN_TOKENS = int(env("SESSION_SAVE_MIN_TOKENS", default="20000"))
+# The write is 1.9-3.0 s at 180k and the gate is held for it. This bound is
+# what keeps a hung server from holding the gate indefinitely; it is not a
+# tuning knob.
+SESSION_SAVE_TIMEOUT_S = float(env("SESSION_SAVE_TIMEOUT_S", default="60"))
 # Restore a prefix from disk ONLY when llama-server is cold. 0 = off, and off
 # is what runs today.
 #
@@ -2135,12 +2159,100 @@ async def handler(req):
             elif ok is None and restored:
                 log("NOTE        restore of %s unverified: %s"
                     % (restored[0], why))
+            await session_save(ident, reuse)
         else:
             log("ABORTED     %-15s %-6s who=%-12s prefix=%s after=%.1fs — no "
                 "answer, nothing saved"
                 % (ip, PRIORITY_NAME[prio], who, ident, time.time() - t_start))
         GATE.leave()
         IN_FLIGHT_PER_TOKEN[who] = max(0, IN_FLIGHT_PER_TOKEN.get(who, 1) - 1)
+
+SESSION_SAVED_AT = {}          # prefix -> when its state was last written
+
+
+async def session_save(ident, reuse):
+    """Write the slot AS IT STANDS, so a restart does not throw the day away.
+
+    A DIFFERENT MECHANISM FROM save_prefix_first, and the difference is the
+    whole reason this is allowed to run after the answer. That one had to
+    CREATE the state it wanted: render the prefix, prefill it alone, then save
+    — which is why it needed the slot for itself and why both defects of
+    28.08.2026 came out of it (`autosave-evicts-the-working-slot`,
+    `saved-prefix-holds-a-foreign-state`). This one saves what is already
+    there. `SLOT_SAVE` only READS the slot (server-context.cpp) and is deferred
+    whole while the slot is busy, so it can neither evict the working state nor
+    pick up somebody else's.
+
+    That is measured, not argued — bench/reports/2026-09-02_2010_save-under-load:
+    a turn fired 200 ms into a save keeps its state and pays only the wait, and
+    both files written under contention held exactly the state they should.
+
+    AND IT IS AWAITED, NOT SCHEDULED. The comment above `answered["ok"]` says
+    nothing may be scheduled here, and it is right: `asyncio.create_task` is
+    what let a save outlive its turn and collide with the next one. Awaiting
+    inside the gate serialises it instead — the caller already has its answer,
+    the next request waits the length of the write, and nothing races. The
+    write costs 1.9-3.0 s at 180k tokens
+    (bench/reports/2026-09-02_1856_slot-save-cost, and the 54 % spread there is
+    why this says "1.9-3.0" rather than a single number).
+
+    WHAT IT COSTS THE DISK, per save: 118 MB + 33,844 bytes per token, straight
+    from 2k to 180k. The cooldown is a WEAR decision and nothing else — the
+    same report prices a lost 180k state at ~1800 s of prefill against a 1.9 s
+    write, so latency is not what it protects against.
+    """
+    if not SESSION_SAVE or not ident:
+        return
+    tokens = (reuse[0] + reuse[1]) if reuse and reuse[0] is not None else None
+    # A shallow state is not worth its own file: the fixed 118 MB dominates
+    # below ~20k tokens, and a session that shallow is cheap to recompute
+    # anyway. Unknown token count means the answer carried no timings — the
+    # Anthropic route does not — so fall through and let the cooldown decide.
+    if tokens is not None and tokens < SESSION_SAVE_MIN_TOKENS:
+        return
+    now = time.time()
+    last = SESSION_SAVED_AT.get(ident)
+    if last is not None and now - last < SESSION_SAVE_COOLDOWN_S:
+        return
+    name = "session-%s.bin" % ident
+    try:
+        r = await asyncio.to_thread(
+            _post_json, "%s/slots/0?action=save" % LLAMA,
+            {"filename": name}, SESSION_SAVE_TIMEOUT_S)
+    # NARROW ON PURPOSE. `except Exception` here would swallow a NameError or a
+    # typo in the URL and log it as "the server does not support this", which
+    # is a lie that looks like a supported configuration. Caught 02.09.2026 in
+    # review, on this very function: the constant is LLAMA, not LLAMA_URL, and
+    # the broad clause would have reported a missing flag forever.
+    except (urllib.error.URLError, OSError, TimeoutError,
+            json.JSONDecodeError) as e:
+        # A server without --slot-save-path answers "does not support slots
+        # action". Logged once per prefix rather than every turn: the profile
+        # may have removed the flag on purpose (flashnext did, see its env),
+        # and a line per turn would bury the log.
+        if ident not in SESSION_SAVED_AT:
+            log("NOTE        session save unavailable for %s: %s" % (ident, e))
+        SESSION_SAVED_AT[ident] = now
+        return
+    SESSION_SAVED_AT[ident] = time.time()
+    log("SESSION     saved %s: %s tokens, %.0f MB, %.0f ms"
+        % (ident, r.get("n_saved"), (r.get("n_written") or 0) / 1e6,
+           (r.get("timings") or {}).get("save_ms", 0)))
+    TRACE.record("session-save",
+                 summary={"prefix": ident, "n_saved": r.get("n_saved"),
+                          "n_written": r.get("n_written"),
+                          "save_ms": (r.get("timings") or {}).get("save_ms")})
+
+
+def _post_json(url, payload, timeout):
+    """A blocking POST, for asyncio.to_thread. Deliberately not aiohttp: this
+    runs while the gate is held and must not interleave with anything."""
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"content-type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
 
 def add_derived_names(listing, wanted):
     """Replace the listing's entries with exactly the names we answer for.

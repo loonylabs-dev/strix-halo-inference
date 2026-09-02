@@ -2103,7 +2103,17 @@ async def handler(req):
             # not to restore would make one wrong skip permanent. Reuse of zero
             # says the opposite happened, and forgetting the entry makes the
             # next request restore — so the rule corrects itself in one turn.
-            if ident and ident in SAVED and MAX_TASK_ID is not None and reuse:
+            # THE SESSION STORE COUNTS HERE TOO, and leaving it out was a
+            # defect of its own hour: SEEN was only kept for prefixes of the
+            # SAVED store, so a session prefix stayed "never served in this
+            # server life" forever and session_restore's `cold` test was true
+            # at EVERY turn. The consequences compound — a restore per turn,
+            # each one putting the slot back to a state OLDER than what it
+            # already held, so the conversation between the save and now gets
+            # recomputed. Found 03.09.2026 by reading the live log: the restore
+            # said `cold` for a prefix served a minute earlier.
+            if (ident and MAX_TASK_ID is not None and reuse
+                    and (ident in SAVED or os.path.exists(session_file(ident)))):
                 before = SEEN.get(ident)
                 if reuse[0] > 0:
                     SEEN[ident] = MAX_TASK_ID

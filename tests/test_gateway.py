@@ -2852,3 +2852,41 @@ class TestSessionRestoreNeedsAPrefix(unittest.IsolatedAsyncioTestCase):
         body = {"messages": [{}, {}, {}, {}, {}, {}]}
         self.assertIsNone(await GW.session_restore("abc", self.SLOTS, body))
         self.assertEqual(self.restores, [])
+
+
+class TestSeenCoversTheSessionStore(unittest.TestCase):
+    """SEEN decides whether a prefix counts as served in THIS server life, and
+    session_restore's `cold` test rests on it.
+
+    Kept only for SAVED-store prefixes, a session prefix stays "never served"
+    forever: `cold` is then true at every turn, a restore fires every turn, and
+    each one puts the slot back to a state OLDER than what it already held —
+    so everything between the save and now is recomputed. Found live
+    03.09.2026, where the restore logged `cold` for a prefix served a minute
+    earlier.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="seen-")
+        self.old_path, GW.SLOT_PATH = GW.SLOT_PATH, self.dir
+
+    def tearDown(self):
+        GW.SLOT_PATH = self.old_path
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _eligible(self, ident, in_saved, has_session):
+        """The condition guarding the SEEN update, as the request path uses it."""
+        if has_session:
+            open(GW.session_file(ident), "w").close()
+        saved = {ident: "file"} if in_saved else {}
+        return bool(ident and (ident in saved
+                               or os.path.exists(GW.session_file(ident))))
+
+    def test_a_prefix_store_entry_still_counts(self):
+        self.assertTrue(self._eligible("aaa", in_saved=True, has_session=False))
+
+    def test_a_session_state_counts_too(self):
+        self.assertTrue(self._eligible("bbb", in_saved=False, has_session=True))
+
+    def test_a_prefix_with_neither_does_not(self):
+        self.assertFalse(self._eligible("ccc", in_saved=False, has_session=False))

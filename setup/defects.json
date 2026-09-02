@@ -691,8 +691,10 @@
     "how": "bench/suites/restore-vs-cram.py against a side server started WITHOUT `-cram 0` (the profile's own budget is the subject). It builds a shallow state on disk and a deeper one in the cache, then asks for the deeper one's continuation twice — once plain, once with the file restored in front. Arm 1 is also the control: if the cache does not return the deeper state there, the run is about a lost state rather than about restores and the suite aborts saying so."
    },
    "suite": "bench/suites/restore-vs-cram.py",
-   "upstream": [],
-   "status": "open upstream, not yet reported — the operator files an informal issue; carried locally as two commits since 02.09.2026",
+   "upstream": [
+    "https://github.com/ggml-org/llama.cpp/issues/28276"
+   ],
+   "status": "REPORTED upstream 02.09.2026 as #28276 (open, bug-unconfirmed) — carried locally as two commits in the rocm-cachelookup family, pinned by flashnext.env. The issue describes the two gates and carries the three-build table; the PATCH was NOT attached, and offering it means disclosing AI assistance and standing behind every line (CONTRIBUTING points 1, 3, 4). WATCH: a maintainer verdict decides the pin — if the behaviour is called intended, the pin AND SESSION_RESTORE=displaced go back in the same sitting.",
    "first_seen": "2026-09-02",
    "last_checked": "2026-09-02",
    "upstream_check": {

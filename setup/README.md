@@ -279,7 +279,8 @@ to measure against it, never something to point the symlink at:
 | `build-rocm-unpatched-<id>` | `--no-patch` | upstream as it stands, to measure whether a fix landed. Serving it answers WRONG once a second slot is used |
 | `build-rocm-unroll-<id>` | `--unroll` | plus `-mllvm --amdgpu-unroll-threshold-local=600`, the workaround from llama.cpp#19984. Measured 31.08.2026: **no effect on this stack**, see `bench/reports/2026-08-31_0220_unroll-flag/` |
 | `build-rocm-altsdk-<id>` | `--rocm-path DIR` | against a ROCm that is not the system's. Measured 31.08.2026 against 10.1: **+10 % decode on an empty context, gone by 64k**, see `bench/reports/2026-08-31_1219_speed-ab/` |
-| `build-rocm-<name>-<id>` | `--family <name>` | a FOREIGN TREE — somebody's fork as a measurement subject. The name is lowercase letters and digits only (a hyphen would re-open the glob collision below) and never a built-in one. Instances so far, all measured 31.08.2026: `rocm-gdnfork` (RDNA 3.5 tuning fork — **nothing at the operating point**, `bench/reports/2026-08-31_1908_speed-ab/`), `rocm-engramhalo` (Flash-Next tuning fork — its MTP path decodes at 0.33-3.5 t/s here, `…_2047_speed_flashnext-B-mtpq8/`), `rocm-drluoto` (PR #27836 draft-mtp preview — **decode 16→100 t/s on copy**, `…_2158_speed_flashnext-C-mtpq8/`; the hang its early builds carried was isolated 01.09. to the pre-#27941 base and is gone on the m2 lineage, master b10743 + the PR commits, gate battery green — `flashnext-mtp-serving-shape-hangs` in the defect registry) |
+| `build-rocm-<name>-<id>` | `--family <name>` | a FOREIGN TREE — somebody's fork as a measurement subject. The name is lowercase letters and digits only (a hyphen would re-open the glob collision below) and never a built-in one. Instances so far, all measured 31.08.2026: `rocm-gdnfork` (RDNA 3.5 tuning fork — **nothing at the operating point**, `bench/reports/2026-08-31_1908_speed-ab/`), `rocm-engramhalo` (Flash-Next tuning fork — its MTP path decodes at 0.33-3.5 t/s here, `…_2047_speed_flashnext-B-mtpq8/`), `rocm-drluoto` (PR #27836 draft-mtp preview — **decode 16→100 t/s on copy**, `…_2158_speed_flashnext-C-mtpq8/`; the hang its early builds carried was isolated 01.09. to the pre-#27941 base and is gone on the m2 lineage, master b10743 + the PR commits, gate battery green — `flashnext-mtp-serving-shape-hangs` in the defect registry), `rocm-cachelookup` (see the row below — the one instance that is NOT a foreign tree) |
+| `build-rocm-cachelookup-<id>` | `--family cachelookup` | OUR OWN two-commit change to llama.cpp's prompt-cache lookup, built as a measurement subject rather than adopted. Same lineage as the serving drluoto build plus `62850522e..6bbb3eecf`. Measured 02.09.2026: a restore into a server whose RAM cache holds a longer state costs **111.5 s against 0.33 s**, and **0.53 s with these commits** — `bench/reports/2026-09-02_2230_restore-lookup-patch/`, three builds through one reproducer. SERVED since 02.09. by an explicit `LLAMA_BIN` pin in flashnext.env, because `SESSION_RESTORE=displaced` in the gateway is unsafe without it. Retires when the commits land upstream or are rejected |
 
 The names matter more than they look. `builds_of_backend()` globs
 `build-<family>-*`, so a family named `rocm-patched-unroll` would be swept into
@@ -291,8 +292,14 @@ pin such a build by `LLAMA_BIN` — `--activate`/`--use` still refuse it, so the
 serving symlink every other profile execs cannot reach it by accident, but a
 profile that names the path explicitly, says why, and names its retirement
 condition is a decision, not an accident. `setup/env/flashnext.env` is the
-first case (the PR #27836 preview), and `--prune` does not know about such
-pins — check the profiles before deleting a foreign family's builds.
+first case (the PR #27836 preview) and now the second as well: since 02.09.2026
+it pins `rocm-cachelookup`, which is not a foreign tree at all but this repo's
+own proposal to llama.cpp. The rule holds either way — the pin names the path,
+the reason and the retirement condition — and it carries one extra obligation
+that a fork preview does not: if the change is rejected upstream, the pin AND
+`SESSION_RESTORE=displaced` go back together, in the same sitting. `--prune`
+does not know about such pins — check the profiles before deleting a foreign
+family's builds.
 
 An alternate-SDK build additionally needs that SDK's libraries at RUN time:
 ROCm 10.1's `libamdhip64` carries the SAME soname as Fedora's 7.1, so without

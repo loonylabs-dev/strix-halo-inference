@@ -84,11 +84,58 @@ def by_depth(summary):
     return grouped
 
 
+def conditions_note(paths):
+    """The line above the table: under what the numbers below were measured.
+
+    context.json has carried `platform_profile` since the first sweep, and
+    nothing ever rendered it — so the one fact that decides whether two
+    reports may be compared at all lived in a file nobody opens. A sweep run
+    at 'quiet' produces a table that looks exactly like one run at
+    'performance', a third of the power budget apart.
+
+    Three states, and the third is not the second. A run whose profile HELD
+    says so; one where it CHANGED is not comparable with anything, itself
+    included; and an older report that never recorded the answer is UNKNOWN —
+    which must not be rendered as "fine", because that would turn a gap in
+    the record into a claim about it.
+    """
+    lines = []
+    for p in paths:
+        ctx = os.path.join(p, "context.json")
+        if not os.path.exists(ctx):
+            continue
+        try:
+            with open(ctx, encoding="utf-8") as f:
+                c = json.load(f)
+        except Exception:
+            continue
+        started = c.get("platform_profile")
+        if started is None:
+            continue                    # a machine without the interface
+        if c.get("conditions_held") is False:
+            lines.append("> **WARNING — conditions did not hold.** "
+                         "`platform_profile` changed during this run: "
+                         "`%s` -> `%s`. The cells are not comparable with "
+                         "each other, and the table is not comparable with "
+                         "any other report."
+                         % (started, c.get("platform_profile_end")))
+        elif c.get("conditions_held") is True:
+            lines.append("> Measured at `platform_profile=%s`, verified "
+                         "unchanged at the end of the run." % started)
+        else:
+            lines.append("> Measured at `platform_profile=%s`. Whether it "
+                         "held is NOT recorded — this report predates the "
+                         "check." % started)
+    return "\n>\n".join(lines)
+
+
 def render(*paths):
     summaries = load_summaries(paths)
     if not summaries:
         return "(no summary.json found under %s)" % ", ".join(paths)
-    return render_summaries(summaries)
+    note = conditions_note(paths)
+    return (note + "\n\n" + render_summaries(summaries)) if note \
+        else render_summaries(summaries)
 
 
 def render_summaries(summaries):

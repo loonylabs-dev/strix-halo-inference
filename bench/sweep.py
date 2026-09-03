@@ -174,6 +174,37 @@ def platform_profile():
         return None
 
 
+def close_conditions(context):
+    """Read the power profile again and record whether it held.
+
+    Asked at the END as well as the start, because a sweep runs for tens of
+    minutes and the answer is not a constant. Measured 03.09.2026: this
+    machine's platform_profile went from 'performance' to 'quiet' at some
+    point overnight with nothing logging it anywhere, and the GPU served eight
+    hours at 35 W instead of 70 — 99 % busy the whole time, so nothing looked
+    idle or broken. A sweep that straddled that moment would have written
+    'performance' into its context and reported half its cells at a third of
+    the power budget, and every number in the table would have looked
+    ordinary.
+
+    One reading at the start is not a measurement of the run, it is a
+    measurement of its first second. This does not prevent the change — the
+    profile is the machine's business, not this repo's — but a report that
+    cannot say its conditions held has to say so instead of implying it.
+    """
+    context["platform_profile_end"] = platform_profile()
+    before, after = context.get("platform_profile"), context["platform_profile_end"]
+    context["conditions_held"] = (before == after)
+    if not context["conditions_held"]:
+        print("\n" + "!" * 78)
+        print("WARNING: platform_profile changed DURING this sweep: %s -> %s"
+              % (before, after))
+        print("The cells are not comparable with each other and the table is")
+        print("not comparable with any other report. Re-run before using it.")
+        print("!" * 78)
+    return context["conditions_held"]
+
+
 def main():
     reexec_with_inhibit()
     ap = argparse.ArgumentParser()
@@ -312,6 +343,7 @@ def main():
             if not slots_ready(URL, 900):
                 print("WARNING: %s did not become ready within 900 s"
                       % was_active)
+        close_conditions(context)
         with open(os.path.join(dest, "context.json"), "w") as f:
             json.dump(context, f, indent=1, ensure_ascii=False)
 
@@ -325,6 +357,9 @@ def main():
         except Exception as e:
             context["results"][a.reference] = "failed: %s" % str(e)[:200]
             print("    REFERENCE FAILED: %s" % str(e)[:200])
+        # Again: the reference runs AFTER the finally block, so the verdict
+        # written there does not cover it.
+        close_conditions(context)
         with open(os.path.join(dest, "context.json"), "w") as f:
             json.dump(context, f, indent=1, ensure_ascii=False)
 

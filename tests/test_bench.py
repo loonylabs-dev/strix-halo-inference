@@ -183,5 +183,100 @@ class TestNoSuiteReachesIntoThePreRenameHome(unittest.TestCase):
                          "09/2026 move emptied: %s" % ", ".join(stale))
 
 
+class TestASweepReportSaysWhetherItsConditionsHeld(unittest.TestCase):
+    """A sweep runs for tens of minutes; the power profile is not a constant
+    over that. Measured 03.09.2026: this machine's platform_profile went from
+    'performance' to 'quiet' unnoticed and the GPU served eight hours at 35 W
+    instead of 70, at 99 % busy the whole time. A sweep straddling that moment
+    would have recorded 'performance' from its first second and produced a
+    table where nothing looked wrong.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp()
+        self.sweep = common.load("bench/sweep.py", "sweep")
+        self.compare = common.load("bench/compare.py", "compare")
+
+    def ctx(self, **kw):
+        import json, os
+        with open(os.path.join(self.dir, "context.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(kw, f)
+        return self.dir
+
+    # --- close_conditions -------------------------------------------------
+
+    def test_an_unchanged_profile_is_recorded_as_held(self):
+        c = {"platform_profile": "performance"}
+        self.sweep.platform_profile = lambda: "performance"
+        self.assertTrue(self.sweep.close_conditions(c))
+        self.assertTrue(c["conditions_held"])
+        self.assertEqual(c["platform_profile_end"], "performance")
+
+    def test_a_changed_profile_is_recorded_and_shouted_about(self):
+        import contextlib, io
+        c = {"platform_profile": "performance"}
+        self.sweep.platform_profile = lambda: "quiet"
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertFalse(self.sweep.close_conditions(c))
+        self.assertFalse(c["conditions_held"])
+        said = out.getvalue()
+        self.assertIn("performance -> quiet", said)
+        self.assertIn("WARNING", said)
+
+    def test_a_machine_without_the_interface_is_held_not_broken(self):
+        """None at the start and None at the end is not a change. A desktop
+        must not have every sweep flagged as contaminated."""
+        c = {"platform_profile": None}
+        self.sweep.platform_profile = lambda: None
+        self.assertTrue(self.sweep.close_conditions(c))
+
+    # --- what the report shows -------------------------------------------
+
+    def test_a_held_run_says_so(self):
+        note = self.compare.conditions_note(
+            [self.ctx(platform_profile="performance", conditions_held=True)])
+        self.assertIn("performance", note)
+        self.assertIn("unchanged", note)
+
+    def test_a_contaminated_run_is_labelled_not_comparable(self):
+        note = self.compare.conditions_note(
+            [self.ctx(platform_profile="performance",
+                      platform_profile_end="quiet", conditions_held=False)])
+        self.assertIn("WARNING", note)
+        self.assertIn("not comparable", note)
+        self.assertIn("quiet", note)
+
+    def test_an_older_report_is_unknown_and_must_not_read_as_fine(self):
+        """The gap has to survive into the output. Rendering a report that
+        never recorded the answer as if it had held turns a hole in the record
+        into a claim about it — which is the one thing a measurement log must
+        not do."""
+        note = self.compare.conditions_note(
+            [self.ctx(platform_profile="balanced")])
+        self.assertIn("NOT recorded", note)
+        self.assertNotIn("unchanged", note)
+
+    def test_no_context_and_no_profile_say_nothing_at_all(self):
+        import tempfile
+        self.assertEqual(self.compare.conditions_note([tempfile.mkdtemp()]), "")
+        self.assertEqual(self.compare.conditions_note([self.ctx(model="x")]), "")
+
+    def test_the_note_rides_above_the_table(self):
+        """render() must carry it — the note living only in context.json is
+        the state this fixes."""
+        import json, os
+        d = self.ctx(platform_profile="performance",
+                     platform_profile_end="quiet", conditions_held=False)
+        os.makedirs(os.path.join(d, "v1"), exist_ok=True)
+        with open(os.path.join(d, "v1", "summary.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump({"label": "v1", "ctx": 65536}, f)
+        out = self.compare.render(d)
+        self.assertIn("WARNING", out)
+        self.assertLess(out.index("WARNING"), out.index("| variant |"))
+
+
 if __name__ == "__main__":
     unittest.main()

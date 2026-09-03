@@ -185,10 +185,6 @@ class TestTheSummaryArithmetic(unittest.TestCase):
                 {"n_prompt": 0, "n_gen": 128, "n_depth": 0})), "tg128 @ d0")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheArmsTakeTurnsGoingFirst(unittest.TestCase):
     """Straight A,B,A,B leaves B second in EVERY round, on a machine one pass
     warmer. Measured on a pair that differed in nothing, that is worth -0.5 to
@@ -259,3 +255,7 @@ class TestReportsDoNotNameThisMachine(unittest.TestCase):
                         found.append("%s:%d" % (os.path.basename(
                             os.path.dirname(f)), n))
         self.assertEqual(found, [], "reports naming this machine")
+
+
+if __name__ == "__main__":
+    unittest.main()

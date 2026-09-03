@@ -345,10 +345,6 @@ class TestRestore(WithStore):
         self.assertNotIn("without", " ".join(self.restored_lines(lines)))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestQuarantinedFilesAreAccountedFor(WithStore):
     """cc-gateway sets a prefix aside by RENAMING `X.bin` to `X.bin.unusable`.
     Everything that counts or deletes disk has to know that name, and on the
@@ -456,3 +452,7 @@ class TestTheSaveCommandAcceptsWhatTheGatewayPassesIt(unittest.TestCase):
     def test_the_trap_is_named_where_it_was_set(self):
         src = (common.REPO / "tools" / "prewarm.py").read_text(encoding="utf-8")
         self.assertIn("argparse applies type conversion BEFORE checking", src)
+
+
+if __name__ == "__main__":
+    unittest.main()

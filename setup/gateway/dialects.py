@@ -27,6 +27,7 @@ Design rules for anything added here:
   * nothing here talks to the network or reads configuration. It is pure
     body-in/body-out so it can be tested without a GPU and without a server.
 """
+import collections
 import hashlib
 import json
 
@@ -430,6 +431,97 @@ def output_from_text(text):
         except Exception:
             best = None
     return best
+
+
+def spoken_text(text):
+    """The words the model said, out of a proxied stream. "" when unreadable.
+
+    Needed because the gateway's sniff holds RAW SSE, and a character
+    histogram over that counts JSON punctuation, not the answer. The `////`
+    signature arrives as a few hundred one-character deltas wrapped in braces
+    and quotes, so the dominant character of the raw frames is `"` — the check
+    would read every corrupted answer as healthy and never say why.
+
+    Both dialects and both shapes: an Anthropic `text_delta`, an OAI
+    `choices[].delta.content`, and the non-streamed bodies of either. Tolerant
+    like its neighbours here — it is fed truncated JSON by design and must
+    answer "nothing" rather than raise.
+    """
+    if not text:
+        return ""
+    out = []
+    for chunk in text.split("\n"):
+        line = chunk.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        d = obj.get("delta")
+        if isinstance(d, dict) and isinstance(d.get("text"), str):
+            out.append(d["text"])                       # anthropic, streamed
+        for ch in obj.get("choices") or []:
+            if not isinstance(ch, dict):
+                continue
+            for key in ("delta", "message"):            # oai, streamed / whole
+                part = ch.get(key)
+                if isinstance(part, dict) and isinstance(part.get("content"), str):
+                    out.append(part["content"])
+        for part in obj.get("content") or []:           # anthropic, whole
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                out.append(part["text"])
+    return "".join(out)
+
+
+# The share above which one character means the answer is degenerate, and the
+# reason it is stricter here than in the probe.
+#
+# probe.py judges ONE fixed arithmetic question, whose answer can never
+# legitimately be a markdown rule or a base64 blob, so 60 % is safe there.
+# This one judges FOREIGN traffic, which contains exactly those shapes — and a
+# watchdog that cries wolf on a table is one that gets switched off before the
+# real fault arrives.
+#
+# Both numbers are measured, against 316 genuinely corrupted and 383 healthy
+# answers recorded on this machine, plus a hand-built corpus of the shapes a
+# histogram is most likely to trip over (bench/suites/passive-degeneracy.py,
+# 29.08.2026). At 90 % with the dominant character required to be
+# non-alphanumeric: 100 % of the 316 found, 0 % false alarms, and of the hard
+# shapes only a response that is ENTIRELY a rule or a progress bar survives —
+# implausible as a whole answer, and the two-in-a-row rule covers it, because
+# corruption came in runs of at least four while those shapes do not repeat.
+DEGENERATE_SHARE = 0.90
+DEGENERATE_MIN_LEN = 24
+
+
+def looks_degenerate(text, min_len=DEGENERATE_MIN_LEN, share=DEGENERATE_SHARE):
+    """(bad, why) — is this answer one character repeated?
+
+    A RATIO over the non-whitespace body, not a run length: a run test fires
+    on any long rule inside otherwise fine prose. Short answers are not judged
+    at all, because below `min_len` there is no evidence either way — and that
+    floor cannot be raised past the fault's own size, which is the finding
+    that decided this design. The corrupted answers have a MEDIAN LENGTH OF
+    120 CHARACTERS, so a "only judge long answers" safety measure removes the
+    fault from view entirely: at min_len 200 the recall measured 0.0 %.
+    """
+    body = "".join((text or "").split())
+    if len(body) < min_len:
+        return False, ""
+    char, n = collections.Counter(body).most_common(1)[0]
+    if n / len(body) < share:
+        return False, ""
+    if char.isalnum():
+        # base64 and hex dumps are dominated by one alphanumeric character and
+        # are legitimate output; the signature of this fault never is.
+        return False, ""
+    return True, "%.0f%% of %d characters are %r" % (100.0 * n / len(body),
+                                                     len(body), char)
 
 
 def rates_from_text(text):

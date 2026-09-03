@@ -1524,10 +1524,6 @@ class TestTokenFile(unittest.TestCase):
             GW.TOKEN_FILE, GW.TOKEN = old, old_t
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestWarmIsAMeasurement(unittest.TestCase):
     """`warm` was a claim: "I have seen this prefix id". Whether llama.cpp
     then reused anything was never asked — and on 28.08.2026 a restore from
@@ -2890,3 +2886,59 @@ class TestSeenCoversTheSessionStore(unittest.TestCase):
 
     def test_a_prefix_with_neither_does_not(self):
         self.assertFalse(self._eligible("ccc", in_saved=False, has_session=False))
+
+
+class TestDegeneracyStreak(unittest.TestCase):
+    """Two in a row before it is called a fault.
+
+    The threshold is measured, not chosen: corruption arrived in runs of at
+    least four, while the shapes the histogram cannot tell apart — an answer
+    that is entirely a rule or a progress bar — do not repeat. One answer of
+    delay buys the difference.
+    """
+
+    def setUp(self):
+        self.st = {"n": 0}
+
+    def hit(self, bad, why="why"):
+        return GW.degenerate_streak(bad, why, state=self.st)
+
+    def test_one_degenerate_answer_says_nothing(self):
+        self.assertIsNone(self.hit(True))
+
+    def test_two_in_a_row_report(self):
+        self.hit(True)
+        note = self.hit(True)
+        self.assertIsNotNone(note)
+        self.assertIn("DEGENERATE", note)
+        self.assertIn("2 answers in a row", note)
+
+    def test_a_healthy_answer_in_between_resets_it(self):
+        """The shapes that trip the histogram appear once inside an otherwise
+        fine conversation. If a single good answer did not clear the count,
+        two of them a day apart would be reported as an incident."""
+        self.hit(True)
+        self.assertIsNone(self.hit(False))
+        self.assertIsNone(self.hit(True), "the count must have restarted")
+
+    def test_every_answer_past_the_threshold_reports(self):
+        """A server in this state stays in it until restarted. How many
+        answers it spoiled IS the size of the incident — reporting only the
+        first would hide how long it went on."""
+        self.hit(True)
+        for expected in (2, 3, 4):
+            self.assertIn("%d answers in a row" % expected, self.hit(True))
+
+    def test_the_reason_and_the_prefix_ride_along(self):
+        self.hit(True)
+        note = GW.degenerate_streak(True, "100% of 120 characters are '/'",
+                                    ident="abc123", state=self.st)
+        self.assertIn("100% of 120", note)
+        self.assertIn("abc123", note)
+
+    def test_the_threshold_is_the_measured_one(self):
+        self.assertEqual(GW.DEGENERATE_RUN, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

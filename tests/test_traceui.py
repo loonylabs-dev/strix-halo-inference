@@ -127,10 +127,6 @@ class TestThePageStandsAlone(unittest.TestCase):
         self.assertRegex(self.html, r"MAX_ROWS\s*=\s*\d+")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheChartsShowTheSameRowsAsTheTable(unittest.TestCase):
     """A picture that shows something other than the list beneath it is how a
     wrong conclusion gets drawn. All three read the filtered rows."""
@@ -661,3 +657,7 @@ class TestThePageIsEnglish(unittest.TestCase):
                     hit if isinstance(hit, str) else hit.group(0)))
         self.assertEqual(found, [], "German left on the page:\n  " +
                          "\n  ".join(found))
+
+
+if __name__ == "__main__":
+    unittest.main()

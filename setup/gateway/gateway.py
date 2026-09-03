@@ -1270,6 +1270,41 @@ def restore_verdict(restored, reuse):
                    % (n_restored, reused, evaluated))
 
 
+# How many degenerate answers in a row before it is called a fault.
+#
+# Measured, not chosen: of 79 recorded runs that contained any corruption, the
+# longest chain per run had a MEDIAN OF 4 AND A MINIMUM OF 4 consecutive
+# corrupted answers (bench/suites/passive-degeneracy.py). So requiring two
+# costs one answer of delay against a fault that never arrives alone, and it
+# removes the one shape the histogram cannot tell apart — an answer that is
+# entirely a rule or a progress bar — because those do not repeat.
+DEGENERATE_RUN = 2
+_DEGENERATE = {"n": 0}
+
+
+def degenerate_streak(bad, why, ident=None, need=DEGENERATE_RUN, state=None):
+    """The line to log about this answer, or None.
+
+    State in the process rather than on disk, deliberately: the fault is a
+    property of the RUNNING server, and a restart of either process is exactly
+    when the count should start over. Losing it costs one answer of delay.
+
+    Every answer past the threshold reports, not just the first. A server in
+    this state stays in it until it is restarted, and the number of answers it
+    spoiled is the size of the incident — collapsing that into one line would
+    hide how long it went on.
+    """
+    st = _DEGENERATE if state is None else state
+    if not bad:
+        st["n"] = 0
+        return None
+    st["n"] = st.get("n", 0) + 1
+    if st["n"] < need:
+        return None
+    return ("DEGENERATE  %d answers in a row — %s%s"
+            % (st["n"], why, (" · %s" % ident) if ident else ""))
+
+
 def log(*a):
     print("[%8.1fs]" % (time.time() - T0), *a, flush=True)
 
@@ -2083,6 +2118,43 @@ async def handler(req):
                 rates = DIA.rates_from_text(text)
             except Exception as e:
                 log("NOTE        reuse not read: %r" % (e,))
+            # THE DEGENERACY CHECK, ON TRAFFIC THAT WAS GOING TO HAPPEN
+            # ANYWAY. The known fault of this hardware is a server that keeps
+            # answering while every answer collapses to '////', and until now
+            # the only detector for it was llama-probe — which asks its own
+            # question and therefore TAKES THE ONE SLOT. Measured over seven
+            # days: 22 % of its runs landed on a live conversation, and the
+            # worst made someone wait ten minutes for a turn that should have
+            # taken thirty seconds (bench/reports/2026-08-29_probe-cost).
+            #
+            # Here it costs nothing at all. The answer is already in hand —
+            # the sniff was collected for the token accounting above — so this
+            # is a character histogram over a string, after the response is
+            # closed. No slot, no request, nothing added to the request path.
+            #
+            # ONLY WHOLE ANSWERS ARE JUDGED, and `head` not being full is what
+            # proves one: the buffer stops at SNIFF_BYTES, so a short head
+            # means the whole stream fit in it. A truncated middle would make
+            # the ratio a guess about a part rather than a measurement of the
+            # answer — and the tail is not appended here for the same reason,
+            # since for a short answer it OVERLAPS the head and would count
+            # the same characters twice.
+            #
+            # It records and does not act. The restart stays with the probe,
+            # which asks a question whose answer is known: this check has 100 %
+            # recall against 316 recorded corruptions but has never run on
+            # live traffic, and a detector that restarts production on its
+            # first day out is one bad match away from being the outage.
+            try:
+                if len(sniff["head"]) < SNIFF_BYTES:
+                    said = DIA.spoken_text(
+                        sniff["head"].decode("utf-8", "ignore"))
+                    bad, why = DIA.looks_degenerate(said)
+                    note = degenerate_streak(bad, why, ident)
+                    if note:
+                        log(note)
+            except Exception as e:
+                log("NOTE        degeneracy not judged: %r" % (e,))
             # WHAT CHANGED SINCE LAST TIME, for this prefix. Computed here,
             # after the answer, so nothing is added to the request path.
             # `took` is already measured above; re-measuring it here would

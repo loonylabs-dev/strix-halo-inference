@@ -328,5 +328,49 @@ class TestProseMayStillSayWhatIsMissing(unittest.TestCase):
         self.assertIn("gitignore", text.lower())
 
 
+class TestNoTestFileHidesItsOwnTail(unittest.TestCase):
+    """`if __name__ == "__main__": unittest.main()` must be the LAST thing in
+    a test file.
+
+    Found 03.09.2026 while adding tests to test_dialects.py: the block sat at
+    line 265 of 484, so `python3 tests/test_dialects.py` ran 25 of 51 tests
+    and printed OK. unittest.main() executes at that point — every class
+    defined further down does not exist yet and is never collected.
+
+    Six more files were in the same state, hiding 42 classes between them.
+    Nothing was actually untested: tests/run.sh uses `unittest discover`,
+    which IMPORTS the module, so __name__ is not "__main__" and the whole file
+    is collected. That is exactly what made it survive — the gate stayed
+    honest while the obvious way to run one file by hand did not, and a green
+    OK that has silently skipped half the file is the worst shape a test
+    result can take.
+    """
+
+    def files(self):
+        import glob
+        return sorted(glob.glob(str(common.REPO / "tests" / "test_*.py")))
+
+    def test_there_are_test_files_to_check(self):
+        self.assertGreater(len(self.files()), 10)
+
+    def test_nothing_is_defined_after_the_entry_point(self):
+        import re
+        bad = []
+        for path in self.files():
+            lines = open(path, encoding="utf-8").read().split("\n")
+            at = next((i for i, l in enumerate(lines)
+                       if l.startswith("if __name__")), None)
+            if at is None:
+                continue
+            after = [l for l in lines[at + 1:]
+                     if re.match(r"^(class|def) ", l)]
+            if after:
+                bad.append("%s: %d definition(s) after line %d"
+                           % (os.path.basename(path), len(after), at + 1))
+        self.assertEqual(bad, [], "these run under `tests/run.sh` but are "
+                                  "silently skipped when the file is executed "
+                                  "directly:\n  " + "\n  ".join(bad))
+
+
 if __name__ == "__main__":
     unittest.main()

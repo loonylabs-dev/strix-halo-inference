@@ -181,10 +181,6 @@ class TestTheGatewayActuallyRecords(unittest.TestCase):
         self.assertIn("prompts are being written in the clear", src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTheSuiteCannotWriteIntoTheRealTrace(unittest.TestCase):
     """A test run must not appear in the operator's data.
 
@@ -654,3 +650,7 @@ class TestAReaderMustNotInheritTheWritersMistake(unittest.TestCase):
     def test_the_stale_count_is_printed(self):
         src = (common.REPO / "tools" / "tracelog.py").read_text(encoding="utf-8")
         self.assertIn("carry a shape computed by an older", src)
+
+
+if __name__ == "__main__":
+    unittest.main()

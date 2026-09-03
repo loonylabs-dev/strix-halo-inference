@@ -261,10 +261,6 @@ class TestNoStdlibShadowing(unittest.TestCase):
                          "script beside them")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestUserUnit(unittest.TestCase):
     """The user service must not depend on root, and must not restore at
     boot. Both cost an incident on 25.08.: the root-owned profile under
@@ -397,3 +393,7 @@ class TestPlaceholdersAgree(unittest.TestCase):
         self.assertEqual(len(execs), 1, execs)
         self.assertIn("llamaexec", execs[0])
         self.assertNotIn("bash -c", execs[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

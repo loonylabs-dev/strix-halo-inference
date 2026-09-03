@@ -262,10 +262,6 @@ class TestTemplatePayload(unittest.TestCase):
         self.assertTrue(all(t["type"] == "function" for t in p["tools"]))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestWhatEachMessageWeighs(unittest.TestCase):
     """`message_shape` says THAT a message changed. On 29.08.2026 that was not
     enough: an 18,450-token re-prefill could have been one re-rendered line or
@@ -350,3 +346,139 @@ class TestACacheHintIsNotARewrittenHistory(unittest.TestCase):
     def test_an_unserialisable_message_still_does_not_raise(self):
         shape = D.message_shape({"messages": [{"role": "user", "content": object()}]})
         self.assertEqual(len(shape), 1)
+
+
+class TestSpokenTextOutOfARawStream(unittest.TestCase):
+    """The gateway's sniff holds raw SSE. Everything below depends on getting
+    the model's words back out of it first."""
+
+    def test_an_anthropic_stream(self):
+        sse = ('data: {"type":"content_block_delta","delta":'
+               '{"type":"text_delta","text":"Hello "}}\n\n'
+               'data: {"type":"content_block_delta","delta":'
+               '{"type":"text_delta","text":"world"}}\n\n')
+        self.assertEqual(D.spoken_text(sse), "Hello world")
+
+    def test_an_openai_stream(self):
+        sse = ('data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n'
+               'data: {"choices":[{"delta":{"content":"world"}}]}\n\n')
+        self.assertEqual(D.spoken_text(sse), "Hello world")
+
+    def test_a_non_streamed_body_of_either_dialect(self):
+        self.assertEqual(
+            D.spoken_text('{"content":[{"type":"text","text":"391"}]}'), "391")
+        self.assertEqual(
+            D.spoken_text('{"choices":[{"message":{"content":"391"}}]}'), "391")
+
+    def test_truncated_json_costs_that_event_and_nothing_else(self):
+        """It is fed the head of a stream by design, so the last event is
+        usually cut in half. A gateway that raised over its own bookkeeping
+        would be worse than one that reads a little less."""
+        sse = ('data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+               'data: {"choices":[{"delta":{"cont')
+        self.assertEqual(D.spoken_text(sse), "ok")
+
+    def test_nothing_readable_is_empty_not_an_exception(self):
+        for junk in ("", ": keep-alive\n\n", "data: [DONE]\n\n", None):
+            self.assertEqual(D.spoken_text(junk), "")
+
+
+class TestTheHistogramMustNotRunOnRawFrames(unittest.TestCase):
+    """The trap this design exists around, pinned.
+
+    A degenerate answer arrives as hundreds of one-character deltas, each
+    wrapped in JSON. Over the RAW frames the dominant character is the quote
+    or the brace, not the slash — so a check applied straight to the sniff
+    reads every corrupted answer as healthy and never says why. Silent, and in
+    the detector for silent faults.
+    """
+
+    def raw(self, n=200):
+        return "".join('data: {"choices":[{"delta":{"content":"/"}}]}\n\n'
+                       for _ in range(n))
+
+    def test_the_raw_frames_look_healthy_which_is_the_trap(self):
+        self.assertFalse(D.looks_degenerate(self.raw())[0])
+
+    def test_the_extracted_answer_does_not(self):
+        bad, why = D.looks_degenerate(D.spoken_text(self.raw()))
+        self.assertTrue(bad)
+        self.assertIn("100%", why)
+
+
+class TestDegeneracyAgainstRecordedTraffic(unittest.TestCase):
+    """Not invented examples: every answer this machine recorded during the
+    slot-corruption runs, with the verdict it was given at the time."""
+
+    @classmethod
+    def setUpClass(cls):
+        import glob, json
+        cls.dirty, cls.clean = [], []
+        for f in sorted(glob.glob(
+                str(common.REPO / "bench/reports/*slot-corruption*/*.json"))):
+            for run in json.load(open(f, encoding="utf-8")).get("runs", []):
+                for a in run.get("answers") or []:
+                    o = a if isinstance(a, dict) else (
+                        json.loads(a) if isinstance(a, str) else None)
+                    if not isinstance(o, dict):
+                        continue
+                    tgt = (cls.dirty if str(o.get("verdict")).upper() == "CORRUPT"
+                           else cls.clean)
+                    tgt.append(str(o.get("text", "")))
+
+    def test_the_corpus_is_there(self):
+        """If the reports move or are pruned, the two tests below would pass
+        by having nothing to judge."""
+        self.assertGreaterEqual(len(self.dirty), 300)
+        self.assertGreaterEqual(len(self.clean), 300)
+
+    def test_every_recorded_corruption_is_found(self):
+        missed = [t for t in self.dirty if not D.looks_degenerate(t)[0]]
+        self.assertEqual(missed, [], "%d of %d corrupted answers slipped "
+                                     "through" % (len(missed), len(self.dirty)))
+
+    def test_no_healthy_answer_is_accused(self):
+        """The expensive direction. A watchdog that cries wolf gets switched
+        off, and then the real fault arrives to an empty room."""
+        wrong = [t for t in self.clean if D.looks_degenerate(t)[0]]
+        self.assertEqual(wrong, [], "%d of %d healthy answers were called "
+                                    "degenerate" % (len(wrong), len(self.clean)))
+
+
+class TestTheShapesRealAnswersContain(unittest.TestCase):
+    """Hand-built, because the recorded corpus cannot prove the absence of a
+    shape it happens not to contain. These are what a histogram trips over."""
+
+    def ok(self, name, text):
+        self.assertFalse(D.looks_degenerate(text)[0], name)
+
+    def test_a_markdown_rule_inside_prose(self):
+        self.ok("rule", "Here is the answer.\n\n" + "-" * 80 + "\n\nAnd more.")
+
+    def test_an_ascii_table(self):
+        self.ok("table", "| a | b |\n" + "|---|---|\n" * 12)
+
+    def test_base64_and_hex(self):
+        """Dominated by one character, but alphanumeric — which the signature
+        of this fault never is."""
+        self.ok("base64", "A" * 64)
+        self.ok("hex", "0" * 64)
+
+    def test_a_path_listing_and_long_prose(self):
+        self.ok("paths", "\n".join("/usr/lib/x%d/y/z" % i for i in range(12)))
+        self.ok("prose", "The cache holds the prefix in the slot. " * 12)
+
+    def test_a_short_answer_is_never_judged(self):
+        """391 is three characters. Below the floor there is no evidence
+        either way — and the floor cannot be raised, because the corrupted
+        answers have a median length of 120."""
+        self.assertFalse(D.looks_degenerate("391")[0])
+        self.assertFalse(D.looks_degenerate("////")[0])
+
+    def test_the_bare_signature_at_full_length_is_caught(self):
+        self.assertTrue(D.looks_degenerate("/" * 200)[0])
+        self.assertTrue(D.looks_degenerate("The answer is " + "/" * 300)[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

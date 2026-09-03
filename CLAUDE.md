@@ -42,6 +42,27 @@ home named below.
   `git worktree` even when it only adds. Merging to main STARTS the
   machine migration — install.sh and the unit switch belong in the same
   sitting (01.09.2026).
+- **The machine's health is the MACHINE's business; a measurement's
+  conditions are the REPO's.** Drawn 03.09.2026 after a day spent on the
+  wrong side of it. `platform_profile` had silently gone to `quiet` and the
+  GPU served eight hours at 35 W instead of 70 — and the first fix built for
+  it was a watcher inside `llama-probe`, i.e. a third thing in this repo
+  observing power, next to `llm-profile watch` and the sweep. It watched the
+  profile at 10-minute resolution, could not see watts move under load, and
+  on a Strix Halo desktop box would have watched nothing at all. Not merged;
+  branch `power-profile-watch` if a second occurrence ever justifies it.
+  What belongs where:
+    * keeping the machine correct — power profiles, firmware knobs, drivers:
+      a systemd unit outside this checkout, and a line in the global
+      `env-machine.md`. `platform-profile-guard` is that, installed
+      03.09.2026 into `/usr/local/bin` and `/etc/systemd/system`.
+    * knowing whether a MEASUREMENT was valid: here, always. A report that
+      cannot say its conditions held has to say so — `sweep.py` reads
+      `platform_profile` at both ends now, and `compare.py` renders the
+      verdict above the table, including "not recorded" for older reports.
+  The test that settles a new case: would this still be worth having on a
+  machine that never runs a benchmark? Then it is the machine's.
+
 - **One load on the machine at a time.** No compiling while a measurement
   runs, no measurement while a build runs — contention contaminates both.
 - **The repo is public.** `docs/HANDOVER.md`, `docs/HANDOVER-LOG.md`,
@@ -73,6 +94,7 @@ independent of it.)
 | a measured dead end | `docs/HANDOVER.md` → *Do not try again* |
 | build/family mechanics | `setup/README.md` |
 | measurement discipline | `bench/README.md` |
+| the machine's own behaviour — power, firmware, drivers, a knob the BIOS does or does not release | NOT this repo. Global `~/.claude/env-machine.md`, and a systemd unit outside the checkout if it needs one |
 | Claude-Code/tool behaviour that holds in EVERY project | global `~/.claude/CLAUDE.md` — and only that |
 
 When `/update-claude-md` runs in this repo, THIS file and the table above are

@@ -1329,16 +1329,23 @@ in the call. Every path is therefore written out in full.
 
 ## Ports
 
-    8080   llama-server — qwen38 | laguna | gptoss | flashnext.
+    8080   llama-server — qwen38 | laguna | gptoss | flashnext | qwen36 |
+           glm47flash | gemma26.
            The gateway asks THIS port (LLAMA_URL), so only a profile on it is
            reachable by any consumer.
-    8081   gemma26 — and the side port the measurement suites start their own
-    8082   gemma31   server on (bench/suites/np2-candidates.py,
+    8081   the side port the measurement suites start their own server on
+    8082   gemma31   (bench/sideserver.py, bench/suites/np2-candidates.py,
     8083   batch     setup/scripts/slot-test.sh), and cc-router.py in variant 2
     8090   llm-gateway (gateway.py)
     8091   llm-gateway, tunnel port (everything here counts as "remote")
 
-**The three profiles on 8081-8083 cannot currently be used.** They were given
+**gemma26 was one of them and moved to 8080 on 04.09.2026** — it could not be
+switched to at all while it sat on 8081, because `switch-model.sh` reads the
+port out of `LLAMA_ARGS` and aborts when it disagrees with the gateway's. The
+profile would have failed its own preflight. The same is still true of the two
+below.
+
+**The two profiles on 8082-8083 cannot currently be used.** They were given
 their own ports to run ALONGSIDE the main model, and the `Conflicts=` line in
 `llama-user@.service` makes that impossible — only one instance can be active,
 because until 26.08. they also all wanted the whole of a 96 GiB GTT.

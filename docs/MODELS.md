@@ -118,14 +118,15 @@ request time, so prefill sat inside every decode number.
 
 | Name | For |
 |---|---|
+| `qwen36` | Qwen3.6-35B-A3B — **production since 04.09.2026.** Speed measured, quality not. See below |
+| `flashnext` | Qwen3.8-Flash-Next — production 01.-04.09.2026, kept as the way back (`switch-model.sh flashnext`) |
 | `qwen38` | coding agent, vision, judge — production until 01.09.2026, kept as the way back |
-| `gemma26` | fast sidekick, 13.5 GiB |
+| `glm47flash` | GLM-4.7-Flash-30B-A3B — measured 04.09.2026 as a second-family sparring partner. 28.9 GiB, depth-correctness clean. See below |
+| `gemma26` | Gemma 4 26B-A4B — measured 04.09.2026. The fastest thing here below 32k and **capped there**, because it loses the middle of a longer context. See below |
 | `gemma31` | prose, 16.4 GiB |
-| `gptoss` | judge and evals, 59.0 GiB, very cheap KV |
+| `gptoss` | judge and evals, 59.0 GiB, very cheap KV — never measured with bench/speed.py |
 | `laguna` | the predecessor, kept as the way back |
 | `batch` | batch classification, small window |
-| `flashnext` | Qwen3.8-Flash-Next — **production since 01.09.2026.** See below |
-| `qwen36` | Qwen3.6-35B-A3B — the fast candidate of 04.09.2026. Speed measured, quality not. See below |
 
 ### Qwen3.6-35B-A3B: measurably faster, and that is only half a verdict
 
@@ -209,6 +210,45 @@ voice cloning; text-to-video — wan2.1-1.3b ~9 min per 2 s clip at 480p
 (the 5B figures are in its profile). See the workload-registry section of
 [../setup/README.md](../setup/README.md) — and `media/README.md` for the
 border that keeps the base install torch-free.
+
+### A second model beside production, and why the fast one lost (04.09.2026)
+
+qwen36 serves; what was wanted beside it is a sparring partner from a DIFFERENT
+family that criticises code and arguments. It does not carry the interactive
+load, so "slower than production" is not disqualifying. Two candidates were
+measured the same day, both behind `bench/sideserver.py`, and the verdict is
+`glm47flash`.
+
+| | glm47flash | gemma26 |
+|---|---|---|
+| prose t/s, d512 / d8192 / d36k | 63.3 / 36.1 / 21.7 | **91.5 / 65.9 / 49.8** |
+| GTT | 28.9 GiB | **17.2 GiB** |
+| depth-correctness | **48 / 48** | 40 / 48 |
+| published GPQA-D / LCB v6 | 75.2 / 64.0 | **82.3 / 77.1** |
+
+**gemma26 wins everything except the row that decides the role.** Its
+long-context failure is measured four ways — with the drafter, without it, with
+`--swa-full`, and on the other backend — and it survives all four, first wrong
+at 51,728 tokens (35,843 on ROCm). qwen36 and glm47flash are 48/48 on the same
+suite the same day, so this is not a test everything fails. The failing anchor
+is almost always the one planted in the MIDDLE; the first one never is.
+
+A critic is handed a large artifact and asked to judge it. One that silently
+loses the middle of what you gave it produces noise instead of disagreement —
+so the seat goes to the model with the measured correctness, not the one with
+the better vendor scores. `setup/defects.json` →
+`gemma26-loses-the-middle-of-a-long-context` carries the numbers;
+`bench/reports/2026-09-04_1905_gemma26-vs-qwen36/REPORT.md` carries the day.
+
+**gemma26 stays registered and capped at `-c 32768`**, below the shallowest
+depth at which it has been observed wrong. There it is measured green and it is
+the fastest model on this machine — Google publishes a purpose-built 0.30 GiB
+draft model for it which is worth 1.6x and, unlike GLM's MTP head, does not
+allocate a second KV cache.
+
+**Neither is served yet.** Both are registered profiles; whether "beside" means
+`switch-model.sh` between them or two servers on two ports is a separate
+decision that has not been taken.
 
 ### How Flash-Next became production (and why it took a week)
 

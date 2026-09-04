@@ -1,0 +1,215 @@
+gemma26 memory, two-point method — started 2026-09-04 18:11
+platform_profile=performance tuned=throughput-performance
+
+=== 1 · no-swa-full, no draft, -c 65536 ===
+    extra: -c 65536
+    start: 18:11:33
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 15 the model will pin in GTT - 12 for the host)
+  up · GTT 17.7 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            65536
+    weights_gib                    14.56
+    gtt_used_gib                   17.71
+    gtt_process_gib                17.04
+    gtt_observed_gib               17.04
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.13
+    kv_gib_observed                2.48
+    kv_kib_per_token_observed      39.63
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+
+=== 2 · no-swa-full, no draft, -c 262144 ===
+    extra: -c 262144
+    start: 18:11:49
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 1.8 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=95G — 125 GiB RAM - 17 the model will pin in GTT - 12 for the host)
+  up · GTT 21.8 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            262144
+    weights_gib                    14.56
+    gtt_used_gib                   21.82
+    gtt_process_gib                21.16
+    gtt_observed_gib               21.16
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.14
+    kv_gib_observed                6.60
+    kv_kib_per_token_observed      26.41
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+
+=== 3 · no-swa-full, draft, -c 65536 ===
+    extra: -md /mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf --spec-type draft-mtp -c 65536
+    start: 18:12:55
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 15 the model will pin in GTT - 12 for the host)
+  up · GTT 18.4 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            65536
+    weights_gib                    14.56
+    gtt_used_gib                   18.38
+    gtt_process_gib                17.73
+    gtt_observed_gib               17.73
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.24
+    kv_gib_observed                3.17
+    kv_kib_per_token_observed      50.67
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+    0.02.138.385 I common_speculative_init_result: loading draft model '/mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf'
+
+=== 4 · no-swa-full, draft, -c 262144 ===
+    extra: -md /mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf --spec-type draft-mtp -c 262144
+    start: 18:13:12
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=95G — 125 GiB RAM - 17 the model will pin in GTT - 12 for the host)
+  up · GTT 22.9 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            262144
+    weights_gib                    14.56
+    gtt_used_gib                   22.90
+    gtt_process_gib                22.23
+    gtt_observed_gib               22.23
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.24
+    kv_gib_observed                7.67
+    kv_kib_per_token_observed      30.67
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  llama-user@qwen36 did not come back within 180 s — starting llama-probe.timer anyway, it is better loud than absent
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+    0.02.746.802 I common_speculative_init_result: loading draft model '/mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf'
+
+=== 5 · swa-full, no draft, -c 65536 ===
+    extra: --swa-full -c 65536
+    start: 18:19:47
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 15 the model will pin in GTT - 12 for the host)
+  up · GTT 30.0 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            65536
+    weights_gib                    14.56
+    gtt_used_gib                   30.03
+    gtt_process_gib                29.37
+    gtt_observed_gib               29.37
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.13
+    kv_gib_observed                14.81
+    kv_kib_per_token_observed      236.89
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+    0.01.864.300 W llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+
+=== 6 · swa-full, no draft, -c 131072 ===
+    extra: --swa-full -c 131072
+    start: 18:20:05
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 16 the model will pin in GTT - 12 for the host)
+  up · GTT 44.0 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            131072
+    weights_gib                    14.56
+    gtt_used_gib                   44.03
+    gtt_process_gib                43.37
+    gtt_observed_gib               43.37
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.14
+    kv_gib_observed                28.81
+    kv_kib_per_token_observed      230.45
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+    0.01.873.932 W llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+
+=== 7 · swa-full, draft, -c 65536 ===
+    extra: --swa-full -md /mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf --spec-type draft-mtp -c 65536
+    start: 18:20:28
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 15 the model will pin in GTT - 12 for the host)
+  up · GTT 30.9 GiB
+  running: python3 setup/lib/budget.py --running --observe
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/gemma-4-26B_q4_0-it.gguf
+    ctx                            65536
+    weights_gib                    14.56
+    gtt_used_gib                   30.86
+    gtt_process_gib                30.18
+    gtt_observed_gib               30.18
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.24
+    kv_gib_observed                15.62
+    kv_kib_per_token_observed      249.89
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+    sideserver exit: 0
+    --- server log, speculation and errors ---
+    0.01.851.541 W llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+    0.04.037.815 I common_speculative_init_result: loading draft model '/mnt/shared/LLM/gemma-4-26b-A4B-it-assistant-Q4_0.gguf'
+    0.04.464.960 W llama_kv_cache_iswa: using full-size SWA cache (ref: https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+
+DONE 2026-09-04 18:22

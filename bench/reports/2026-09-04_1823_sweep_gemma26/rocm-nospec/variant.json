@@ -1,0 +1,31 @@
+{
+ "variant": "rocm-nospec",
+ "binary": "@HOME@/llama.cpp/build-rocm-cachelookup-b10750-10-g6bbb3eecf/bin/llama-server",
+ "argv": [
+  "--alias",
+  "gemma26-bench",
+  "-m",
+  "@MODELS@/gemma-4-26B_q4_0-it.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-fit",
+  "off",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "512",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b380-6bbb3ee",
+ "note": "The floor: no drafter of any kind, and a genuine control because base_args never names --spec-type. Every other cell is read against this one. The build is the pin the other profiles serve MTP from, not the house build."
+}

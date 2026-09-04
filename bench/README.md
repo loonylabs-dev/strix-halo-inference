@@ -386,6 +386,41 @@ model on top of an allocation still being released. `user.slice` peaked at
 
 GTT is not swappable. An over-large start does not page, it hangs the machine.
 
+### A LOOP of sideserver runs trips systemd's start limiter (04.09.2026)
+
+`llama-user@.service` carries `StartLimitBurst=3` inside
+`StartLimitIntervalUSec=2min`. A seven-point memory sweep stops and restarts
+production seven times, and the fourth start inside the window is refused:
+`Start request repeated too quickly`, `Result=start-limit-hit`. The unit then
+stays down until someone runs `reset-failed` — production is simply gone, in
+the middle of a measurement run.
+
+Two details are worth the paragraph:
+
+* **It could not have happened on the bigger models.** qwen36 loads in about
+  **3 seconds** from page cache, and a gemma26 memory point takes ~75 s, so
+  seven points fit inside a handful of two-minute windows. Every earlier
+  campaign was slow enough to stay under the limit by accident.
+* **The cost is 13 minutes per point, not one failed restart.** sideserver
+  reports the refusal loudly — *"did not come back within 180 s"* — and then
+  calls `wait_for_slots(PRODUCTION_URL, 600)`, so each later point waits 180 s
+  and then 600 s for a unit systemd will not start. The SYMPTOM is in
+  sideserver's output; the REASON is only in the journal.
+
+So: when a driver script runs sideserver in a loop, either space the points, or
+clear `start-limit-hit` between them, and check `serving` at the end rather than
+assuming the last teardown put production back.
+
+### `--extra` bypasses the memory guard's arithmetic
+
+`budget.plan()` reads the PROFILE, not the argv that is actually started. A
+point run with `--extra "--swa-full -c 131072"` was budgeted as *"16 GiB the
+model will pin in GTT"* while it pinned 43.37. Harmless there — GTT had 60 GiB
+spare and the guard's job is host RAM — but it is the same silent shape as a
+declared `MODEL_GTT_BASE_GIB` replacing the file size in `plan()`, which cost an
+hour on 04.09.2026. A shape worth budgeting is a shape worth putting in a
+profile copy.
+
 ## Rules that keep the numbers worth something
 
 - **Never compare across power profiles.** Everything in `docs/` was

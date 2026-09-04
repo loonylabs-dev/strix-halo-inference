@@ -1,0 +1,59 @@
+Raw output of the two probes section 3 and 4 rest on. Verbatim except
+that the scratch path of the probe script was folded away.
+
+############ A · thinking cost (gemma-probe.py) ############
+=== without --swa-full · A · thinking cost ===
+  no kwargs (the profile)    predicted 4096 tok ·  73.5 t/s ·   56.0 s · reasoning 15063 ch · visible    0 ch
+      visible: (EMPTY)
+  enable_thinking=false      predicted   32 tok ·  85.7 t/s ·    0.7 s · reasoning     0 ch · visible  153 ch
+      visible: The function's single worst defect is that it performs an in-place sort on the input list, causing unexpected side effects by mutating the original data.
+  enable_thinking=true       predicted 4096 tok ·  75.5 t/s ·   54.5 s · reasoning 14681 ch · visible    0 ch
+      visible: (EMPTY)
+
+=== with --swa-full · A · thinking cost ===
+  no kwargs (the profile)    predicted 4096 tok ·  72.7 t/s ·   56.6 s · reasoning 14776 ch · visible    0 ch
+      visible: (EMPTY)
+  enable_thinking=false      predicted   33 tok ·  73.4 t/s ·    0.7 s · reasoning     0 ch · visible  165 ch
+      visible: The function's single worst defect is that it performs an in-place sort, which causes unexpected side effects by permanently mutating the original list passed t
+  enable_thinking=true       predicted 3106 tok ·  72.2 t/s ·   43.2 s · reasoning 11497 ch · visible  163 ch
+      visible: The function fails to correctly calculate the median for even-length lists, as it returns a single middle element instead of the average of the two central valu
+
+
+############ B · --swa-full on the real Claude Code body (swa-probe.py) ############
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 16 the model will pin in GTT - 12 for the host)
+  up · GTT 19.9 GiB
+  running: python3 swa-probe.py without --swa-full
+=== without --swa-full ===
+  1 cold                   new= 14397  cache=     0  (  0.0 % reused)    17.6 s
+  2 same question          new=     1  cache= 14396  (100.0 % reused)     0.4 s
+  3 CHANGED question       new=  1043  cache= 13354  ( 92.8 % reused)     2.2 s
+  4 changed again          new=  1043  cache= 13354  ( 92.8 % reused)     2.1 s
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+  [exit 0]
+  dead man's switch armed: llama-user@qwen36 restarts in 45 min whatever happens here
+  stopping llama-user@qwen36 (and llama-probe.timer with it)
+  waiting for GTT to fall (now 0.7 GiB) ...
+  GTT settled at 0.7 GiB
+  starting gemma26.env on port 8081 as sideserver-8081 (MemoryMax=97G — 125 GiB RAM - 16 the model will pin in GTT - 12 for the host)
+  up · GTT 45.1 GiB
+  running: python3 swa-probe.py with --swa-full
+=== with --swa-full ===
+  1 cold                   new= 14397  cache=     0  (  0.0 % reused)    17.4 s
+  2 same question          new=     1  cache= 14396  (100.0 % reused)     0.4 s
+  3 CHANGED question       new=   971  cache= 13426  ( 93.3 % reused)     1.8 s
+  4 changed again          new=   971  cache= 13426  ( 93.3 % reused)     1.8 s
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 0.7 GiB
+  restarting llama-user@qwen36 and llama-probe.timer
+  done · dead man's switch disarmed
+  [exit 0]
+B-DONE 19:01:50

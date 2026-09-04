@@ -1,0 +1,363 @@
+{
+ "label": "gemma26-vulkan-assistant",
+ "url": "http://127.0.0.1:8081",
+ "stamp": "2026-09-04_1902",
+ "every": 4000,
+ "repeat": 2,
+ "depths": [
+  {
+   "target": 4000,
+   "depth": 4070,
+   "anchors": 1,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 16000,
+   "depth": 19958,
+   "anchors": 5,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "25838",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "25838",
+      "25838"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "41676",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "41676",
+      "41676"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 32000,
+   "depth": 35843,
+   "anchors": 9,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "41676",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "41676",
+      "41676"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "73352",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "73352",
+      "73352"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 48000,
+   "depth": 51728,
+   "anchors": 13,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "57514",
+     "ok": [
+      false,
+      false
+     ],
+     "answers": [
+      "41676",
+      "41676"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "15028",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "15028",
+      "15028"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 64000,
+   "depth": 67617,
+   "anchors": 17,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "73352",
+     "ok": [
+      false,
+      false
+     ],
+     "answers": [
+      "25838",
+      "25838"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "46704",
+     "ok": [
+      false,
+      false
+     ],
+     "answers": [
+      "41676",
+      "41676"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  },
+  {
+   "target": 96000,
+   "depth": 99398,
+   "anchors": 25,
+   "questions": [
+    {
+     "name": "anchor:first",
+     "want": "10000",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "10000",
+      "10000"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:middle",
+     "want": "15028",
+     "ok": [
+      false,
+      false
+     ],
+     "answers": [
+      "25838",
+      "25838"
+     ],
+     "stable": true
+    },
+    {
+     "name": "anchor:last",
+     "want": "20056",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "20056",
+      "20056"
+     ],
+     "stable": true
+    },
+    {
+     "name": "tools",
+     "want": "grozzle_fetch, kwintle_apply, vermble_check",
+     "ok": [
+      true,
+      true
+     ],
+     "answers": [
+      "grozzle_fetch, kwintle_apply, vermble_check",
+      "grozzle_fetch, kwintle_apply, vermble_check"
+     ],
+     "stable": true
+    }
+   ]
+  }
+ ]
+}

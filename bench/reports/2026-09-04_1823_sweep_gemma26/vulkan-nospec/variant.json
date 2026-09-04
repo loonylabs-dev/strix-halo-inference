@@ -1,0 +1,31 @@
+{
+ "variant": "vulkan-nospec",
+ "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+ "argv": [
+  "--alias",
+  "gemma26-bench",
+  "-m",
+  "@MODELS@/gemma-4-26B_q4_0-it.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-fit",
+  "off",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "512",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b200-54ee5ee",
+ "note": "The backend, alone, and the cell that decides whether the profile's LLAMA_BIN was ever right. It has flipped before: Vulkan won for laguna without speculation, ROCm won 2x for qwen38 with it, qwen36 SPLIT, and glm47flash did not split at all. Expect no fixed pattern."
+}

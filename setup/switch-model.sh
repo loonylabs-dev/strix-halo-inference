@@ -48,8 +48,10 @@ MODELS_REPO="$REPO"
 SLOTS="${SLOTS:-$HOME/.cache/llama-slots}"
 GATEWAY="${GATEWAY:-http://127.0.0.1:8090}"
 # SERVER is NOT a constant — it comes from the profile, below. It used to be
-# hard-wired to 8080, and three profiles in the repo do not serve there
-# (gemma26 8081, gemma31 8082, batch 8083). Switching to one of those would
+# hard-wired to 8080, and profiles in the repo do not all serve there
+# (gemma31 8082, batch 8083; gemma26 was 8081 until 04.09.2026, when it was
+# measured and moved to 8080 so it could be switched to at all). Switching to
+# one of those would
 # have started the model, then waited fifteen minutes on port 8080, then
 # failed with "never served /slots" — with the old model already stopped and
 # disabled. The model was fine. The script was looking in the wrong place.

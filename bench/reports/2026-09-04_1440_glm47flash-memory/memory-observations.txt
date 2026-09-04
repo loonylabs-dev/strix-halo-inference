@@ -1,0 +1,119 @@
+The budget.py --observe outputs the memory figures in setup/env/glm47flash.env
+rest on, verbatim. Neither point produced a report directory of its own —
+bench/speed.py is what creates one — so without this file they would have no
+home, and MODEL_KV_KIB_PER_TOKEN rests on both.
+
+CONDITIONS. platform_profile = performance and tuned-adm = throughput-
+performance, checked before the first point. Production (flashnext, 90.21 GiB
+of GTT) was stopped and restored by sideserver.py around each point; it was
+back and `serving` again between them. A 17.6 GiB model download was running
+over the network throughout — recorded rather than assumed harmless: it
+touches neither GTT nor the server's own clock, and CLAUDE.md's "one load at a
+time" rule names a download as not a load in that sense.
+
+=== 1 · MTP-Q8_0, -c 65536  (14:40) ===
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/GLM-4.7-Flash-MTP-Q8_0.gguf
+    ctx                            65536
+    weights_gib                    30.92
+    gtt_used_gib                   38.87
+    gtt_process_gib                37.77
+    gtt_observed_gib               37.77
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.26
+    kv_gib_observed                6.84
+    kv_kib_per_token_observed      109.52
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.1 GiB
+  restarting llama-user@flashnext and llama-probe.timer
+
+=== 2 · MTP-Q8_0, -c 202752 (14:42) ===
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/GLM-4.7-Flash-MTP-Q8_0.gguf
+    ctx                            202752
+    weights_gib                    30.92
+    gtt_used_gib                   53.25
+    gtt_process_gib                52.16
+    gtt_observed_gib               52.16
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.28
+    kv_gib_observed                21.24
+    kv_kib_per_token_observed      109.84
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.1 GiB
+  restarting llama-user@flashnext and llama-probe.timer
+
+=== 3 · THE ARM THAT MEASURED NOTHING, kept because it is the finding ======
+
+Two further loads were run at the same two windows with `--extra "--spec-type
+ngram-mod -c N"`, intended as the no-MTP control. They returned GTT 37.77 and
+52.16 — byte-identical to the two points above.
+
+That identity is what exposed them. `--spec-type` ACCUMULATES in llama.cpp
+(common/arg.cpp uses push_back), so the flag did not replace the profile's
+`draft-mtp,ngram-mod`, it appended to it; both "control" loads still ran the
+MTP head, and the server log says so in as many words: `creating MTP draft
+context against the target model` appears in all four loads. The behaviour is
+registered in setup/defects.json and was walked into anyway.
+
+So there is no no-MTP memory point here. It cannot be produced with --extra at
+all — a genuine control needs argv that never names draft-mtp, which is what
+bench/variants/glm47flash.json's nospec and ngram cells provide. Recorded, not
+repaired, because the sweep answers it as a by-product.
+
+WHAT IT WOULD HAVE TESTED, and still open: the derivation from the config says
+52.9 KiB/token, the measurement says 110.0, and the factor is almost exactly
+two. "The MTP draft context allocates a second full-size KV" is the obvious
+hypothesis and it is NOT established — the same two-point pair at the same
+windows without the head is what would settle it.
+
+=== 4 · THE NO-MTP PAIR, run 15:57 after the sweep ========================
+
+Run from a COPY of the profile with --spec-type removed from LLAMA_ARGS.
+It cannot be done with --extra: --spec-type accumulates, which is what
+section 3 above walked into. Same file, same windows, same instrument.
+
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/GLM-4.7-Flash-MTP-Q8_0.gguf
+    ctx                            65536
+    weights_gib                    30.92
+    gtt_used_gib                   34.12
+    gtt_process_gib                33.00
+    gtt_observed_gib               33.00
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.21
+    kv_gib_observed                2.08
+    kv_kib_per_token_observed      33.23
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.1 GiB
+  restarting llama-user@flashnext and llama-probe.timer
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/GLM-4.7-Flash-MTP-Q8_0.gguf
+    ctx                            202752
+    weights_gib                    30.92
+    gtt_used_gib                   41.32
+    gtt_process_gib                40.20
+    gtt_observed_gib               40.20
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.22
+    kv_gib_observed                9.27
+    kv_kib_per_token_observed      47.96
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+  GTT now 1.1 GiB
+  restarting llama-user@flashnext and llama-probe.timer
+
+THE ARITHMETIC, and it answers the question section 3 left open:
+
+    no speculation    33.00 -> 40.20   =  55.02 KiB/token   base 29.56 / 29.56
+    draft-mtp,ngram   37.77 -> 52.16   = 109.97 KiB/token   base 30.90 / 30.90
+
+EXACTLY DOUBLE. The MTP draft context allocates a second, full-size KV cache.
+Each pair agrees with itself on the base to two decimals, which is the check.
+
+And the derivation from the config — 52.9 KiB/token, from MLA's single K
+buffer over 47 layers — is 4 % under the no-MTP measurement, not 52 % under
+anything. It was never wrong about the model; it assumed one KV cache.

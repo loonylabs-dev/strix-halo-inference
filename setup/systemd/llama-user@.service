@@ -42,7 +42,8 @@ Wants=network-online.target
 Conflicts=llama-user@qwen38.service llama-user@gemma26.service \
           llama-user@gemma31.service llama-user@laguna.service \
           llama-user@gptoss.service llama-user@batch.service \
-          llama-user@flashnext.service llama-user@qwen36.service
+          llama-user@flashnext.service llama-user@qwen36.service \
+          llama-user@glm47flash.service
 StartLimitIntervalSec=120
 StartLimitBurst=3
 

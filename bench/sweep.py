@@ -55,6 +55,53 @@ def slots_ready(url, timeout_s):
     return False
 
 
+def verdict(results):
+    """The tally a sweep must state, and whether it measured anything at all.
+
+    `results` is context["results"] — variant name -> "ok" or "failed: …".
+    Returns (lines, exit_code): lines are printed AND written into the report,
+    exit_code is 2 when every cell failed and 0 otherwise.
+
+    THIS EXISTS BECAUSE A SWEEP THAT MEASURED NOTHING EXITED 0. On 04.09.2026
+    all six cells of a glm47flash sweep failed — the variants file started its
+    servers on a port sweep.py does not poll — and the run finished with
+
+        (no summary.json found under bench/reports/2026-09-04_1448_sweep_…)
+        report: …
+        SWEEP-RC=0
+
+    An absent table is what a sweep looks like when it has nothing to compare,
+    so nothing in the output or the exit code separated "six cells failed"
+    from "there was nothing to say". The identical defect was fixed for both
+    A/B suites the same day (2690121) and this sibling still had it.
+
+    THE TALLY IS STATED WHETHER OR NOT ANYTHING FAILED, for the reason that
+    commit gives: a report which mentions failures only when there are some
+    cannot be told apart from one written before it could mention them at all
+    — which is every sweep report in bench/reports/ before today.
+
+    SOME FAILING STILL COMPLETES AND REPORTS. bench/README.md's rule that a
+    cell which fails is recorded rather than fatal was paid for by three
+    reports that lost prefill-nospec to a restore timeout; it is unchanged.
+    Only the all-failed case is an error.
+    """
+    ok = [n for n, r in results.items() if r == "ok"]
+    bad = [n for n, r in results.items() if r != "ok"]
+    total = len(ok) + len(bad)
+    if not total:
+        return (["no cell was attempted — nothing to report"], 2)
+    if not bad:
+        lines = ["all %d cells measured" % total]
+    else:
+        lines = ["%d of %d cells FAILED" % (len(bad), total)]
+        lines += ["    %s — %s" % (n, results[n]) for n in bad]
+    if not ok:
+        lines.append("EVERY cell failed. Nothing was measured; "
+                     "an empty comparison below is that, not a null result.")
+        return (lines, 2)
+    return (lines, 0)
+
+
 def port_free(url):
     try:
         urllib.request.urlopen(url + "/health", timeout=3)
@@ -363,11 +410,21 @@ def main():
         with open(os.path.join(dest, "context.json"), "w") as f:
             json.dump(context, f, indent=1, ensure_ascii=False)
 
+    lines, code = verdict(context["results"])
+    context["verdict"] = lines
+    with open(os.path.join(dest, "context.json"), "w") as f:
+        json.dump(context, f, indent=1, ensure_ascii=False)
+
     md = compare.render(dest)
+    # ABOVE the table as well as below it: the table is what gets quoted
+    # elsewhere, and the tally has to travel with it.
+    md = "\n".join(lines) + "\n\n" + md
     with open(os.path.join(dest, "comparison.md"), "w", encoding="utf-8") as f:
         f.write(md)
     print("\n" + md)
     print("report: %s" % dest)
+    if code:
+        raise SystemExit(code)
 
 
 if __name__ == "__main__":

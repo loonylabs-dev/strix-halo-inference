@@ -155,11 +155,39 @@ class TestTheWatchdogGoesDownWithProduction(unittest.TestCase):
                            "reading the tree" % len(self.sources()))
 
 
+def variants_files():
+    """EVERY variants file, not one of them.
+
+    This class read `bench/variants/qwen38.json` and nothing else until
+    04.09.2026, so a new file was covered by no test at all — and the first
+    one written after that, bench/variants/glm47flash.json, carried
+    `--port 8081` where sweep.py polls 8080. The sweep ran two cells, reported
+    "model loaded, but /slots never answered" for both, and the servers were
+    up the whole time answering /slots in 0.7 ms on the port nobody asked.
+    Twenty-five minutes, and the failure text accused the model.
+
+    A check that cannot go red for the case in front of it is not a check
+    (bench/README.md); pinning one file out of three was that.
+    """
+    return sorted((common.REPO / "bench" / "variants").glob("*.json"))
+
+
 class TestVariantsFile(unittest.TestCase):
     def setUp(self):
-        with open(common.REPO / "bench/variants/qwen38.json",
-                  encoding="utf-8") as f:
-            self.spec = json.load(f)
+        self.specs = {}
+        for p in variants_files():
+            with open(p, encoding="utf-8") as f:
+                self.specs[p.name] = json.load(f)
+        self.assertTrue(self.specs, "no variants files found at all")
+        # Kept so the assertions below can stay written against one spec.
+        self.spec = self.specs["qwen38.json"]
+
+    def test_every_variants_file_is_covered_here(self):
+        """The guard on the guard: this file used to pin one name."""
+        self.assertGreaterEqual(len(self.specs), 2)
+        for name, spec in self.specs.items():
+            self.assertIn("base_args", spec, name)
+            self.assertIn("variants", spec, name)
 
     def test_shape_and_uniqueness(self):
         """The binary must be unambiguous — but AFTER expansion.
@@ -201,9 +229,33 @@ class TestVariantsFile(unittest.TestCase):
                                      v["name"])
 
     def test_base_args_pin_port_and_single_slot(self):
-        base = self.spec["base_args"]
-        self.assertIn("8080", base)
-        self.assertEqual(base[base.index("-np") + 1], "1")
+        """The port is compared against the one sweep.py ACTUALLY POLLS.
+
+        Asserting the literal "8080" would be a second spelling of the same
+        fact, and this repo has already paid for that once — a production unit
+        hard-wired in two places, where a grep for one spelling did not find
+        the other (CLAUDE.md). sweep.py's URL is the single source here, so a
+        change to it moves the requirement rather than silently parting from
+        it.
+        """
+        want = SWEEP.URL.rsplit(":", 1)[-1]
+        # The positive control, and test_vacuity.py caught its absence the
+        # first time this was written: everything below asserts inside a loop,
+        # so an empty self.specs would make this test pass while checking
+        # nothing — which is the precise defect the test itself exists for.
+        self.assertGreaterEqual(len(self.specs), 2,
+                                "no variants files read — this test would "
+                                "pass without checking anything")
+        self.assertRegex(want, r"^\d+$", "sweep.py's URL carries no port")
+        for name, spec in self.specs.items():
+            base = spec["base_args"]
+            self.assertIn("--port", base, name)
+            self.assertEqual(
+                base[base.index("--port") + 1], want,
+                "%s starts its servers on a port sweep.py does not poll — it "
+                "polls %s. The symptom is every cell reporting that /slots "
+                "never answered, while the servers are fine." % (name, SWEEP.URL))
+            self.assertEqual(base[base.index("-np") + 1], "1", name)
 
 
 class _FakeChat(http.server.BaseHTTPRequestHandler):
@@ -267,6 +319,47 @@ class TestTheShapeThatIsMeasured(unittest.TestCase):
         self.assertEqual(SPD.ctx_of(["-ngl", "999", "-c", "262144"]), 262144)
         self.assertEqual(SPD.ctx_of(["--ctx-size", "65536"]), 65536)
         self.assertIsNone(SPD.ctx_of(["-ngl", "999"]))
+
+
+class TestASweepThatMeasuredNothingSaysSo(unittest.TestCase):
+    """The 04.09.2026 shape: six cells, six failures, exit 0, empty table.
+
+    An absent comparison is also what a sweep with nothing to compare looks
+    like, so the output has to separate the two. The same defect was fixed for
+    both A/B suites earlier the same day (2690121); this sibling still had it.
+    """
+
+    SIX_FAILED = {n: "failed: model loaded, but /slots never answered"
+                  for n in ("rocm-nospec", "vulkan-nospec", "rocm-ngram",
+                            "vulkan-ngram", "rocm-mtp", "vulkan-mtp")}
+
+    def test_the_04_09_shape_exits_2_and_says_nothing_was_measured(self):
+        lines, code = SWEEP.verdict(self.SIX_FAILED)
+        self.assertEqual(code, 2)
+        text = "\n".join(lines)
+        self.assertIn("6 of 6", text)
+        self.assertIn("EVERY cell failed", text)
+
+    def test_a_clean_sweep_states_the_tally_anyway(self):
+        """Stated ALWAYS. A report that mentions failures only when there are
+        some cannot be told apart from one written before it could mention
+        them at all — which is every sweep report before today."""
+        lines, code = SWEEP.verdict({"a": "ok", "b": "ok"})
+        self.assertEqual(code, 0)
+        self.assertIn("all 2 cells measured", "\n".join(lines))
+
+    def test_some_failing_still_completes(self):
+        """bench/README.md: a cell that fails is recorded, not fatal. Paid for
+        by three reports that lost prefill-nospec to a restore timeout."""
+        lines, code = SWEEP.verdict({"a": "ok", "b": "failed: wall cap"})
+        self.assertEqual(code, 0)
+        text = "\n".join(lines)
+        self.assertIn("1 of 2 cells FAILED", text)
+        self.assertIn("wall cap", text)
+
+    def test_no_cell_attempted_is_not_success_either(self):
+        lines, code = SWEEP.verdict({})
+        self.assertEqual(code, 2)
 
 
 class TestCompare(unittest.TestCase):

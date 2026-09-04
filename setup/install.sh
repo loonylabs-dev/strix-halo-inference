@@ -106,6 +106,13 @@ link_ "$SRC/checkroom"                "$LIB/checkroom"
 link_ "$SRC/lib/budget.py"            "$LIB/budget.py"
 link_ "$SRC/lib/systemdfile.py"       "$LIB/systemdfile.py"
 link_ "$REPO/setup/scripts/probe.py"  "$LIB/probe.py"
+# Chat templates a published GGUF does not carry (setup/templates/README.md).
+# A profile points --chat-template-file at the link, not at the checkout, for
+# the same reason every other path here goes through $LIB: the unit reads it
+# and the unit knows nothing about where the repo happens to sit. Added
+# 04.09.2026, when GLM-4.7-Flash's Q4_K_M turned out to ship without one and
+# llama-server silently served a fallback instead of failing.
+link_ "$REPO/setup/templates"         "$LIB/templates"
 
 echo
 echo "== Claude Code consumer (symlinks) =="

@@ -321,6 +321,63 @@ class TestSlidingWindow(unittest.TestCase):
                          "take it out of the list")
 
 
+class TestEveryFileAProfilePointsAtExists(unittest.TestCase):
+    """A path in LLAMA_ARGS that does not resolve is not caught until start.
+
+    Measured 04.09.2026: setup/env/glm47flash.env gained
+    `--chat-template-file @HOME@/.local/lib/llm-stack/templates/…` and
+    install.sh gained the symlink that creates that directory — but install.sh
+    was not RUN, so the path did not exist. llama-server rejected the argument,
+    printed its usage, and exited; behind sideserver.py the visible symptom was
+    "the server never served /slots" and a wait, with the real reason only in
+    the side server's own log.
+
+    This is the additive half of CLAUDE.md's "the tree IS the installation".
+    The rule is usually read as a warning about MOVING files; adding one the
+    profile immediately depends on fails the same way, and the failure names
+    the server rather than the missing link.
+
+    Only paths under @HOME@ are checked, and only those the repo is supposed to
+    have installed: @MODELS@ points at a model directory that a checkout on
+    another machine legitimately does not have.
+    """
+
+    # Flags whose value is a path the profile owes. -m is deliberately NOT
+    # here — a model file is a download, not something a checkout carries.
+    PATH_FLAGS = ("--chat-template-file", "--mmproj", "--grammar-file")
+
+    def test_every_path_flag_in_every_profile_resolves(self):
+        import sys
+        sys.path.insert(0, str(REPO / "setup" / "lib"))
+        import systemdfile
+        names = profiles()
+        self.assertTrue(names, "no profiles found — this test would check nothing")
+        checked, missing = 0, []
+        for m in names:
+            argv = lib("args", m).stdout.split()
+            for i, tok in enumerate(argv):
+                if tok not in self.PATH_FLAGS or i + 1 >= len(argv):
+                    continue
+                raw = argv[i + 1]
+                if "@MODELS@" in raw:
+                    continue
+                path = systemdfile.expand(raw)
+                checked += 1
+                if not os.path.exists(path):
+                    missing.append("%s: %s -> %s" % (m, tok, path))
+        self.assertEqual(missing, [],
+                         "a profile points at a file that is not there. "
+                         "llama-server does not say so — it prints its usage "
+                         "and exits, and behind sideserver that reads as "
+                         "'the server never served /slots':\n    "
+                         + "\n    ".join(missing))
+        # The positive control: without it an empty PATH_FLAGS, or a rename of
+        # the flags, would make this pass while checking nothing.
+        self.assertGreaterEqual(checked, 1,
+                                "no path flag found in any profile — this test "
+                                "checked nothing")
+
+
 class TestEveryProfileFitsTheMachineItIsOn(unittest.TestCase):
     """A profile must not promise more memory than the machine has.
 

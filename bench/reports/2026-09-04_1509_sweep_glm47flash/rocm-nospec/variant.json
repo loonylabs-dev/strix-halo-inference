@@ -1,0 +1,33 @@
+{
+ "variant": "rocm-nospec",
+ "binary": "@HOME@/llama.cpp/build-rocm-cachelookup-b10750-10-g6bbb3eecf/bin/llama-server",
+ "argv": [
+  "--alias",
+  "glm47flash-bench",
+  "-m",
+  "@MODELS@/GLM-4.7-Flash-MTP-Q8_0.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-fit",
+  "off",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "512",
+  "--chat-template-kwargs",
+  "{\"enable_thinking\":false}",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b380-6bbb3ee",
+ "note": "The floor: no drafter of any kind. Every other cell is read against this one, and on qwen36 this was the cell Vulkan won by 1.45x."
+}

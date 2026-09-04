@@ -146,6 +146,31 @@ an empty environment, and that run shared the one thing that decided the
 outcome: this machine. An independent check that is not independent is the
 failure this repository keeps finding.
 
+IT FOUND IT AGAIN ON 04.09.2026, in the other direction. A test added that day
+— `TestEveryFileAProfilePointsAtExists` — passed here every time and went red
+the first time it met a runner, because its `@MODELS@` skip read an argv
+`models.sh` had already expanded and therefore never fired. On a machine with
+the model files present that is invisible: three profiles were judged on an
+`--mmproj` they are supposed to DOWNLOAD, and passed. A skip that never fires
+is indistinguishable from no skip at all, so it is asserted now rather than
+trusted — that test carries two positive controls, one for what it checked and
+one for what it skipped.
+
+**A test whose only environment is this machine has not been tested.** Before
+pushing one that touches paths, the environment, or anything the runner does
+not have, run the suite the way CI will:
+
+    T=$(mktemp -d)
+    HOME="$T" LLAMA_MODELS="$T/no-such-model-dir" bash tests/run.sh
+    rm -rf "$T"
+
+That reproduces both halves of what a runner lacks — no installation under
+`$HOME`, and no model directory — and it takes the same ~19 s the normal gate
+does, against the 46 minutes a round trip through GitHub costs.
+
+The counts have moved and the DELTA has not: 1,292 here, 1,279 in CI on
+04.09.2026, still the 13 that do not travel.
+
 3.10 is the floor and it is a measured one: the syntax parses back to 3.8, and
 `test_scripts.py` uses `sys.stdlib_module_names`, which arrived in 3.10.
 Development happens on 3.14.

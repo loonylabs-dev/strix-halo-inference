@@ -346,25 +346,66 @@ class TestEveryFileAProfilePointsAtExists(unittest.TestCase):
     # here — a model file is a download, not something a checkout carries.
     PATH_FLAGS = ("--chat-template-file", "--mmproj", "--grammar-file")
 
+    # What install.sh links into ~/.local/lib/llm-stack, for the directories a
+    # PATH_FLAG may legitimately point into — install.sh:115 is the only one
+    # that matters today. It is a MAP rather than a skip so that an unmapped
+    # @HOME@ path fails loudly instead of quietly going unchecked.
+    INSTALLED_FROM = {"templates": "setup/templates"}
+
     def test_every_path_flag_in_every_profile_resolves(self):
         import sys
         sys.path.insert(0, str(REPO / "setup" / "lib"))
         import systemdfile
         names = profiles()
         self.assertTrue(names, "no profiles found — this test would check nothing")
-        checked, missing = 0, []
+        lib_root = os.path.join(os.path.expanduser("~"), ".local", "lib",
+                                "llm-stack")
+        installed = os.path.isdir(lib_root)
+        checked, skipped_models, missing = 0, 0, []
         for m in names:
-            argv = lib("args", m).stdout.split()
+            # models="@MODELS@" KEEPS THE MARKER, and that is the whole point.
+            # `models.sh args` expands it, so the `"@MODELS@" in raw` skip
+            # below never fired: it read an already-resolved path. On a machine
+            # with the models present that is invisible, and on CI — where the
+            # harness points LLAMA_MODELS at tests/no-such-model-dir — it
+            # failed three profiles for owning an --mmproj they are supposed to
+            # download rather than carry. Found on 04.09.2026, the first time
+            # this test ran anywhere but here.
+            argv = systemdfile.llama_args(
+                str(REPO / "setup" / "env" / ("%s.env" % m)), models="@MODELS@")
             for i, tok in enumerate(argv):
                 if tok not in self.PATH_FLAGS or i + 1 >= len(argv):
                     continue
                 raw = argv[i + 1]
                 if "@MODELS@" in raw:
+                    skipped_models += 1
                     continue
                 path = systemdfile.expand(raw)
                 checked += 1
-                if not os.path.exists(path):
-                    missing.append("%s: %s -> %s" % (m, tok, path))
+                if os.path.exists(path):
+                    continue
+                # A CHECKOUT THAT WAS NEVER INSTALLED CANNOT BE JUDGED ON
+                # INSTALLED PATHS — but it can be judged on whether it SHIPS
+                # the file install.sh would link, which is the same defect one
+                # step earlier and is checkable anywhere. This is what CI
+                # tests; a developer machine has the directory and takes the
+                # branch above, which is the case the incident came from.
+                rel = os.path.relpath(path, lib_root)
+                top = rel.split(os.sep)[0]
+                if not installed and not rel.startswith(".."):
+                    src = self.INSTALLED_FROM.get(top)
+                    self.assertIsNotNone(
+                        src, "%s: %s points into ~/.local/lib/llm-stack/%s, "
+                             "which INSTALLED_FROM does not map to a repo "
+                             "directory — add it, or this path goes unchecked "
+                             "wherever the stack is not installed" % (m, tok, top))
+                    repo_side = REPO / src / os.path.relpath(rel, top)
+                    if not repo_side.exists():
+                        missing.append("%s: %s -> %s (not installed here, and "
+                                       "the repo does not ship %s either)"
+                                       % (m, tok, path, repo_side))
+                    continue
+                missing.append("%s: %s -> %s" % (m, tok, path))
         self.assertEqual(missing, [],
                          "a profile points at a file that is not there. "
                          "llama-server does not say so — it prints its usage "
@@ -376,6 +417,19 @@ class TestEveryFileAProfilePointsAtExists(unittest.TestCase):
         self.assertGreaterEqual(checked, 1,
                                 "no path flag found in any profile — this test "
                                 "checked nothing")
+        # THE SECOND POSITIVE CONTROL, and it is the one this test was missing.
+        # The @MODELS@ skip above was DEAD from the day it was written: the argv
+        # came from `models.sh args`, which had already expanded the marker, so
+        # the branch never ran and three profiles were judged on model files a
+        # checkout is not supposed to carry. It passed here because the models
+        # exist here, and failed the first time it met a machine without them.
+        # A skip that never fires is indistinguishable from no skip at all, so
+        # it is asserted rather than trusted.
+        self.assertGreaterEqual(skipped_models, 1,
+                                "the @MODELS@ skip never fired — either no "
+                                "profile names a model path any more, or the "
+                                "argv arrived already expanded and the skip is "
+                                "dead again")
 
 
 class TestEveryProfileFitsTheMachineItIsOn(unittest.TestCase):

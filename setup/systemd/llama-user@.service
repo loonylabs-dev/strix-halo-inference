@@ -44,6 +44,26 @@ Conflicts=llama-user@qwen38.service llama-user@gemma26.service \
           llama-user@gptoss.service llama-user@batch.service \
           llama-user@flashnext.service llama-user@qwen36.service \
           llama-user@glm47flash.service
+# THREE STARTS PER TWO MINUTES, AND IT STAYS. The pair below is what stops
+# `Restart=on-failure` + `RestartSec=5` (see [Service]) from becoming a
+# crash-loop: a server that dies while loading would otherwise restart every
+# five seconds forever, on a machine where each attempt allocates tens of GiB
+# of GTT.
+#
+# IT IS REACHABLE FROM A MEASUREMENT CAMPAIGN, and that is not a reason to
+# relax it. Measured 04.09.2026: a seven-point memory sweep stops and restarts
+# production once per point, and gemma26 loads fast enough that the fourth
+# start fell inside one window — `Start request repeated too quickly`,
+# `Result=start-limit-hit`, production down until someone ran `reset-failed`.
+# The earlier campaigns never hit it only because their models load too slowly
+# to fit four starts into 120 s (qwen36 loads in ~3 s from page cache; the
+# 103 GiB flashnext does not).
+#
+# The fix belongs on the OTHER side: bench/sideserver.py now reads the exit
+# code of its own `systemctl start`, clears `start-limit-hit` and retries
+# once, and its dead man's switch clears the limiter before it fires. Lowering
+# the guard here to make a driver script convenient would trade a real safety
+# property for a scripting bug that has been fixed.
 StartLimitIntervalSec=120
 StartLimitBurst=3
 

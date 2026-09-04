@@ -424,17 +424,42 @@ class TestTheWatchdogGoesDownWithProduction(unittest.TestCase):
         self.assertIn('systemctl("stop", PROBE_TIMER)', self.src())
 
     def test_and_started_again_in_the_teardown(self):
-        self.assertIn('systemctl("start", PROBE_TIMER)', self.src())
+        """On BOTH exits, since 04.09.2026.
+
+        restore_production grew a second one that day: when systemd REFUSES
+        to start production (start-limit-hit and friends) it returns early
+        instead of waiting 780 s on a unit in a terminal state. The watchdog
+        has to go back on that path too — that is the path where production
+        really is down, so it is the path where its absence matters most.
+        The call is `sc(...)` rather than `systemctl(...)` because the
+        function takes an injectable one for tests/test_sideworkload.py.
+        """
+        self.assertGreaterEqual(
+            self.src().count('("start", PROBE_TIMER)'), 2,
+            "the watchdog must be restored on the refusal path as well as "
+            "the normal one")
 
     def test_the_dead_man_switch_restores_it_too(self):
         """The half that matters. A `finally` does not run when the OOM killer
         takes this process — that is the 26.08. incident — so the watchdog
         must come back from the timer systemd owns, not from here."""
         src = self.src()
-        block = src[src.index("--on-active="):src.index("--on-active=") + 400]
+        # Anchored on the function rather than on "--on-active=": the
+        # command the timer runs was lifted into a `revive` string on
+        # 04.09.2026, which sits ABOVE that flag. The guarantee is unchanged
+        # and one was added — see below.
+        i = src.index("def arm_deadman(")
+        block = src[i:i + 2600]
         self.assertIn("PROBE_TIMER", block,
                       "a killed sideserver would leave the watchdog off, which "
                       "is worse than the false alarm it prevents")
+        # 04.09.2026: the switch fired a bare `systemctl start`, which is
+        # refused when the start limiter is tripped — and a tripped limiter
+        # is reachable in exactly the situation this switch exists for.
+        self.assertIn("reset-failed", block,
+                      "the dead man's switch must clear start-limit-hit "
+                      "before it starts, or it fires into a refusal and "
+                      "leaves the machine with no model on it")
 
 
 class TestSideserverAfterTheThirdIncident(unittest.TestCase):

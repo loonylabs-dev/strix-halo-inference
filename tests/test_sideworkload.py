@@ -342,5 +342,145 @@ class TestNoDirectStopOutsideTheHelper(unittest.TestCase):
                          "exactly one place stops production — the helper")
 
 
+class TestARefusedStartIsNotASlowOne(unittest.TestCase):
+    """04.09.2026: a seven-point memory sweep ran sideserver back to back.
+
+    `llama-user@.service` carries StartLimitBurst=3 inside
+    StartLimitIntervalSec=120, so the fourth `systemctl start` inside a
+    window was refused — `Start request repeated too quickly`,
+    Result=start-limit-hit — and production stayed down.
+
+    The refusal itself is correct: the unit has Restart=on-failure with
+    RestartSec=5, and without a limiter a server that dies on load would
+    restart every five seconds forever. What was wrong is that
+    `systemctl()` discarded the exit code, so `restore_production` could
+    not tell a REFUSAL from a slow load. It waited 180 s and then another
+    600 s for a unit systemd had already given up on: thirteen minutes per
+    later point, with the SYMPTOM in sideserver's own output and the REASON
+    only in the journal.
+
+    A wait that looks exactly like progress is the shape these tests exist
+    for.
+    """
+
+    LIMIT_HIT = {"LoadState": "loaded", "ActiveState": "failed",
+                 "Result": "start-limit-hit"}
+
+    @staticmethod
+    def _sc(returncodes):
+        """A systemctl stand-in returning the given codes in order, and
+        recording every call."""
+        calls = []
+        seq = list(returncodes)
+
+        def sc(action, unit, **kw):
+            calls.append((action, unit))
+            code = seq.pop(0) if seq else 0
+
+            class R:
+                returncode = code
+                stderr = ("Failed to start %s: Start request repeated "
+                          "too quickly." % unit) if code else ""
+                stdout = ""
+            return R()
+        sc.calls = calls
+        return sc
+
+    def test_systemctl_hands_the_result_back(self):
+        """It returned None, so no caller could check anything."""
+        r = sideserver.systemctl(
+            "start", "llama-user@ghost",
+            run=lambda *a, **k: type("R", (), {"returncode": 1,
+                                               "stderr": "no",
+                                               "stdout": ""})())
+        self.assertIsNotNone(r, "systemctl swallows the exit code")
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_rate_limited_start_is_reset_and_retried(self):
+        sc = self._sc([1, 0])            # refused, then fine after the reset
+        ok = sideserver.start_production(
+            "llama-user@qwen36", sc=sc,
+            props=lambda u, n, **k: dict(self.LIMIT_HIT))
+        self.assertTrue(ok, "a start-limit-hit is recoverable and was not "
+                            "recovered")
+        self.assertIn(("reset-failed", "llama-user@qwen36"), sc.calls,
+                      "the limiter was never cleared: %s" % (sc.calls,))
+
+    def test_a_refusal_that_is_not_the_limiter_does_not_loop(self):
+        sc = self._sc([1, 1])
+        ok = sideserver.start_production(
+            "llama-user@qwen36", sc=sc,
+            props=lambda u, n, **k: {"LoadState": "loaded",
+                                     "ActiveState": "failed",
+                                     "Result": "exit-code"})
+        self.assertFalse(ok)
+        self.assertLessEqual(
+            len([c for c in sc.calls if c[0] == "start"]), 2,
+            "a refusal systemd will not take back must not be retried "
+            "forever: %s" % (sc.calls,))
+
+    def test_a_refused_start_does_not_burn_the_two_waits(self):
+        """180 s + 600 s of waiting for a unit in a terminal state is the
+        whole cost of this bug, and it is what the caller must skip."""
+        waits = []
+        sc = self._sc([1, 1])
+        sideserver.restore_production(
+            "llama-user@qwen36", "deadman-x",
+            sc=sc,
+            props=lambda u, n, **k: {"LoadState": "loaded",
+                                     "ActiveState": "failed",
+                                     "Result": "exit-code"},
+            wait=lambda url, timeout=0: (waits.append(timeout), False)[1])
+        self.assertEqual(waits, [],
+                         "waited on a unit systemd refused to start: %s"
+                         % (waits,))
+
+
+class TestTheDeadMansSwitchSurvivesTheLimiter(unittest.TestCase):
+    """The same hole, in the one place that must not have it.
+
+    `arm_deadman` schedules `systemctl --user start <production>` for 45
+    minutes out. That switch exists for the case where this process is
+    SIGKILLed and production is down — which is exactly the case in which
+    the start limiter may already be tripped. A bare `start` there fires
+    into a refusal and leaves the machine with no model on it, and
+    `--collect` means the transient unit's own verdict cannot be read back
+    afterwards (a collected unit answers Result=success; see this file's
+    header). The refusal lands in the journal under the production unit and
+    nowhere else.
+
+    `reset-failed` on a healthy unit is a no-op, so clearing first costs
+    nothing and closes the hole.
+    """
+
+    def _armed_cmd(self):
+        seen = {}
+
+        def run(cmd, **kw):
+            seen["cmd"] = cmd
+
+            class R:
+                returncode = 0
+                stderr = ""
+                stdout = ""
+            return R()
+        sideserver.arm_deadman("deadman-x", "llama-user@qwen36", 45, run=run)
+        return seen["cmd"]
+
+    def test_it_clears_the_limiter_before_starting(self):
+        cmd = " ".join(self._armed_cmd())
+        self.assertIn("reset-failed", cmd,
+                      "the dead man's switch fires a bare start and dies "
+                      "on a tripped limiter: %s" % cmd)
+        self.assertLess(cmd.index("reset-failed"),
+                        cmd.rindex("start"),
+                        "reset-failed must come BEFORE the start")
+
+    def test_it_still_starts_production_and_the_probe(self):
+        cmd = " ".join(self._armed_cmd())
+        self.assertIn("llama-user@qwen36", cmd)
+        self.assertIn(sideserver.PROBE_TIMER, cmd)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -407,9 +407,30 @@ Two details are worth the paragraph:
   and then 600 s for a unit systemd will not start. The SYMPTOM is in
   sideserver's output; the REASON is only in the journal.
 
-So: when a driver script runs sideserver in a loop, either space the points, or
-clear `start-limit-hit` between them, and check `serving` at the end rather than
-assuming the last teardown put production back.
+**FIXED THE SAME EVENING, and the limiter was deliberately NOT relaxed.** The
+guard is correct — the unit carries `Restart=on-failure` with `RestartSec=5`,
+so without it a server dying on load would restart every five seconds forever.
+The bug was on the other side: `systemctl()` discarded its exit code, so
+`restore_production` could not tell a refusal from a slow load. Since 04.09.:
+
+* `systemctl()` returns its result, and `start_production()` tells
+  `start-limit-hit` (recoverable: `reset-failed` and one retry) apart from any
+  other failure (not retried — that is how a crash-loop is built);
+* a refused start no longer costs the two waits, and does **not** disarm the
+  dead man's switch, because production really is down at that point;
+* `arm_deadman()` clears the limiter before it starts. That hole was the worse
+  half: the switch exists for the case where this process was killed and
+  production is down, which is exactly the case in which the limiter may
+  already be tripped — and `--collect` means its own verdict cannot be read
+  back afterwards.
+
+Verified against the real unit, not only against fakes: the limiter was tripped
+deliberately (four starts inside 120 s → `Result=start-limit-hit`) and
+`start_production()` recovered production in **0.1 s** where the old path spent
+780. Pinned by six tests in `tests/test_sideworkload.py`.
+
+Still worth knowing when driving sideserver in a loop: check `serving` at the
+end rather than assuming the last teardown put production back.
 
 ### `--extra` bypasses the memory guard's arithmetic
 

@@ -84,9 +84,21 @@ def say(msg):
     print("  %s" % msg, flush=True)
 
 
-def systemctl(action, unit):
-    subprocess.run(["systemctl", "--user", action, unit], check=False,
-                   capture_output=True)
+def systemctl(action, unit, run=subprocess.run):
+    """One systemctl call — AND ITS RESULT, which this used to throw away.
+
+    Measured 04.09.2026: a seven-point memory sweep tripped
+    `StartLimitBurst=3` / `StartLimitIntervalSec=120` on the production
+    unit, so `systemctl start` was REFUSED — and because the exit code was
+    discarded here, restore_production could not tell that from a slow
+    load. It waited 180 s and then 600 s for a unit systemd had already
+    given up on, thirteen minutes per later point, with production down the
+    whole time. A wait that looks exactly like progress.
+
+    `run` is injectable for tests/test_sideworkload.py.
+    """
+    return run(["systemctl", "--user", action, unit], check=False,
+               capture_output=True)
 
 
 def wait_for_slots(url, timeout=420):
@@ -275,11 +287,27 @@ def arm_deadman(deadman, production_unit, deadline_min, run=subprocess.run):
     # ARM FIRST, before anything is stopped. systemd owns this timer, so it
     # fires even if this process is SIGKILLed — which is exactly what
     # happened at 23:11 on 26.08., leaving production down.
+    # IT CLEARS THE START LIMITER BEFORE IT STARTS, and that is not a
+    # flourish: this switch exists for the case where this process died and
+    # production is down, which is exactly the case in which
+    # `StartLimitBurst=3` / `StartLimitIntervalSec=120` may already be
+    # tripped (measured 04.09.2026). A bare `start` there fires into
+    # `Start request repeated too quickly` and leaves the machine with no
+    # model on it — and `--collect` means this unit's own verdict cannot be
+    # read back afterwards, because a collected transient unit answers
+    # Result=success. The refusal would land in the journal under the
+    # PRODUCTION unit and nowhere else.
+    #
+    # `reset-failed` on a healthy unit is a no-op, so clearing first costs
+    # nothing; `|| true` keeps a no-op from ending the shell under -e-like
+    # conditions and makes the start unconditional.
+    revive = ("systemctl --user reset-failed %s || true; "
+              "exec systemctl --user start %s %s"
+              % (production_unit, production_unit, PROBE_TIMER))
     r = run(["systemd-run", "--user", "--quiet", "--collect",
              "--unit", deadman,
              "--on-active=%dmin" % deadline_min,
-             "systemctl", "--user", "start", production_unit,
-             PROBE_TIMER],
+             "/bin/sh", "-c", revive],
             check=False, capture_output=True)
     if r.returncode != 0:
         say("REFUSING: the dead man's switch did not arm (%s). A stale "
@@ -336,9 +364,76 @@ def stop_production_and_settle(production_unit):
     return settled
 
 
-def restore_production(production_unit, deadman):
+def start_production(production_unit, sc=None, props=None):
+    """Start production and know WHY it did not start, if it did not.
+
+    Two refusals are not the same thing and this is where they part:
+
+      * `start-limit-hit` — systemd refused because the unit was started
+        too often (StartLimitBurst=3 inside StartLimitIntervalSec=120). The
+        unit is fine; the COUNTER is full. `reset-failed` clears it and one
+        retry brings production back. Measured 04.09.2026, when a
+        seven-point memory sweep hit it on the fourth point: the limiter is
+        reachable from any campaign that loads a fast model repeatedly,
+        because only a fast model fits four starts into two minutes.
+      * anything else — the unit tried and failed. Retrying is how a
+        crash-loop is built, which is what the limiter exists to prevent,
+        so this says what systemd said and stops.
+
+    The limiter itself is NOT relaxed, and that is deliberate: the unit
+    carries Restart=on-failure with RestartSec=5, so without it a server
+    that dies during load would restart every five seconds forever.
+
+    `sc` and `props` are injectable for tests/test_sideworkload.py.
+    """
+    sc = sc or systemctl
+    props = props or unit_props
+    if getattr(sc("start", production_unit), "returncode", 0) == 0:
+        return True
+
+    p = props(production_unit, ["LoadState", "ActiveState", "Result"]) or {}
+    result = p.get("Result", "")
+    if result != "start-limit-hit":
+        say("%s did not start and systemd is not going to take it back: "
+            "LoadState=%s ActiveState=%s Result=%s. Not retrying — that is "
+            "how a crash-loop is built. `journalctl --user -u %s` has the "
+            "reason." % (production_unit, p.get("LoadState", "?"),
+                         p.get("ActiveState", "?"), result or "?",
+                         production_unit))
+        return False
+
+    say("%s hit systemd's start limiter (Result=start-limit-hit) — the unit "
+        "is fine, the counter is full. Clearing it and starting once more."
+        % production_unit)
+    sc("reset-failed", production_unit)
+    if getattr(sc("start", production_unit), "returncode", 0) == 0:
+        return True
+    say("%s still refused after reset-failed. Production is DOWN; the dead "
+        "man's switch stays armed." % production_unit)
+    return False
+
+
+def restore_production(production_unit, deadman, sc=None, props=None,
+                       wait=None):
+    sc = sc or systemctl
+    wait = wait or wait_for_slots
     say("restarting %s and %s" % (production_unit, PROBE_TIMER))
-    systemctl("start", production_unit)
+    if not start_production(production_unit, sc=sc, props=props):
+        # DO NOT WAIT, AND DO NOT DISARM. Waiting 180 s and then 600 s on a
+        # unit systemd has refused is the thirteen minutes this whole
+        # function was rewritten for on 04.09.2026 — and it is worse than
+        # the wasted time, because the operator reads a wait as progress.
+        # The probe timer goes back so the absence is LOUD; the dead man's
+        # switch stays armed, because production really is down and that
+        # timer is now the only thing that will bring it back.
+        say("NOT waiting on a unit systemd refused to start, and NOT "
+            "disarming the dead man's switch — it fires in the remaining "
+            "deadline and is the only thing left that will restore "
+            "production. Fix the unit, or run "
+            "`systemctl --user reset-failed %s && systemctl --user start %s`."
+            % (production_unit, production_unit))
+        sc("start", PROBE_TIMER)
+        return
     # The watchdog goes back LAST, and after production actually answers.
     # Its interval elapsed while it was stopped, so starting it alongside
     # production makes it fire at once — measured 27.08.: both started at
@@ -348,11 +443,11 @@ def restore_production(production_unit, deadman):
     # probe.py is patient about this now as well, and both halves are
     # wanted: this one keeps the normal path quiet, and the patience covers
     # the dead man's switch, which cannot wait for anything.
-    if not wait_for_slots(PRODUCTION_URL, timeout=180):
+    if not wait(PRODUCTION_URL, timeout=180):
         say("%s did not come back within 180 s — starting %s anyway, "
             "it is better loud than absent" % (production_unit, PROBE_TIMER))
-    systemctl("start", PROBE_TIMER)
-    wait_for_slots(PRODUCTION_URL, 600)
+    sc("start", PROBE_TIMER)
+    wait(PRODUCTION_URL, 600)
     # Disarm LAST: until production actually answers, the timer is still the
     # thing standing between a failure here and a machine with no model on it.
     subprocess.run(["systemctl", "--user", "stop", deadman + ".timer"],

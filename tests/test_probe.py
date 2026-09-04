@@ -198,11 +198,18 @@ class TestSideserverRestoresTheWatchdogLast(unittest.TestCase):
         # The restore dance lives in restore_production() since 01.09.2026 —
         # ONE implementation for the llama path and the workload path, so
         # this order holds for both by construction.
+        # 04.09.2026: the start itself moved into start_production(), which
+        # is where "systemd refused" is told apart from "still loading", so
+        # the anchor is the CALL rather than the systemctl line. The last
+        # PROBE_TIMER start is the one on the success path — the earlier one
+        # belongs to the refusal path, which deliberately does not wait
+        # (pinned behaviourally in tests/test_sideworkload.py).
         src = self.src()
-        i = src.index('systemctl("start", production_unit)')
-        j = src.index('systemctl("start", PROBE_TIMER)')
+        body = src[src.index("def restore_production("):]
+        i = body.index("start_production(production_unit")
+        j = body.rindex('("start", PROBE_TIMER)')
         self.assertLess(i, j, "the timer must go back after production")
-        self.assertIn("wait_for_slots(PRODUCTION_URL", src[i:j],
+        self.assertIn("wait(PRODUCTION_URL", body[i:j],
                       "starting them together is what caused the false alarm")
         self.assertGreaterEqual(
             src.count("restore_production("), 3,

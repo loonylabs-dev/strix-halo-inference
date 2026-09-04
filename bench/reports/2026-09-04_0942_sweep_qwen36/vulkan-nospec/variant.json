@@ -1,0 +1,33 @@
+{
+ "variant": "vulkan-nospec",
+ "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+ "argv": [
+  "--alias",
+  "qwen36-bench",
+  "-m",
+  "@MODELS@/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-fit",
+  "off",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "512",
+  "--chat-template-kwargs",
+  "{\"enable_thinking\":false}",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b200-54ee5ee",
+ "note": "The backend, alone. It is a real question rather than a formality: the choice is model-dependent here and has flipped before - Vulkan won for Laguna WITHOUT speculation, ROCm won 2x for qwen38 WITH it (docs/MODELS.md, 24.08.), and this model starts without."
+}

@@ -125,6 +125,63 @@ request time, so prefill sat inside every decode number.
 | `laguna` | the predecessor, kept as the way back |
 | `batch` | batch classification, small window |
 | `flashnext` | Qwen3.8-Flash-Next — **production since 01.09.2026.** See below |
+| `qwen36` | Qwen3.6-35B-A3B — the fast candidate of 04.09.2026. Speed measured, quality not. See below |
+
+### Qwen3.6-35B-A3B: measurably faster, and that is only half a verdict
+
+Asked for on 04.09.2026 as a faster model at sufficient quality. The speed
+half came out decisively and the quality half was never in this repo's gift,
+so it stays a candidate rather than a replacement.
+
+**It cost nothing to support.** The GGUF declares `general.architecture =
+qwen35moe` — Qwen3.6 reuses Qwen3.5's graph and changes the weights and the
+post-training, not the tensors — so the builds already here load it. That was
+checked against the built `libllama.so`, not against the source tree, because
+a tree and a binary are different things.
+
+**Against the incumbent, same morning, same three workloads, same depths.**
+flashnext measured live in its own production shape (MTP head, `-c 240640`),
+qwen36 behind `sideserver` at its own window and at the **Q8** quant it
+settled on. Decode, t/s — qwen36 / flashnext:
+
+| | d512 | d8192 | d36k |
+|---|---|---|---|
+| prose | 33.4 / 18.6 | 31.9 / 19.4 | 27.5 / 13.9 |
+| count | 189.1 / 112.3 | 180.0 / 104.8 | 155.3 / 85.1 |
+| copy | 276.7 / 60.7 | 258.9 / 103.4 | 91.1 / 86.6 |
+
+Prefill is about 2.9× at every depth. Memory: **40.8 GiB of GTT against 91.0**,
+because one token of context costs 21.0 KiB rather than 37.3 — measured
+two-point, both points agreeing on the base.
+
+**The quant is Q8 and that is the morning's most useful finding.** Every other
+profile here serves Q4 on the received wisdom that decode is
+weight-bandwidth-bound. Measured on this model, one variable: **Q8 costs
+5–8 %, not half** — 3B of 35B parameters are active per token, so weight
+traffic is not what decode waits for. Which means the model can be served at
+near-checkpoint fidelity for almost nothing, and the quality question below is
+about the model rather than about how this machine stores it.
+
+Six of those eighteen cells carry `speed.py`'s own spread warning, and decode
+on this machine has a 19 % coefficient of variation. The *directions* — two-
+to eight-fold — are far outside that. The individual numbers are not, and
+`prose d8192 = 44.2` in particular should be read as "no loss" rather than as
+a gain, since it sits above the no-speculation figure it should at best have
+matched.
+
+**What makes it fast is also what makes it suspect.** 3B active parameters per
+token against Flash-Next's 6B is the reason decode is twice as quick — and
+published agentic-coding figures put the model below the incumbent on the same
+axis: SWE-bench Multilingual 67.2 against 81.0, SWE-bench Pro 49.5 against
+62.5 (vendor and third-party numbers, read 04.09.2026, **not** measured here,
+and not strictly comparable across sources). This repo removed its model
+battery on 26.08. rather than repair it, and that decision stands: whether the
+answers are good enough is an operator judgement on real work.
+
+So the honest summary is a trade, not an upgrade: **roughly twice the speed at
+a quarter of the memory, for a model the published evidence says is weaker at
+the job.** `switch-model.sh qwen36` is one command, and `switch-model.sh
+flashnext` is the way back.
 
 ## Not only language models any more
 

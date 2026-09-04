@@ -1,0 +1,33 @@
+{
+ "variant": "rocm-nospec",
+ "binary": "@HOME@/llama.cpp/build-rocm-patched-b10702-11-gc799f1014/bin/llama-server",
+ "argv": [
+  "--alias",
+  "qwen36-bench",
+  "-m",
+  "@MODELS@/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+  "-ngl",
+  "999",
+  "-fa",
+  "on",
+  "-fit",
+  "off",
+  "-c",
+  "65536",
+  "-np",
+  "1",
+  "-b",
+  "2048",
+  "-ub",
+  "512",
+  "--chat-template-kwargs",
+  "{\"enable_thinking\":false}",
+  "--jinja",
+  "--host",
+  "127.0.0.1",
+  "--port",
+  "8080"
+ ],
+ "build": "b333-c799f10",
+ "note": "The baseline: exactly what setup/env/qwen36.env starts, at the sweep's window. Every other cell is read against this one."
+}

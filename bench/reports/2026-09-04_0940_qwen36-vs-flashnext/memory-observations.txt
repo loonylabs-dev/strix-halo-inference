@@ -1,0 +1,58 @@
+The three budget.py --observe outputs the memory figures in
+setup/env/qwen36.env rest on, verbatim.
+
+The -c 65536 point ran budget.py --observe and NOTHING ELSE, so it
+produced no report directory of its own — bench/speed.py is what
+creates one. Without this file that point would have had no home, and
+MODEL_KV_KIB_PER_TOKEN rests on it as much as on the other.
+
+=== 1 · Q4, -c 65536  (09:15) ===============================
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+    ctx                            65536
+    weights_gib                    20.82
+    gtt_used_gib                   22.69
+    gtt_process_gib                21.90
+    gtt_observed_gib               21.90
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.24
+    kv_gib_observed                1.08
+    kv_kib_per_token_observed      17.28
+  stopping sideserver-8081
+  waiting for GTT to be given back ...
+
+=== 2 · Q4, -c 262144 (09:24) ===============================
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+    ctx                            262144
+    weights_gib                    20.82
+    gtt_used_gib                   26.61
+    gtt_process_gib                25.84
+    gtt_observed_gib               25.84
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.25
+    kv_gib_observed                5.02
+    kv_kib_per_token_observed      20.07
+  depth ~512 ...
+    prose at 620 tokens (0.0% cached): pp 660.3 t/s · tg 35.7 t/s · copied 0.0 %
+
+=== 3 · Q8, -c 262144 (10:48) ===============================
+  observed, from the running server:
+    argv_model                     /mnt/shared/LLM/Qwen3.6-35B-A3B-UD-Q8_K_XL.gguf
+    ctx                            262144
+    weights_gib                    35.81
+    gtt_used_gib                   42.04
+    gtt_process_gib                40.83
+    gtt_observed_gib               40.83
+    gtt_source                     the server's own, per DRM client
+    rss_anon_gib                   0.27
+    kv_gib_observed                5.02
+    kv_kib_per_token_observed      20.07
+  depth ~512 ...
+    prose at 620 tokens (0.0% cached): pp 635.5 t/s · tg 33.4 t/s · draft accepted 6.2 % · copied 0.0 %
+
+=== derived =================================================
+KV KiB/token, two-point (Q4)   : 21.01
+GTT base from point 1          : 20.59
+GTT base from point 2          : 20.59
+GTT base at Q8, one point      : 35.58

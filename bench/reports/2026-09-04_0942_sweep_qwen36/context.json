@@ -1,0 +1,131 @@
+{
+ "stamp": "2026-09-04_0942",
+ "model": "qwen36",
+ "note": "Backend x ngram, the 2x2 setup/env/qwen36.env still owes an answer for",
+ "platform_profile": "performance",
+ "variants_file": "bench/variants/qwen36.json",
+ "spec": {
+  "model": "qwen36",
+  "_why": [
+   "Qwen3.6-35B-A3B arrived 04.09.2026 and setup/env/qwen36.env carries TWO",
+   "flags it could not justify: the backend, and the absence of speculation.",
+   "This file is the 2x2 that decides both, and nothing else - deliberately",
+   "smaller than qwen38.json, because most of that file's axes do not exist",
+   "here.",
+   "",
+   "WHY THE REASONING-LEVEL AXIS IS GONE. qwen38.json spends four of its",
+   "cells on xhigh/medium/low/none. This model's chat template has no such",
+   "dial: read out of the GGUF's own metadata 04.09.2026, it knows",
+   "enable_thinking and preserve_thinking and nothing else. So there is one",
+   "thinking setting to measure, not four, and the profile's",
+   "enable_thinking:false is carried into every cell rather than varied -",
+   "the sweep must not compare two things at once.",
+   "",
+   "WHY THERE IS NO MTP CELL. The checkpoint HAS an MTP head",
+   "(mtp_num_hidden_layers: 1 in its config.json), but unsloth converts with",
+   "--no-nextn and ships GGUFs without it - the same reason flashnext needs a",
+   "separately exported head (setup/env/flashnext.env, unsloth discussion",
+   "#47). So -md has nothing to point at, and what CAN be asked here is the",
+   "n-gram drafter, which needs no second model at all. If a compatible head",
+   "is ever exported, that is a new question and gets a new variants file.",
+   "",
+   "THE BUILD DIRECTORIES ARE NAMED, NOT SYMLINKED. build-rocm-patched is a",
+   "symlink and what it points at changes; a recorded cell may not. These",
+   "name b10702-11-gc799f1014, which is what that symlink resolved to on",
+   "04.09.2026.",
+   "",
+   "-c 65536 throughout, -np 1, f16 KV, no --mmproj: clean single-stream",
+   "numbers, and the same window in every cell. @MODELS@ and @HOME@ are",
+   "expanded by setup/lib/systemdfile.py - never an absolute path, which",
+   "would tie this file to one checkout.",
+   "",
+   "UPDATED 04.09.2026 after the three sideserver runs that settled the speculation question on ROCm: the ngram cells now carry --spec-draft-p-min 0.75, because that is what setup/env/qwen36.env serves and a sweep that measured a shape nobody runs would answer the backend question about the wrong configuration."
+  ],
+  "base_args": [
+   "--alias",
+   "qwen36-bench",
+   "-m",
+   "@MODELS@/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+   "-ngl",
+   "999",
+   "-fa",
+   "on",
+   "-fit",
+   "off",
+   "-c",
+   "65536",
+   "-np",
+   "1",
+   "-b",
+   "2048",
+   "-ub",
+   "512",
+   "--chat-template-kwargs",
+   "{\"enable_thinking\":false}",
+   "--jinja",
+   "--host",
+   "127.0.0.1",
+   "--port",
+   "8080"
+  ],
+  "variants": [
+   {
+    "name": "rocm-nospec",
+    "binary": "@HOME@/llama.cpp/build-rocm-patched-b10702-11-gc799f1014/bin/llama-server",
+    "args": [],
+    "note": "The baseline: exactly what setup/env/qwen36.env starts, at the sweep's window. Every other cell is read against this one."
+   },
+   {
+    "name": "vulkan-nospec",
+    "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+    "args": [],
+    "note": "The backend, alone. It is a real question rather than a formality: the choice is model-dependent here and has flipped before - Vulkan won for Laguna WITHOUT speculation, ROCm won 2x for qwen38 WITH it (docs/MODELS.md, 24.08.), and this model starts without."
+   },
+   {
+    "name": "rocm-ngram",
+    "binary": "@HOME@/llama.cpp/build-rocm-patched-b10702-11-gc799f1014/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "ngram-mod",
+     "--spec-draft-n-max",
+     "4",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--spec-draft-p-min",
+     "0.75"
+    ],
+    "note": "Speculation, alone, on the drafter that needs no second model. Read the COPY workload, not just count: this repo once recorded 'the ngram drafters give nothing' from a probe that could not have shown one working (bench/README.md)."
+   },
+   {
+    "name": "vulkan-ngram",
+    "binary": "@HOME@/llama.cpp/build-vulkan/bin/llama-server",
+    "args": [
+     "--spec-type",
+     "ngram-mod",
+     "--spec-draft-n-max",
+     "4",
+     "--spec-ngram-mod-n-min",
+     "24",
+     "--spec-draft-p-min",
+     "0.75"
+    ],
+    "note": "The fourth corner. Not decoration: with only the three cells above, a backend that wins without speculation and loses with it would look like a single verdict."
+   }
+  ]
+ },
+ "order": [
+  "rocm-nospec",
+  "vulkan-nospec",
+  "rocm-ngram",
+  "vulkan-ngram"
+ ],
+ "reference": null,
+ "results": {
+  "rocm-nospec": "ok",
+  "vulkan-nospec": "ok",
+  "rocm-ngram": "ok",
+  "vulkan-ngram": "ok"
+ },
+ "platform_profile_end": "performance",
+ "conditions_held": true
+}

@@ -60,6 +60,23 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31mABORT\033[0m %s\n' "$*" >&2; exit 2; }
 
 listing() {   # -> "size<TAB>sha256<TAB>path" per matching .gguf
+  # A test seam, and a narrow one: FETCH_MODEL_LISTING names a file holding
+  # exactly the lines this function would otherwise build. It replaces the
+  # NETWORK call and nothing else — every decision below still runs against
+  # it. The collision refusal added 04.09.2026 cannot be exercised any other
+  # way without a network or a fake HTTP server, and a guard that is never
+  # made to go red is the failure class this repo names most often
+  # (bench/README.md, "A check that cannot fail is not a check").
+  if [ -n "${FETCH_MODEL_LISTING:-}" ]; then
+    PATTERN="$PATTERN" python3 -c '
+import os, sys
+pat = os.environ["PATTERN"]
+for line in open(os.environ["FETCH_MODEL_LISTING"], encoding="utf-8"):
+    line = line.rstrip("\n")
+    if line and pat in line.split("\t")[-1]:
+        print(line)'
+    return 0
+  fi
   curl -s -m 60 "https://huggingface.co/api/models/$REPO/tree/main?recursive=true" 2>/dev/null \
     | PATTERN="$PATTERN" python3 -c '
 import json, os, sys
@@ -142,24 +159,74 @@ while IFS=$'\t' read -r size sha path; do
     continue
   fi
 
+  # A DOWNLOAD IN PROGRESS LIVES IN ITS OWN FILE, and that is not tidiness.
+  #
+  # Until 04.09.2026 this resumed straight into "$out" whenever its size did
+  # not match, which silently assumed that a file of the right NAME is a
+  # partial copy of the file we want. This model directory is one flat
+  # namespace and quantisers name the vision encoder after its PRECISION
+  # rather than after its model: `mmproj-F16.gguf` is what unsloth calls
+  # Qwen3.6-35B-A3B's (899,283,680 B) AND what it calls Qwen3.8-27B's
+  # (927,607,488 B, the file qwen38 has been serving from since 17.08.).
+  # Two different files, one path, sizes that differ — so `curl -C -` would
+  # have appended to a complete, working, ANOTHER MODEL'S file. Measured
+  # 04.09.2026 while integrating qwen36; nothing in the script could have
+  # told the two apart afterwards, and the sha256 check fires only after the
+  # damage.
+  #
+  # So: bytes accumulate in "$DEST/.$name.part" and reach "$out" only after
+  # they hash to what Hugging Face published. The .part file is also the only
+  # thing this script will ever resume into — its existence is the claim
+  # "these bytes are mine". A stranger sitting at "$out" is refused by name.
   have=$(stat -c%s "$out" 2>/dev/null || echo 0)
-  if [ "$have" != "$size" ]; then
-    [ "$have" -gt 0 ] && say "  resuming $name at $(python3 -c "print('%.1f' % ($have/1073741824))") GiB"
-    say "  fetching $name  ($(python3 -c "print('%.1f' % ($size/1073741824))") GiB)"
-    # -C - resumes, --retry survives a dropped connection without losing the file
-    curl -L -C - --retry 20 --retry-delay 10 --retry-all-errors \
-         --connect-timeout 30 -# \
-         "https://huggingface.co/$REPO/resolve/main/$path" -o "$out"
-    have=$(stat -c%s "$out" 2>/dev/null || echo 0)
-  fi
+  part="$DEST/.$name.part"
 
-  if [ "$have" != "$size" ]; then
-    warn "$name is $have bytes, expected $size — run again to resume"
+  if [ "$have" != "0" ] && [ "$have" != "$size" ]; then
+    warn "$name is already here at $have bytes, and this repo publishes it at $size."
+    warn "  NOT resuming into it. A file of the right name is not evidence of"
+    warn "  the right content, and appending to the wrong one destroys it."
+    warn "  Either it belongs to another model — check which profile points at"
+    warn "    $out"
+    warn "  — or it is a partial download from before 04.09.2026, in which case"
+    warn "  it can be adopted deliberately:"
+    warn "    mv $out $part"
     FAIL=1
     exec 9>&-
     continue
   fi
 
+  if [ "$have" = "0" ]; then
+    held=$(stat -c%s "$part" 2>/dev/null || echo 0)
+    [ "$held" -gt 0 ] && say "  resuming $name at $(python3 -c "print('%.1f' % ($held/1073741824))") GiB"
+    say "  fetching $name  ($(python3 -c "print('%.1f' % ($size/1073741824))") GiB)"
+    # -C - resumes, --retry survives a dropped connection without losing the file
+    curl -L -C - --retry 20 --retry-delay 10 --retry-all-errors \
+         --connect-timeout 30 -# \
+         "https://huggingface.co/$REPO/resolve/main/$path" -o "$part"
+    held=$(stat -c%s "$part" 2>/dev/null || echo 0)
+    if [ "$held" != "$size" ]; then
+      warn "$name is $held bytes, expected $size — run again to resume"
+      FAIL=1
+      exec 9>&-
+      continue
+    fi
+    say "  checking $name  (sha256 of $(python3 -c "print('%.1f' % ($held/1073741824))") GiB)"
+    if verify "$part" "$sha"; then
+      mv -- "$part" "$out"
+      ok "$name complete and verified"
+    else
+      warn "$name downloaded to the right SIZE with the WRONG CONTENT."
+      warn "  It stays out of $DEST until it is right. Delete the partial and"
+      warn "  fetch again — resuming cannot repair it:"
+      warn "  rm $part"
+      FAIL=1
+    fi
+    exec 9>&-
+    continue
+  fi
+
+  # $out is here at exactly the published size. Verify it rather than assume
+  # it: size is not a check, which is the lesson this script already carries.
   say "  checking $name  (sha256 of $(python3 -c "print('%.1f' % ($have/1073741824))") GiB)"
   if verify "$out" "$sha"; then
     ok "$name complete and verified"

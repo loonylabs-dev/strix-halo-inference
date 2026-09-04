@@ -5,7 +5,7 @@ another.
 
 | With | What it answers | Needs | Duration |
 |---|---|---|---|
-| `bash tests/run.sh` | Is the logic right? (1146 tests, 01.09.2026) | nothing | ~16 s |
+| `bash tests/run.sh` | Is the logic right? (1278 tests, 04.09.2026) | nothing | ~18 s |
 | `bash tests/live_prefix.sh` | Do saving **and** restoring really bite? | GPU, running stack | ~4 min |
 | `bash tests/live_answer_freshness.sh` | Does a RESTORED prefix still answer the CURRENT question? | GPU, running stack | ~3 min |
 | `bash tests/live_concurrency.sh` | Does the admission control hold under load? | GPU, running stack, a token | ~2 min |
@@ -113,7 +113,7 @@ here:
 | `test_sweep.py` | the measurement chain: env parsing, server start, variant files, comparison |
 | `test_scripts.py` | `waitformodel`, token reading, the abort in `switch.sh`, that no file hides a standard library module, and the three properties of `llama-user@.service` (profile from `$HOME`, no boot restore, binary fallback) |
 | `test_gtt.py` | editing the kernel command line, driven against this machine's real one — the one place here where a wrong string is an unbootable machine rather than a wrong number |
-| `test_docs.py` | that nothing PUBLISHED points at something that is not — five files are the maintainer's own and gitignored, and making them so broke 61 references. Prose may name what is excluded; a link or a command may not |
+| `test_docs.py` | that nothing PUBLISHED points at something that is not — five files are the maintainer's own and gitignored, and making them so broke 61 references. Prose may name what is excluded; a link or a command may not. Also that README's advertised test count is true, and that no test file defines anything after its `__main__` block — counted through a FRESH loader, since `-k` narrows the shared one and the claim then measured the filter |
 | `test_hardware.py` | what machine this is — the GPU identified twice so the question survives a missing ROCm, the defect registry finally reading its own `applies_to.gpu`, the preflight changing nothing and refusing to scale, and the rule that a script printing a decimal must pin `LC_ALL=C` |
 | `test_systemunit.py` | that the system unit is DERIVED and cannot disagree with the one that runs — the mapping is complete (no `%h` survives into a unit where it means `/root`), the ceilings and the exec chain are the user unit's, and the prose is not copied |
 | `test_localenv.py` | what belongs to the MACHINE and not to the repo: the two readers of `~/.config/llm-stack.env` agree, the conventions hold no absolute path, and no line that RUNS anywhere in the repo names one computer |

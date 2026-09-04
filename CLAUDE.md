@@ -30,10 +30,18 @@ home named below.
   retirement condition — setup/README.md, family table.
 - **Production changes only on the operator's explicit go**: `--activate`,
   `switch-model.sh`, restarting a unit with a new binary. And no script
-  hard-wires a production unit — derive it from `models.sh serving`: a
-  hard-wired qwen38 in the determinism lane would have silently SWAPPED
-  the serving model via Conflicts= after a model switch (review,
-  01.09.2026).
+  hard-wires a production unit — derive it from `models.sh serving`. Found
+  by review in the determinism lane 01.09.2026; **it then FIRED on
+  04.09.2026** from a second spelling that review missed. `speed-ab.py` held
+  `UNIT = "llama-user@qwen38"` where the first fix had un-wired the PROFILE,
+  and a flag-ab run stopped flashnext and started qwen38: the suite exited 0,
+  `is-enabled` still said flashnext, and only the process holding port 8080
+  disagreed. **A grep for one spelling does not find the other — that is the
+  argument for a test rather than another review** (`tests/test_speedab.py`,
+  which walks the syntax tree). Ask `serving`, never `is-active`: only the
+  first can say which of two started instances won the race for the port.
+  Nothing serving, or two: return nothing and start nothing — inventing a
+  unit is how this did its damage.
 - **The tree IS the installation.** install.sh symlinks `$HOME` (the user
   units, `~/.local/lib/llm-stack`, `~/.config/llm-profile`) into this
   checkout, so a checked-out branch that moves files breaks every service
@@ -65,6 +73,13 @@ home named below.
 
 - **One load on the machine at a time.** No compiling while a measurement
   runs, no measurement while a build runs — contention contaminates both.
+  **The gate counts**, and it is the one that gets forgotten because it needs
+  no GPU: `bash tests/run.sh` against a running sweep took 23.2 s where it
+  takes 17.6 idle (04.09.2026), and the cell it ran against is recorded as
+  contaminated rather than repeated. A download is NOT a load in this sense —
+  network and a few MB/s of disk write do not reach a measurement that reads
+  the server's own clock — but write the condition down rather than assuming
+  it.
 - **The repo is public.** `docs/HANDOVER.md`, `docs/HANDOVER-LOG.md`,
   `docs/FLASHNEXT-PLAN.md` and the German sources are gitignored and stay so. Scan every new artifact
   (reports, copied server logs) for identifying values before committing —

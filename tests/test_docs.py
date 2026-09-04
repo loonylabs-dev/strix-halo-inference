@@ -292,6 +292,21 @@ class TestEveryDocumentedCommandCouldBeRun(unittest.TestCase):
                               "mention anywhere:\n%s" % "\n".join(bad))
 
 
+def real_test_count():
+    """How many tests this suite actually has — the WHOLE suite.
+
+    A FRESH loader, never `unittest.defaultTestLoader`. `-m unittest -k
+    PATTERN` sets `testNamePatterns` on that shared loader, so counting
+    through it returns whatever the caller happened to filter for; a loader
+    made here carries no pattern and counts all of them. Measured 04.09.2026:
+    1277 either way with a fresh one, 1277 then 11 with the shared one.
+    """
+    import unittest as ut
+    loader = ut.TestLoader()
+    return loader.discover(str(REPO / "tests"),
+                           top_level_dir=str(REPO / "tests")).countTestCases()
+
+
 class TestTheAdvertisedTestCountIsTrue(unittest.TestCase):
     """README.md tells the reader how many tests there are, and that number
     drifted three times in a single day — 298, then 429, while the suite was
@@ -310,11 +325,42 @@ class TestTheAdvertisedTestCountIsTrue(unittest.TestCase):
         m = re.search(r"\((\d+) tests", text)
         self.assertIsNotNone(m, "README.md no longer says how many tests there are")
         claimed = int(m.group(1))
-        real = ut.defaultTestLoader.discover(str(REPO / "tests"),
-                                             top_level_dir=str(REPO / "tests")).countTestCases()
+        real = real_test_count()
         self.assertLess(abs(claimed - real) / real, self.TOLERANCE,
                         "README.md says %d tests, there are %d. Either update it "
                         "or widen this tolerance deliberately." % (claimed, real))
+
+    def test_the_count_survives_an_active_k_filter(self):
+        """`bash tests/run.sh -k readme` was RED, and the red was about the
+        FILTER rather than about anything it selected.
+
+        `-m unittest -k PATTERN` sets `testNamePatterns` on the SHARED
+        `defaultTestLoader`, so a `discover()` through that loader counts only
+        what the filter selected — 11 under `-k test_docs`, 1 under
+        `-k readme` — and this claim then compared README's number against a
+        fraction of the suite. Under a pattern matching nothing it was worse
+        than a failure: `real` is 0 and the division raises.
+
+        The unfiltered gate never saw it, which is why it stood. It matters
+        because `tests/run.sh`'s own header advertises `-k`, and a gate that
+        goes red at its own filtering teaches the reader to distrust the red —
+        the reader most likely to type `-k test_docs` being whoever is editing
+        this file.
+
+        Fixed with a FRESH loader rather than by skipping the assertion under
+        a filter: skipping would make the check stop checking in exactly the
+        situation where somebody is working on it, which is this repository's
+        own definition of a check that is not one.
+        """
+        import unittest as ut
+        prev = ut.defaultTestLoader.testNamePatterns
+        ut.defaultTestLoader.testNamePatterns = ["*matches_no_test_at_all*"]
+        try:
+            self.assertGreater(
+                real_test_count(), 100,
+                "the count is narrowed by whatever -k the caller passed")
+        finally:
+            ut.defaultTestLoader.testNamePatterns = prev
 
 
 class TestProseMayStillSayWhatIsMissing(unittest.TestCase):

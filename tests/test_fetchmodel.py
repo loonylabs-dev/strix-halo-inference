@@ -162,5 +162,49 @@ class TestNothingLandsUnverified(FetchCase):
             "curl writes somewhere other than the .part file: %s" % targets)
 
 
+class TestStalledConnection(unittest.TestCase):
+    """A connection that is ALIVE and slow fails no other guard in this file.
+
+    Measured 04.09.2026 fetching GLM-4.7-Flash: the transfer settled at
+    0.16-0.28 MiB/s and stayed there for eight minutes, while a fresh
+    connection to the same URL measured 8-10 MiB/s. `--retry` never fired
+    because nothing had failed, the size check cannot run until the download
+    ends, and the sha256 check is behind that. The only symptom was a progress
+    bar that moved — a 35-minute download on its way to becoming a 24-hour one.
+
+    Structural, like the test above it, and for the same reason: the
+    alternative is a test that downloads. What it pins is the PAIR — a speed
+    floor without `--retry` would abort the fetch instead of reconnecting,
+    which trades a slow download for no download.
+    """
+
+    def curl_invocation(self):
+        with open(FETCH, encoding="utf-8") as fh:
+            text = fh.read()
+        # The fetching curl is the one writing to "$part"; the script runs no
+        # other, but naming it by its target rather than by position keeps
+        # this from passing against some future metadata call.
+        m = re.search(r'curl\b[^\n]*(?:\\\n[^\n]*)*-o\s+"\$part"', text)
+        self.assertIsNotNone(m, "no curl invocation writing to $part found")
+        return " ".join(m.group(0).split())
+
+    def test_a_slow_connection_is_given_up_on(self):
+        curl = self.curl_invocation()
+        self.assertIn("--speed-limit", curl,
+                      "no speed floor: a throttled connection downloads for "
+                      "hours and every other guard here waits for it to finish")
+        self.assertIn("--speed-time", curl,
+                      "--speed-limit without --speed-time is not a floor")
+
+    def test_the_floor_reconnects_rather_than_giving_up(self):
+        curl = self.curl_invocation()
+        self.assertIn("--retry", curl,
+                      "a speed floor without --retry turns a slow download "
+                      "into a failed one")
+        self.assertIn("--retry-all-errors", curl,
+                      "curl exits 28 on the speed floor; without "
+                      "--retry-all-errors that is not retried")
+
+
 if __name__ == "__main__":
     unittest.main()

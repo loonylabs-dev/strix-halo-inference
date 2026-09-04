@@ -19,6 +19,19 @@ unpublished; each was paid for before it was written down.
   compared a 300 s restore timeout with the 335 s generation queued in front
   of it. Ask of any measurement: what would this have reported if the thing
   were fine?
+- **An instrument that cannot see the effect will report its absence as a
+  result.** The sharpest case measured here, 04.09.2026 on qwen36: `llama-bench`
+  has no prompt cache, so a `-ub` sweep through it can measure the prefill RATE
+  and nothing about REUSE. On the rate, `-b 4096 -ub 4096` wins by 25-45 %. In
+  the serving profile, where reuse is quantized to the ubatch and collapses
+  94.7 -> 55.5 % at d8192, the same setting is **4.2-7.2x slower to a warm
+  turn** — because what a turn pays is `uncached tokens / prefill rate`, and
+  the screening sees only the denominator. This is why `flag-ab.py` calls its
+  winners SCREENING results: a winner has to survive `speed.py` behind
+  `sideserver.py` in the full serving shape before it touches a profile. The
+  rule generalises past `-ub`: ask of any instrument what the thing you are
+  measuring would look like if it were there, and whether this instrument
+  could show it.
 - **Know what your instrument can resolve.** Decode here has a 19 %
   coefficient of variation, so a three-round mean cannot see anything under
   ~22 % — it once reported a 12 % regression that did not exist. And a
@@ -265,8 +278,8 @@ many cells the variant file holds).
 | `suites/depth-curve.py` | Prefill and decode as the context fills. These diverge far more than any flat number suggests |
 | `suites/depth-correctness.py` | Whether the answers stay RIGHT as the window fills — a property of the build, not of the model |
 | `suites/stock-vs-patched.py` | Whether the patched build is measurably better than an official binary at the setting production runs |
-| `suites/speed-ab.py` | Prefill and decode of TWO builds that differ in exactly one named way — a compiler flag, or the ROCm they load. Refuses a pair that differs in none or in more than one, checks with `ldd` which runtime each arm will really load, alternates which arm goes first, and discards a warm-up pass. The ordering is not fussiness: on a pair that differed in nothing, going second was worth −0.5 to −1.2 % |
-| `suites/flag-ab.py` | speed-ab's sibling for the other half of the question: ONE build under N runtime settings that differ in exactly one llama-bench flag or environment variable. Same discipline — interleaved counterbalanced rounds, discarded warm-up, dead man's switch — and the same one-difference rule, enforced on free-text arm specs. What found `-ub 512` (31.08.2026) and closed hipBLASLt and `-b` as null results the same day |
+| `suites/speed-ab.py` | Prefill and decode of TWO builds that differ in exactly one named way — a compiler flag, or the ROCm they load. Refuses a pair that differs in none or in more than one, checks with `ldd` which runtime each arm will really load, alternates which arm goes first, and discards a warm-up pass. Failed invocations are counted in the report and keep their stderr in `rounds.json`; a run in which every one failed exits non-zero. The ordering is not fussiness: on a pair that differed in nothing, going second was worth −0.5 to −1.2 % |
+| `suites/flag-ab.py` | speed-ab's sibling for the other half of the question: ONE build under N runtime settings that differ in exactly one llama-bench flag or environment variable. Same discipline — interleaved counterbalanced rounds, discarded warm-up, dead man's switch — the same one-difference rule enforced on free-text arm specs, and the same failure tally — the empty table of 04.09.2026 is this suite's. What found `-ub 512` (31.08.2026) and closed hipBLASLt and `-b` as null results the same day |
 | `suites/slot-corruption.py` | Which ingredient makes this build emit `////` — one variable per case, fresh server each |
 | `suites/np2-candidates.py` | Backend and flag combinations on a SIDE server (port 8081), so production keeps running while the question "can we have two slots yet?" gets measured |
 | `suites/restore-safety.py` | Whether a slot restore is safe in a given state — and with `--binary`, whether an upstream change fixes it. Every cell is recorded, including the one that is KNOWN to hang, so the cells after it are still measured |
@@ -317,6 +330,20 @@ That timeout was filed as the defect `slot-restore-hangs-busy` and is
 put 325-341 s of generation in front of a 300 s bound. `--restore-timeout`
 exists so the bound is visible, and a cell whose bound was the shorter of the
 two says so.
+
+**Recorded means recorded IN THE REPORT, and all of them failing is not a
+null result.** The other half of the same rule, and it cost a second report
+to learn: on 04.09.2026 a `flag-ab` run of three arms had all six llama-bench
+invocations fail with `failed to load model`, and it wrote a RESULT.md with a
+header row and no data rows, a rounds.json with three empty objects, and
+exit 0. Nothing in either file said anything had failed — an empty table is
+what a NULL RESULT looks like. Both A/B suites now state the tally above the
+table whether or not anything failed (`all 8 llama-bench invocations
+succeeded`, or `2 of 6 … FAILED` with the first error line and which arm),
+keep each failure's stderr in `rounds.json` under `_failures`, and **exit
+non-zero when EVERY invocation failed** — some failing still completes and
+reports, per the paragraph above. Reports written before that date carry
+neither, so their tables cannot be read this way.
 
 ### Measuring a build WITHOUT the patch
 

@@ -11,7 +11,7 @@ OR a build id, and resolved the path against $LLAMA_SRC — producing
 `~/llama.cpp/llama-bench`, a file that does not exist. That one announced
 itself. The version where it silently finds the WRONG build would not.
 """
-import os, shutil, subprocess, sys, tempfile, unittest
+import json, os, shutil, subprocess, sys, tempfile, unittest
 
 import common
 
@@ -38,6 +38,11 @@ def make_build(root, name, built_at, cmake="-DCMAKE_BUILD_TYPE=Release",
                 "upstream_commit=%s\nbuilt_at=%s\ncmake=%s\n"
                 % (name.split("-", 3)[-1], commit, built_at, cmake))
     return d
+
+
+def read(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
 
 
 class TestItPicksTheRightUnrollBuild(unittest.TestCase):
@@ -366,6 +371,258 @@ class TestTheProductionUnitIsAskedAndNotAssumed(unittest.TestCase):
         self.assertEqual(offenders, [],
                          "a production unit is named in code again — derive it "
                          "from models.sh serving:\n  " + "\n  ".join(offenders))
+
+
+class TestAFailedInvocationIsRecordedAndNotDropped(unittest.TestCase):
+    """The defect of 04.09.2026, in the machinery both suites share.
+
+    A flag-ab run whose six llama-bench invocations ALL failed to load the
+    model wrote a RESULT.md with a header row and no data rows, a rounds.json
+    with three empty objects, and exited 0. Everything the failure knew — the
+    return code, the stderr saying `failed to load model` — was printed to a
+    console nobody keeps and then dropped. The report read as a null result.
+
+    bench/README.md's first rule is that a check which cannot fail is not a
+    check; a REPORT that cannot say it failed is the same shape.
+    """
+
+    def setUp(self):
+        speed_ab.reset_ledger()
+        self.addCleanup(speed_ab.reset_ledger)
+        self.said = []
+        real = speed_ab.say
+        speed_ab.say = self.said.append
+        self.addCleanup(setattr, speed_ab, "say", real)
+
+    def test_the_stderr_survives_into_the_ledger(self):
+        speed_ab.record_attempt()
+        speed_ab.record_failure(
+            "reference", ["/bin/llama-bench", "-m", "/m.gguf"], 1,
+            "ggml_backend_load: ok\nllama_bench: error: failed to load model\n")
+        self.assertEqual(speed_ab.LEDGER["attempted"], 1)
+        f, = speed_ab.LEDGER["failures"]
+        self.assertEqual(f["arm"], "reference")
+        self.assertEqual(f["returncode"], 1)
+        self.assertIn("failed to load model", f["stderr_tail"])
+
+    def test_the_quoted_line_is_the_error_and_not_the_first_line(self):
+        """llama-bench's first stderr line is a backend load message. Quoting
+        line 1 would quote noise in exactly the case this exists for."""
+        self.assertEqual(
+            speed_ab.first_error_line(
+                "ggml_backend_load_all: loading\n"
+                "llama_bench: error: failed to load model '/m.gguf'\n"),
+            "llama_bench: error: failed to load model '/m.gguf'")
+
+    def test_stderr_with_no_error_word_falls_back_to_the_last_line(self):
+        """A crash ends at the last line. Better a real line than nothing —
+        the full tail is in rounds.json either way."""
+        self.assertEqual(speed_ab.first_error_line("one\ntwo\nthree\n"),
+                         "three")
+        self.assertEqual(speed_ab.first_error_line(""), "(no stderr)")
+
+    def test_exit_0_with_unparseable_output_counts_as_a_failure(self):
+        """The shape most likely to be read as `this arm simply had no rows`:
+        llama-bench exits 0 and prints something that is not JSON."""
+        d = make_build(tempfile.mkdtemp(), "build-rocm-unroll-b1",
+                       "2026-09-04T10:00:00+02:00")
+        self.addCleanup(shutil.rmtree, os.path.dirname(d), ignore_errors=True)
+        b = os.path.join(d, "bin", "llama-bench")      # the stub exits 0, mute
+        rows = speed_ab.bench(b, "/m.gguf", [0], 512, 64, [], arm="reference")
+        self.assertEqual(rows, [])
+        self.assertEqual(len(speed_ab.LEDGER["failures"]), 1)
+        self.assertIn("unparseable",
+                      speed_ab.LEDGER["failures"][0]["stderr_tail"])
+
+    def test_the_recorded_paths_do_not_name_this_machine(self):
+        """rounds.json is published beside RESULT.md. A model path in a
+        failure's stderr is a home directory like any other."""
+        home = os.path.expanduser("~")
+        speed_ab.record_attempt()
+        speed_ab.record_failure(
+            "reference", [os.path.join(home, "llama.cpp", "llama-bench")], 1,
+            "error: failed to load model '%s/models/x.gguf'" % home)
+        f, = speed_ab.LEDGER["failures"]
+        self.assertNotIn(home, f["stderr_tail"])
+        self.assertNotIn(home, f["first_error_line"])
+        self.assertNotIn(home, " ".join(f["argv"]))
+        self.assertIn("@HOME@", f["stderr_tail"])
+
+
+class TestTheTallyIsStatedWhetherOrNotAnythingFailed(unittest.TestCase):
+    """A report that mentions failures ONLY when there are some cannot be
+    told apart from a report written before it could mention them at all —
+    which is what every report in bench/reports/ before 04.09.2026 is."""
+
+    def setUp(self):
+        speed_ab.reset_ledger()
+        self.addCleanup(speed_ab.reset_ledger)
+        real = speed_ab.say                 # record_failure also SAYS it
+        speed_ab.say = lambda msg: None
+        self.addCleanup(setattr, speed_ab, "say", real)
+
+    def fail(self, arm, n=1):
+        for _ in range(n):
+            speed_ab.record_attempt()
+            speed_ab.record_failure(arm, ["/x"], 1, "error: failed to load")
+
+    def test_a_clean_run_says_so(self):
+        for _ in range(4):
+            speed_ab.record_attempt()
+        self.assertEqual(speed_ab.failure_lines(),
+                         ["all 4 llama-bench invocations succeeded."])
+
+    def test_it_says_how_many_of_how_many(self):
+        self.fail("variant", 2)
+        speed_ab.record_attempt()
+        text = " ".join(speed_ab.failure_lines())
+        self.assertIn("2 of 3 llama-bench invocations FAILED", text)
+        self.assertIn("error: failed to load", text)
+
+    def test_it_names_which_arm_emptied_the_table(self):
+        """The table is the INTERSECTION of the arms' rows: one arm producing
+        nothing takes every row with it, and a reader of the short table
+        otherwise cannot tell which column did it."""
+        self.fail("variant", 2)
+        speed_ab.record_attempt()
+        self.assertIn("failed in: variant (2)",
+                      " ".join(speed_ab.failure_lines()))
+
+    def test_an_all_failed_run_says_the_table_is_empty_for_that_reason(self):
+        self.fail("reference")
+        self.fail("variant")
+        self.assertIn("NOTHING was measured",
+                      " ".join(speed_ab.failure_lines()))
+
+    def test_the_markdown_form_quotes_the_error_line(self):
+        """A compiler message with an asterisk or an underscore in it would
+        otherwise be read as formatting by the markdown renderer."""
+        self.fail("variant")
+        md = " ".join(speed_ab.failure_lines(md=True))
+        self.assertIn("`error: failed to load`", md)
+        self.assertTrue(speed_ab.failure_blockquote().startswith("> **"))
+
+    def test_a_clean_run_writes_no_blockquote(self):
+        speed_ab.record_attempt()
+        self.assertEqual(speed_ab.failure_blockquote(), "")
+
+
+class TestAllFailedIsNotSuccess(unittest.TestCase):
+    """Some cells failing is recorded and NOT fatal — bench/README.md, `a cell
+    that fails is recorded rather than fatal`, which was paid for by three
+    reports that lost `prefill-nospec` to a restore timeout. Every cell
+    failing is not a measurement at all, and the exit code has to tell those
+    two apart: on 04.09.2026 the all-failed run exited 0."""
+
+    def setUp(self):
+        speed_ab.reset_ledger()
+        self.addCleanup(speed_ab.reset_ledger)
+        real = speed_ab.say                 # record_failure also SAYS it
+        speed_ab.say = lambda msg: None
+        self.addCleanup(setattr, speed_ab, "say", real)
+
+    def fail(self, n):
+        for _ in range(n):
+            speed_ab.record_attempt()
+            speed_ab.record_failure("variant", ["/x"], 1, "error: boom")
+
+    def test_all_failed(self):
+        self.fail(3)
+        self.assertTrue(speed_ab.every_invocation_failed())
+
+    def test_some_failed_is_still_a_measurement(self):
+        self.fail(2)
+        speed_ab.record_attempt()
+        self.assertFalse(speed_ab.every_invocation_failed())
+
+    def test_nothing_attempted_is_not_all_failed(self):
+        """A --dry-run attempts nothing. Reading that as `everything failed`
+        would make the dry run exit non-zero."""
+        self.assertFalse(speed_ab.every_invocation_failed())
+
+
+class TestARunThatMeasuredNothingExitsNonZero(unittest.TestCase):
+    """End to end, through the real command line, against a stub llama-bench
+    that fails the way the real one did: `failed to load model`, exit 1.
+
+    Driven as a subprocess because the exit code IS the subject — a caller
+    reading `$?` is the reader this protects, and an in-process check of
+    main()'s return value would not exercise the `sys.exit()` that carries it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def build(self, name, body, cmake="-DCMAKE_BUILD_TYPE=Release"):
+        d = make_build(self.tmp, name, "2026-09-04T10:00:00+02:00", cmake=cmake)
+        for exe in ("llama-bench", "llama-server"):
+            p = os.path.join(d, "bin", exe)
+            with open(p, "w") as f:
+                f.write(body)
+            os.chmod(p, 0o755)
+        return d
+
+    FAILS = ("#!/bin/sh\n"
+             "echo 'ggml_backend_load_all: loading' >&2\n"
+             "echo \"llama_bench: error: failed to load model\" >&2\n"
+             "exit 1\n")
+
+    UNROLL = "-DCMAKE_HIP_FLAGS=-mllvm --amdgpu-unroll-threshold-local=600"
+
+    def run_suite(self, out):
+        return subprocess.run(
+            [sys.executable, SUITE,
+             "--reference", "build-rocm-patched-r1",
+             "--variant", "build-rocm-unroll-v1",
+             "--model", "/nonexistent/m.gguf", "--depths", "0",
+             "--prompt", "512", "--reps", "1",
+             # nothing is stopped and nothing is started: this test must say
+             # the same thing on a machine that is serving.
+             "--keep-production", "--no-warmup", "--out", out],
+            capture_output=True, text=True, timeout=300,
+            env=dict(os.environ, LLAMA_SRC=self.tmp))
+
+    def test_every_invocation_failing_is_not_exit_0(self):
+        self.build("build-rocm-patched-r1", self.FAILS)
+        self.build("build-rocm-unroll-v1", self.FAILS, cmake=self.UNROLL)
+        out = os.path.join(self.tmp, "report")
+        r = self.run_suite(out)
+        self.assertNotEqual(r.returncode, 0,
+                            "a run that measured nothing exited 0:\n" + r.stdout)
+        md = read(os.path.join(out, "RESULT.md"))
+        self.assertIn("2 of 2 llama-bench invocations FAILED", md)
+        self.assertIn("failed to load model", md)
+        rounds = json.loads(read(os.path.join(out, "rounds.json")))
+        self.assertEqual(rounds["_failures"]["failed"], 2)
+        self.assertIn("failed to load model",
+                      rounds["_failures"]["detail"][0]["stderr_tail"])
+
+    def test_a_run_that_measured_something_still_exits_0(self):
+        """The other half of the rule: a failing cell is recorded, not fatal.
+        Here the reference measures and the variant does not."""
+        rows = ('[{"n_prompt":512,"n_gen":0,"n_depth":0,"avg_ts":100.0}]')
+        self.build("build-rocm-patched-r1",
+                   "#!/bin/sh\necho '%s'\n" % rows)
+        self.build("build-rocm-unroll-v1", self.FAILS, cmake=self.UNROLL)
+        out = os.path.join(self.tmp, "report")
+        r = self.run_suite(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        md = read(os.path.join(out, "RESULT.md"))
+        self.assertIn("1 of 2 llama-bench invocations FAILED", md)
+        self.assertIn("failed in: variant (1)", md)
+
+    def test_a_clean_run_reports_the_tally_too(self):
+        rows = ('[{"n_prompt":512,"n_gen":0,"n_depth":0,"avg_ts":100.0}]')
+        body = "#!/bin/sh\necho '%s'\n" % rows
+        self.build("build-rocm-patched-r1", body)
+        self.build("build-rocm-unroll-v1", body, cmake=self.UNROLL)
+        out = os.path.join(self.tmp, "report")
+        r = self.run_suite(out)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        md = read(os.path.join(out, "RESULT.md"))
+        self.assertIn("all 2 llama-bench invocations succeeded", md)
+        self.assertNotIn("> **", md)
 
 
 if __name__ == "__main__":

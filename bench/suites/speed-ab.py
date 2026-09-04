@@ -127,6 +127,138 @@ def say(msg):
     print(msg, flush=True)
 
 
+# ---------------------------------------------------------------------------
+# THE FAILURE LEDGER, shared with flag-ab.py.
+#
+# A llama-bench invocation that fails returns [] from bench(), and until
+# 04.09.2026 that was the whole of it: the console said FAILED, the report did
+# not. A flag-ab run whose six invocations ALL failed to load the model wrote
+# a RESULT.md with a header row and no data rows, a rounds.json with three
+# empty objects, and exited 0. A reader of that directory sees an empty table,
+# not "every cell failed" — and bench/README.md's own first rule is that a
+# check which cannot fail is not a check.
+#
+# So every non-dry invocation is counted here and every failure keeps its
+# stderr. The report states the tally whether or not anything failed, because
+# a report that only mentions failures cannot be distinguished from one that
+# was written before it could.
+# ---------------------------------------------------------------------------
+LEDGER = {"attempted": 0, "failures": []}
+
+# How much of a failing invocation's stderr is kept for the report. llama-bench
+# writes its whole load trace there, so the tail is where the reason is; 4000
+# chars covers the traces seen on 04.09.2026 with room to spare. Heuristic,
+# not derived — widen it if a real failure ever arrives truncated.
+STDERR_KEPT = 4000
+
+
+def reset_ledger():
+    LEDGER["attempted"] = 0
+    LEDGER["failures"] = []
+
+
+def record_attempt():
+    LEDGER["attempted"] += 1
+
+
+def record_failure(arm, argv, returncode, stderr, phase=""):
+    """Say it, keep it, and hand the caller the empty result it expects.
+
+    Returns [] so a caller can `return record_failure(...)` — the failure path
+    stays one line and cannot forget to record.
+    """
+    text = stderr or ""
+    LEDGER["failures"].append({
+        "arm": arm,
+        "phase": phase,
+        "returncode": returncode,
+        "argv": [rec(x) for x in argv],
+        "first_error_line": rec(first_error_line(text)),
+        "stderr_tail": rec(text[-STDERR_KEPT:]),
+    })
+    say("  FAILED (%s): %s" % (returncode, text[-400:]))
+    return []
+
+
+ERROR_WORDS = re.compile(r"error|failed|cannot|unable|assert|abort|terminate",
+                         re.IGNORECASE)
+
+
+def first_error_line(stderr):
+    """The one line worth quoting in a report, out of a whole load trace.
+
+    HEURISTIC, not derived: llama-bench's first stderr line is a backend load
+    message, so quoting line 1 would quote noise. The first line naming a
+    failure is right for the case this was written for —
+    `llama_bench: error: failed to load model` — and the LAST non-empty line
+    is the fallback, because a crash ends there. The full tail is in
+    rounds.json either way; this only decides what the reader sees first.
+    """
+    lines = [l.strip() for l in (stderr or "").splitlines() if l.strip()]
+    if not lines:
+        return "(no stderr)"
+    for l in lines:
+        if ERROR_WORDS.search(l):
+            return l
+    return lines[-1]
+
+
+def every_invocation_failed():
+    """True when NOTHING was measured — the case that must not exit 0.
+
+    Some arms failing is recorded and not fatal (bench/README.md, "a cell that
+    fails is recorded rather than fatal"). All of them failing is not a
+    measurement at all, and a caller reading the exit code has to be able to
+    tell the two apart.
+    """
+    return (LEDGER["attempted"] > 0
+            and len(LEDGER["failures"]) == LEDGER["attempted"])
+
+
+def failure_lines(md=False):
+    """The tally, for the console and the report alike.
+
+    Stated whether or not anything failed: a report that mentions failures
+    only when there are some cannot be told apart from one written before it
+    could mention them at all. `md` quotes the error line for markdown, where
+    an asterisk or an underscore in a compiler message would otherwise be
+    read as formatting.
+    """
+    n, total = len(LEDGER["failures"]), LEDGER["attempted"]
+    if not total:
+        return ["no llama-bench invocation ran."]
+    if not n:
+        return ["all %d llama-bench invocations succeeded." % total]
+    err = LEDGER["failures"][0]["first_error_line"]
+    # WHICH arms, because the table is the INTERSECTION of the arms' rows: an
+    # arm that produced nothing takes every row with it, and the reader of a
+    # short table otherwise cannot tell which column emptied it.
+    per_arm = {}
+    for f in LEDGER["failures"]:
+        per_arm[f["arm"]] = per_arm.get(f["arm"], 0) + 1
+    out = ["%d of %d llama-bench invocations FAILED." % (n, total),
+           "failed in: %s" % ", ".join("%s (%d)" % kv
+                                       for kv in sorted(per_arm.items())),
+           "first error: %s" % ("`%s`" % err if md else err)]
+    if n == total:
+        out.append("NOTHING was measured — the table below is empty because "
+                   "every invocation failed, not because there was no "
+                   "difference.")
+    out.append("Per-invocation stderr is in rounds.json under `_failures`.")
+    return out
+
+
+def failure_blockquote():
+    """The same tally above the table in RESULT.md, and only when it has
+    something to say. Inside the fenced block it travels with the table when
+    the table is quoted elsewhere; above it, it is what a reader opening the
+    report sees first. Both, for the case that matters."""
+    if not LEDGER["failures"]:
+        return ""
+    lines = failure_lines(md=True)
+    return "\n".join(["> **%s**" % lines[0]]
+                      + ["> %s" % l for l in lines[1:]]) + "\n\n"
+
 def systemctl(*args):
     return subprocess.run(["systemctl", "--user", *args],
                           capture_output=True, text=True, timeout=120)
@@ -176,8 +308,11 @@ BATCH = "2048"
 
 
 def bench(binary, model, depths, prompt, gen, extra, dry=False,
-          ub=UB, batch=BATCH):
-    """One llama-bench run. Returns its parsed JSON rows, or [] on failure."""
+          ub=UB, batch=BATCH, arm=None, phase=""):
+    """One llama-bench run. Returns its parsed JSON rows, or [] on failure.
+
+    A failure goes into the ledger rather than only onto the console — see
+    LEDGER above for what that silence cost."""
     argv = [binary, "-m", model, "-p", str(prompt), "-n", str(gen),
             "-d", ",".join(str(d) for d in depths),
             # -fa takes on|off|auto, NOT 1. With `1` llama-bench does not
@@ -188,16 +323,25 @@ def bench(binary, model, depths, prompt, gen, extra, dry=False,
     if dry:
         say("  would run: %s" % " ".join(argv))
         return []
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=3600,
-                       env=env_for(binary))
+    name = arm or os.path.basename(os.path.dirname(os.path.dirname(binary)))
+    record_attempt()
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=3600,
+                           env=env_for(binary))
+    except Exception as e:
+        # A timeout or a binary that cannot be executed at all. Counted the
+        # same way: the invocation was attempted and produced no rows.
+        return record_failure(name, argv, "no exit status", str(e), phase)
     if r.returncode != 0:
-        say("  FAILED (%d): %s" % (r.returncode, (r.stderr or "")[-400:]))
-        return []
+        return record_failure(name, argv, r.returncode, r.stderr, phase)
     try:
         return json.loads(r.stdout)
     except Exception as e:
-        say("  unparseable output (%s): %s" % (e, r.stdout[:300]))
-        return []
+        # Exit 0 and unparseable output is a failure too, and the one most
+        # likely to be read as "this arm simply had no rows".
+        return record_failure(name, argv, r.returncode,
+                              "unparseable output (%s): %s" % (e, r.stdout),
+                              phase)
 
 
 ROCM_LIBS = ("libamdhip64", "libhsa-runtime64", "librocblas", "libhipblas")
@@ -339,6 +483,9 @@ def main():
                     help="skip the discarded first pass (faster, and the "
                          "first round then carries the warm-up drift)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--out", default=None,
+                    help="where the report goes; default is a timestamped "
+                         "directory under bench/reports/")
     a = ap.parse_args()
 
     a.model = a.model or default_model()
@@ -433,7 +580,8 @@ def main():
             # every measured round in the same thermal state.
             say("\nwarm-up (discarded): one shallow pass per arm")
             for name, b in arms:
-                bench(b, a.model, [0], a.prompt, min(a.gen, 32), [])
+                bench(b, a.model, [0], a.prompt, min(a.gen, 32), [],
+                      arm=name, phase="warm-up")
             say("  GPU after warm-up: %s" % gpu_state())
 
         for rnd in range(a.reps):
@@ -447,7 +595,8 @@ def main():
                 say("\n== round %d/%d — %s   %s"
                     % (rnd + 1, a.reps, name, gpu_state()))
                 t0 = time.time()
-                for row in bench(b, a.model, depths, a.prompt, a.gen, []):
+                for row in bench(b, a.model, depths, a.prompt, a.gen, [],
+                                 arm=name, phase="round %d" % (rnd + 1)):
                     k = key_of(row)
                     results[name].setdefault(k, []).append(
                         row.get("avg_ts", 0.0))
@@ -460,6 +609,11 @@ def main():
         disarm_deadman()
 
     report(results, arms, a, depths)
+    if every_invocation_failed():
+        # The report is still written — it is the evidence. What must not
+        # happen is a caller reading this run as a measurement.
+        say("\nEVERY llama-bench invocation failed. Nothing was measured.")
+        return 2
     return 0
 
 
@@ -519,6 +673,8 @@ def report(results, arms, a, depths):
 
     lines = []
     lines.append("")
+    lines.extend(failure_lines())
+    lines.append("")
     lines.append("%-18s %12s %12s %10s" % ("", "reference", "variant", "change"))
     for k in keys:
         r, u = median(ref[k]), median(unr[k])
@@ -533,8 +689,8 @@ def report(results, arms, a, depths):
     text = "\n".join(lines)
     say(text)
 
-    d = os.path.join(REPO, "bench", "reports",
-                     time.strftime("%Y-%m-%d_%H%M") + "_speed-ab")
+    d = a.out or os.path.join(REPO, "bench", "reports",
+                              time.strftime("%Y-%m-%d_%H%M") + "_speed-ab")
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "RESULT.md"), "w") as f:
         # The title names the PAIR, not the suite's first use case. It said
@@ -551,10 +707,14 @@ def report(results, arms, a, depths):
             f.write("- **%s**: `%s`, build `%s`\n"
                     % (name, rec(b), st.get("build_id", "?")))
             f.write("  - cmake: `%s`\n" % rec(st.get("cmake", "?")))
+        f.write("\n%s" % failure_blockquote())
         f.write("\n```%s\n```\n" % text)
     with open(os.path.join(d, "rounds.json"), "w") as f:
-        json.dump({name: {label_of(k): v for k, v in res.items()}
-                   for name, res in results.items()}, f, indent=2)
+        json.dump({"_failures": {"attempted": LEDGER["attempted"],
+                                 "failed": len(LEDGER["failures"]),
+                                 "detail": LEDGER["failures"]},
+                   **{name: {label_of(k): v for k, v in res.items()}
+                      for name, res in results.items()}}, f, indent=2)
     say("\nreport: %s" % d)
 
 

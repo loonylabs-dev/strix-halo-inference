@@ -141,8 +141,13 @@ def the_one_axis(arms):
     return varying[0]
 
 
-def bench(binary, model, depths, prompt, gen, flags, env, dry=False):
-    """One llama-bench run under an arm's flags and environment."""
+def bench(binary, model, depths, prompt, gen, flags, env, dry=False,
+          arm=None, phase=""):
+    """One llama-bench run under an arm's flags and environment.
+
+    A failed run goes into speed-ab's shared failure ledger — the report reads
+    it, so an arm that never produced a row says so instead of vanishing into
+    an empty column. That is the defect of 04.09.2026; see sab.LEDGER."""
     merged = dict(BASE)
     merged.update(flags)
     argv = [binary, "-m", model, "-p", str(prompt), "-n", str(gen),
@@ -158,16 +163,21 @@ def bench(binary, model, depths, prompt, gen, flags, env, dry=False):
     import subprocess
     full_env = sab.env_for(binary)
     full_env.update(env)
-    r = subprocess.run(argv, capture_output=True, text=True, timeout=3600,
-                       env=full_env)
+    name = arm or "?"
+    sab.record_attempt()
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=3600,
+                           env=full_env)
+    except Exception as e:
+        return sab.record_failure(name, argv, "no exit status", str(e), phase)
     if r.returncode != 0:
-        sab.say("  FAILED (%d): %s" % (r.returncode, (r.stderr or "")[-400:]))
-        return []
+        return sab.record_failure(name, argv, r.returncode, r.stderr, phase)
     try:
         return json.loads(r.stdout)
     except Exception as e:
-        sab.say("  unparseable output (%s): %s" % (e, r.stdout[:300]))
-        return []
+        return sab.record_failure(
+            name, argv, r.returncode,
+            "unparseable output (%s): %s" % (e, r.stdout), phase)
 
 
 def main():
@@ -196,6 +206,9 @@ def main():
     ap.add_argument("--keep-production", action="store_true")
     ap.add_argument("--no-warmup", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--out", default=None,
+                    help="where the report goes; default is a timestamped "
+                         "directory under bench/reports/")
     a = ap.parse_args()
 
     if len(a.arm) < 2:
@@ -256,7 +269,7 @@ def main():
             sab.say("\nwarm-up (discarded): one shallow pass per arm")
             for label, flags, env in arms:
                 bench(binary, a.model, [0], min(a.prompt, 512),
-                      min(a.gen, 32), flags, env)
+                      min(a.gen, 32), flags, env, arm=label, phase="warm-up")
             sab.say("  GPU after warm-up: %s" % sab.gpu_state())
 
         for rnd in range(a.reps):
@@ -270,7 +283,8 @@ def main():
                         % (rnd + 1, a.reps, label, sab.gpu_state()))
                 t0 = time.time()
                 for row in bench(binary, a.model, depths, a.prompt, a.gen,
-                                 flags, env):
+                                 flags, env, arm=label,
+                                 phase="round %d" % (rnd + 1)):
                     k = sab.key_of(row)
                     results[label].setdefault(k, []).append(
                         row.get("avg_ts", 0.0))
@@ -284,6 +298,12 @@ def main():
         sab.disarm_deadman()
 
     report(results, arms, a, st, (kind, varied))
+    if sab.every_invocation_failed():
+        # The report is still written — it is the evidence for what failed.
+        # What must not happen is a caller reading this run as a measurement:
+        # the empty table of 04.09.2026 exited 0 and looked like a null result.
+        sab.say("\nEVERY llama-bench invocation failed. Nothing was measured.")
+        return 2
     return 0
 
 
@@ -294,6 +314,8 @@ def report(results, arms, a, stamp, axis):
     keys.sort(key=lambda k: (k[2], k[0] or 0))
 
     lines = [""]
+    lines.extend(sab.failure_lines())
+    lines.append("")
     head = "%-18s" % "" + "".join("%14s" % l for l in labels)
     lines.append(head)
     for k in keys:
@@ -316,8 +338,8 @@ def report(results, arms, a, stamp, axis):
     text = "\n".join(lines)
     sab.say(text)
 
-    d = os.path.join(REPO, "bench", "reports",
-                     time.strftime("%Y-%m-%d_%H%M") + "_" + a.name)
+    d = a.out or os.path.join(REPO, "bench", "reports",
+                              time.strftime("%Y-%m-%d_%H%M") + "_" + a.name)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, "RESULT.md"), "w") as f:
         f.write("# %s — one build, the %s %s varied\n\n"
@@ -332,11 +354,15 @@ def report(results, arms, a, stamp, axis):
             f.write("- **%s**: `%s`\n" % (label, " ".join(
                 ["%s %s" % kv for kv in sorted(flags.items())]
                 + ["%s=%s" % kv for kv in sorted(env.items())])))
+        f.write("\n%s" % sab.failure_blockquote())
         f.write("\n```%s\n```\n" % text)
     with open(os.path.join(d, "rounds.json"), "w") as f:
         json.dump({"_meta": {"argv": [sab.rec(x) for x in sys.argv],
                              "build": stamp,
                              "axis": {"kind": axis[0], "name": axis[1]}},
+                   "_failures": {"attempted": sab.LEDGER["attempted"],
+                                 "failed": len(sab.LEDGER["failures"]),
+                                 "detail": sab.LEDGER["failures"]},
                    **{label: {sab.label_of(k): v for k, v in res.items()}
                       for label, res in results.items()}}, f, indent=2)
     sab.say("\nreport: %s" % d)

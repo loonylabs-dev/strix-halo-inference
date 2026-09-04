@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Every test that runs without a GPU, without llama-server and without a
-# running service. Takes under two seconds.
+# running service. 1278 tests in ~18 s (measured 04.09.2026) — it said "under
+# two seconds" from when it was true and nobody re-read it while the suite
+# grew tenfold.
 #
 #   bash tests/run.sh              everything
 #   bash tests/run.sh -v           with names

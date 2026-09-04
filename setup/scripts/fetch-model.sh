@@ -200,8 +200,22 @@ while IFS=$'\t' read -r size sha path; do
     [ "$held" -gt 0 ] && say "  resuming $name at $(python3 -c "print('%.1f' % ($held/1073741824))") GiB"
     say "  fetching $name  ($(python3 -c "print('%.1f' % ($size/1073741824))") GiB)"
     # -C - resumes, --retry survives a dropped connection without losing the file
+    #
+    # --speed-limit/--speed-time is NOT belt-and-braces: a connection that is
+    # ALIVE and slow is invisible to every other guard here. Measured
+    # 04.09.2026 fetching GLM-4.7-Flash: the transfer settled at 0.16-0.28
+    # MiB/s and stayed there, while a fresh connection to the same URL — and
+    # to three other repos — measured 8-10 MiB/s. --retry never fired, because
+    # nothing had failed. That turns a 35-minute download into a 24-hour one
+    # and the only symptom is a progress bar that moves. Below 1 MiB/s
+    # averaged over 60 s, curl gives up with exit 28 and --retry reconnects
+    # from the offset -C - already holds. The threshold is a JUDGEMENT, not a
+    # measurement: it sits about 8x under what this line delivers when healthy
+    # and about 4x over what the degraded connection managed, so it separates
+    # the two cases observed here and has not been tested against a genuinely
+    # slow link.
     curl -L -C - --retry 20 --retry-delay 10 --retry-all-errors \
-         --connect-timeout 30 -# \
+         --connect-timeout 30 --speed-limit 1048576 --speed-time 60 -# \
          "https://huggingface.co/$REPO/resolve/main/$path" -o "$part"
     held=$(stat -c%s "$part" 2>/dev/null || echo 0)
     if [ "$held" != "$size" ]; then

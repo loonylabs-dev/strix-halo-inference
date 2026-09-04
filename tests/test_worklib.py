@@ -9,6 +9,7 @@ whose determinism hash must match the pre-refactor baseline (c7778614…,
 report 2026-09-01_0527) — recorded in the migration commit.
 """
 import contextlib
+import glob
 import io
 import json
 import os
@@ -39,16 +40,65 @@ class Base(unittest.TestCase):
                      "WORKLOAD_FILES=hf-cache\n")
 
     def report(self, reps=3):
-        r = worklib.BenchReport("stub", self.profile, reps, note="t")
-        # Reports belong under bench/reports in production; a test points
-        # the same object at scratch space instead — and swallows the
-        # narration, so the gate output stays a test log, not a bench log.
-        r.dest = os.path.join(self.tmp, "out")
-        os.makedirs(r.dest, exist_ok=True)
+        # Reports belong under bench/reports in production; a test points the
+        # same object at scratch space instead — and swallows the narration,
+        # so the gate output stays a test log, not a bench log.
+        #
+        # dest= AS AN ARGUMENT, and never `r.dest = …` afterwards. The
+        # constructor makedirs its destination, so assigning the attribute
+        # later redirects every WRITE and still leaves the real
+        # bench/reports/<stamp>_stub_stub behind — empty, because nothing is
+        # ever written into it. That is what this helper did until
+        # 04.09.2026, once per gate run, and 91 of them had accumulated.
+        # Nothing complained: git does not track empty directories, so they
+        # were invisible to `git status` while being entirely real on disk.
+        # The parameter exists for exactly this case — worklib calls it the
+        # escape for runs that are VERIFICATION rather than evidence.
+        r = worklib.BenchReport("stub", self.profile, reps, note="t",
+                                dest=os.path.join(self.tmp, "out"))
         self._silence = contextlib.redirect_stdout(io.StringIO())
         self._silence.__enter__()
         self.addCleanup(lambda: self._silence.__exit__(None, None, None))
         return r
+
+
+class TestTheGateWritesNothingIntoTheReportDirectory(Base):
+    """A test suite that leaves evidence behind is indistinguishable from a
+    bench run that did.
+
+    `bench/reports/` is where MEASUREMENTS live, and every directory in it is
+    read as one. Until 04.09.2026 the helper above added an empty
+    `<stamp>_stub_stub` to it on every construction — 91 of them, one per gate
+    run, and none of them ever noticed, because git does not track empty
+    directories and `git status` therefore stayed clean while the directory
+    filled up.
+
+    `_stub_stub` is a fingerprint and not a guess: the name is
+    `<stamp>_<kind>_<profile name>`, no workload in setup/workloads/ is called
+    `stub`, and no production caller passes `stub` as the kind — imagebench,
+    audiobench and videobench pass image/audio/video and all three already
+    pass `dest=`. So a directory of that shape can only have come from here.
+    """
+
+    def reports_dir(self):
+        return os.path.join(str(common.REPO), "bench", "reports")
+
+    def strays(self):
+        return sorted(glob.glob(os.path.join(self.reports_dir(), "*_stub_stub")))
+
+    def test_building_a_report_leaves_no_stub_directory_behind(self):
+        self.assertEqual(
+            self.strays(), [],
+            "bench/reports already held stub directories before this test ran "
+            "— an older gate run leaked them; delete them once and this stays "
+            "green")
+        self.report()
+        self.assertEqual(
+            self.strays(), [],
+            "constructing a BenchReport created a directory under "
+            "bench/reports. Pass dest= to the constructor rather than "
+            "assigning .dest afterwards — the constructor makedirs its "
+            "destination.")
 
 
 class TestTheRepRunner(Base):

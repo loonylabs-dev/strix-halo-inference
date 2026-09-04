@@ -1,17 +1,26 @@
-# Qwen3.6-35B-A3B is two to eight times faster than the incumbent, in a quarter of the memory — and that settles less than it looks like
+# Qwen3.6-35B-A3B is 1.9 to 2.9 times faster than the incumbent on every cell measured, in under a third of the memory — and that settles less than it looks like
 
-04.09.2026, 09:24–09:40. Four `bench/speed.py` runs on one morning, three
-workloads at three depths each, `--reps 3`. Qwen3.6-35B-A3B behind
+04.09.2026, 09:24–12:05. Ten `bench/speed.py` runs and one four-cell sweep,
+three workloads at three depths each, `--reps 3`. Qwen3.6-35B-A3B behind
 `bench/sideserver.py` on port 8081; Qwen3.8-Flash-Next measured live on the
-production port in the shape it had been serving in all night.
+production port in the shape it had been serving in all night. Production was
+never switched: sideserver stopped it and put it back for every run.
+
+**Read the sections in order — they were written in order, and each one moved
+the answer.** The morning's shape (unsloth Q4, n-gram drafter) had one weak
+column and the headline read "two to eight times", a range wide enough to be
+suspicious. What closed it was the model's own MTP head, in the last section,
+and what the head cost is a second unknown on the quality side.
 
 ## The question
 
 The operator asked for a faster model at sufficient quality, having been
-pointed at this one as the sweet spot. Two things had to be found out, and
-only one of them is answerable here: **is it faster on this machine**, and
-**is it good enough**. This report answers the first and says as precisely as
-it can why it cannot answer the second.
+pointed at this one as the sweet spot; the priority was later stated as
+throughput. Two things had to be found out, and only one of them is answerable
+here: **is it faster on this machine**, and **is it good enough**. This report
+answers the first and says as precisely as it can why it cannot answer the
+second — and by the end it has made the second question harder rather than
+easier.
 
 ## What it cost to support: nothing
 
@@ -304,13 +313,80 @@ Vulkan at Q8 repeats the sweep's split rather than resolving it: prose 43.4 /
 to ROCm (189.1 against 103.0, 276.7 against 78.0 at d512). Second quant, same
 verdict.
 
-## The other thing that would move this
+## The MTP head, found and measured — and it is what closes the last gap
 
-**An MTP head.** `havenoammo/Qwen3.6-35B-A3B-MTP-GGUF` publishes sidecar
-exports and its converter. The model's own head beat the n-gram drafter on
-flashnext, and it is the one drafter that helps `prose` too. Not to be trusted
-because it loads: this repo's record is that MTP heads are CONVERTER-specific
-across trees.
+Written last. `havenoammo/Qwen3.6-35B-A3B-MTP-GGUF` turned out to publish two
+different things, and only one of them works.
+
+**The sidecar does not.** `35BA3B-MTP.gguf`, 0.90 GB, needed ten metadata keys
+added before it would even parse its hyperparameters and then died on a
+missing `token_embd.weight` — which no metadata repair reaches, because
+`common_speculative_init_from_params` loads a draft GGUF as a standalone
+model. The contrast that proves the mechanism rather than arguing it: this
+repo's one working head, `mtp-Qwen3.8-Flash-Next-Q8_0-drluoto.gguf`, is
+4.14 GB with 37 tensors and *does* carry `token_embd.weight`. Registered as
+`qwen36-sidecar-mtp-head-has-no-embeddings`, with the one-line check that
+answers it in seconds.
+
+**The full model does.** `Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf` carries the head
+inside the main GGUF, so `--spec-type draft-mtp` finds it in the model it is
+already serving and no `-md` is involved — the shape qwen38 has used since
+August. Structure verified from the file's first 16 MB before spending 23 GB
+on it: 753 tensors, `nextn_predict_layers 1`, `block_count 41`, four
+`blk.40.nextn.*`.
+
+**What it is worth**, one variable — same file, same binary, same window,
+`draft-mtp` added and nothing else
+(`…_1152_speed_qwen36-mtpq4-rocm-mtp` against `…_1154_…-ngramonly`):
+
+| | ngram only | + MTP head | draft accepted |
+|---|---|---|---|
+| prose d512 | 36.0 | 44.9 | — → 83.3 % |
+| prose d8192 | 33.0 | 37.8 | 5.5 % → 45.2 % |
+| prose d36k | 29.0 | 37.3 | 4.7 % → 49.2 % |
+| count d36k | 162.1 | 212.7 | |
+| copy d8192 | 265.7 | 263.8 | |
+
+**The acceptance column is the finding, not the t/s.** An n-gram drafts *from
+the prompt*, so on novel text it has nothing to offer; the model's own head
+predicts. That is why `prose` — the floor of everything this machine does, and
+the one column speculation could not previously touch — gains 15–29 %, and
+`count` 31–36 %. `copy` is a wash where its cells are trustworthy; both its
+other cells carry a spread warning on the control side, so no factor should be
+read off them. The head costs about 1.9 GiB of GTT and about 4 % of prefill.
+
+**It did not hang**, which is not a formality: `setup/defects.json` carries
+`flashnext-mtp-serving-shape-hangs`, where this kind of shape produced zero
+tokens in 39 minutes at 97 % GPU. That entry is scoped to `qwen4exp` and to
+the pre-#27941 memory path, so it proves nothing here — it is a reason not to
+find out with a serving profile, and why the measurements used the post-#27941
+build flashnext already serves MTP from.
+
+### So the final shape, against the incumbent
+
+| depth | prose | count | copy | prefill |
+|---|---|---|---|---|
+| 512 | 44.9 / 18.6 | 265.0 / 112.3 | 171.7 / 60.7 | 636.6 / 219.5 |
+| 8192 | 37.8 / 19.4 | 261.8 / 104.8 | 263.8 / 103.4 | 854.5 / 290.4 |
+| 36k | 37.3 / 13.9 | 212.7 / 85.1 | 215.1 / 86.6 | 589.2 / 213.9 |
+
+**1.9× to 2.9× on all twelve cells, at 27.7 GiB of GTT against 91.0**, and
+with no weak column left.
+
+Vulkan was measured with the head too, and the split holds a third time: it
+takes prose at shallow and mid depth (53.5 and 45.0 against 44.9 and 37.8) and
+prefill at d36k, ROCm takes count and copy everywhere. Same verdict as the Q4
+sweep and the Q8 pair.
+
+**And the quality question is now worse rather than better.** The file that
+made this possible is a third-party quant with no published imatrix, stacked
+on a model whose published agentic-coding scores already sit below the
+incumbent's. `suites/depth-correctness.py` has still never run against this
+model, and that is now the first thing to spend time on rather than the last.
+The clean way out is to convert the checkpoint here: `conversion/qwen.py:636`
+registers this exact architecture and its chain carries
+`supports_mtp_export = True`, so the head unsloth drops can be kept locally,
+with provenance. Neither the conversion nor the serving has been tried.
 
 ## Sources
 

@@ -257,5 +257,116 @@ class TestReportsDoNotNameThisMachine(unittest.TestCase):
         self.assertEqual(found, [], "reports naming this machine")
 
 
+class TestTheProductionUnitIsAskedAndNotAssumed(unittest.TestCase):
+    """The most expensive kind of bug this suite can have: it succeeds.
+
+    `UNIT = "llama-user@qwen38"` was a module constant until 04.09.2026, and
+    on that day a flag-ab run measuring a completely different model stopped
+    `llama-user@flashnext` at the start and started `llama-user@qwen38` at the
+    end. Nothing failed. The table printed, the suite exited 0, and the
+    machine served a model nobody had switched to — `is-enabled` still said
+    flashnext, and only the process holding port 8080 disagreed. The dead
+    man's switch had armed the same wrong start, so a crash would have done it
+    too.
+
+    CLAUDE.md carries the rule and records the same defect being fixed in the
+    determinism lane on 01.09.2026. This copy survived that review because it
+    hard-wired the UNIT rather than the profile — a second spelling of one
+    mistake, which is exactly what a test is for and a review is not.
+
+    These tests drive `unit()` against a stubbed `models.sh serving` rather
+    than against this machine, so they say the same thing on a machine with
+    nothing running.
+    """
+
+    def setUp(self):
+        speed_ab._UNIT = None
+        self.addCleanup(setattr, speed_ab, "_UNIT", None)
+        self.calls = []
+
+    def stub_serving(self, stdout):
+        """Replace the ONE reader with a stub and record that it was asked."""
+        real = speed_ab.subprocess.run
+        calls = self.calls
+
+        def fake(cmd, *a, **k):
+            if len(cmd) >= 2 and cmd[0] == "bash" and cmd[1].endswith("models.sh"):
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout, "")
+            return real(cmd, *a, **k)
+
+        speed_ab.subprocess.run = fake
+        self.addCleanup(setattr, speed_ab.subprocess, "run", real)
+
+    def test_it_reports_whatever_is_serving_and_not_a_constant(self):
+        self.stub_serving("flashnext\n")
+        self.assertEqual(speed_ab.unit(), "llama-user@flashnext")
+        self.assertTrue(self.calls, "models.sh serving was never asked")
+        self.assertEqual(self.calls[0][2], "serving",
+                         "asked models.sh the wrong question — `active` cannot "
+                         "say which instance won the race for port 8080")
+
+    def test_a_different_model_gives_a_different_unit(self):
+        self.stub_serving("qwen36\n")
+        self.assertEqual(speed_ab.unit(), "llama-user@qwen36")
+
+    def test_nothing_serving_gives_None_rather_than_a_guess(self):
+        """Inventing a unit to start is how the 04.09. defect did its damage:
+        the run did not merely fail to restore production, it STARTED
+        something."""
+        self.stub_serving("")
+        self.assertIsNone(speed_ab.unit())
+
+    def test_two_servers_refuse_rather_than_pick_one(self):
+        self.stub_serving("flashnext\nqwen36\n")
+        self.assertIsNone(speed_ab.unit())
+
+    def test_the_answer_is_cached_because_it_is_asked_again_after_the_stop(self):
+        """The restart happens in a `finally` by which time nothing is
+        serving. A second live lookup there would return None and silently
+        leave production down."""
+        self.stub_serving("flashnext\n")
+        first = speed_ab.unit()
+        self.stub_serving("")           # as it looks once production is stopped
+        self.assertEqual(speed_ab.unit(), first)
+
+    def test_no_llama_user_instance_is_named_in_either_suite(self):
+        """The constant is gone; a new one must not grow back — in this file
+        or in flag-ab.py, which drives the same machinery.
+
+        Checked on the SYNTAX TREE and not on the text. A grep for
+        `llama-user@` also hits the docstring above, which exists to explain
+        why the constant is gone — a guard that goes red at its own
+        explanation teaches the next person to delete the explanation.
+        Docstrings are excluded by identity, not by pattern: every string
+        literal that is the first statement of a module, class or function is
+        prose by definition, and every other one is code."""
+        import ast
+        offenders = []
+        for name in ("speed-ab.py", "flag-ab.py"):
+            path = REPO / "bench" / "suites" / name
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            prose = set()
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Module, ast.ClassDef,
+                                     ast.FunctionDef, ast.AsyncFunctionDef)):
+                    body = getattr(node, "body", None) or []
+                    if (body and isinstance(body[0], ast.Expr)
+                            and isinstance(body[0].value, ast.Constant)
+                            and isinstance(body[0].value.value, str)):
+                        prose.add(id(body[0].value))
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant)
+                        and isinstance(node.value, str)
+                        and "llama-user@" in node.value
+                        and "%s" not in node.value
+                        and id(node) not in prose):
+                    offenders.append("%s:%d  %r"
+                                     % (name, node.lineno, node.value[:60]))
+        self.assertEqual(offenders, [],
+                         "a production unit is named in code again — derive it "
+                         "from models.sh serving:\n  " + "\n  ".join(offenders))
+
+
 if __name__ == "__main__":
     unittest.main()

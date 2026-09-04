@@ -243,9 +243,12 @@ def main():
         if not a.keep_production:
             sab.say("\nGTT now: %.1f GiB" % (runlib.gtt() or 0))
             sab.arm_deadman(a.deadline)
-            sab.say("stopping %s" % sab.UNIT)
-            sab.systemctl("stop", sab.UNIT)
-            stopped = True
+            if sab.unit() is None:
+                sab.say("nothing is serving — nothing to stop")
+            else:
+                sab.say("stopping %s" % sab.unit())
+                sab.systemctl("stop", sab.unit())
+                stopped = True
             runlib.wait_for_gtt_to_settle()
             sab.say("GTT after stop: %.1f GiB" % (runlib.gtt() or 0))
 
@@ -276,8 +279,8 @@ def main():
                 sab.say("   (%.0f s)" % (time.time() - t0))
     finally:
         if stopped:
-            sab.say("\nrestarting %s" % sab.UNIT)
-            sab.systemctl("start", sab.UNIT)
+            sab.say("\nrestarting %s" % sab.unit())
+            sab.systemctl("start", sab.unit())
         sab.disarm_deadman()
 
     report(results, arms, a, st, (kind, varied))

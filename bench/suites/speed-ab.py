@@ -65,8 +65,52 @@ import run as runlib                                          # noqa: E402
 # path, which tests/test_localenv.py refuses on sight — correctly, since the
 # repository is meant to run on somebody else's disk layout too.
 MODEL_FILE = "Qwen3.8-27B-UD-Q4_K_XL.gguf"      # what qwen38.env serves
-UNIT = "llama-user@qwen38"
 DEADMAN = "speed-ab-deadman"
+
+_UNIT = None
+
+
+def unit():
+    """Which llama-user@ instance is ACTUALLY serving — asked, not assumed.
+
+    `UNIT = "llama-user@qwen38"` stood here as a constant until 04.09.2026,
+    and it fired: a flag-ab run measuring a different model stopped
+    llama-user@flashnext at the start and started llama-user@qwen38 at the
+    end, so the machine served a model nobody had switched to. `is-enabled`
+    still said flashnext; only the process holding port 8080 disagreed.
+    Production was restored by hand. The dead man's switch armed the same
+    wrong start, so a crash would have done it too.
+
+    CLAUDE.md carries the rule and names this exact defect being fixed in the
+    determinism lane on 01.09.2026 — "no script hard-wires a production unit;
+    derive it from `models.sh serving`". This copy survived that review
+    because it hard-wires the unit rather than the profile, and nobody
+    grepped for the second spelling.
+
+    ONE reader, and it is setup/lib/models.sh: it takes `--alias` off the
+    command line of the process that holds the port. Deliberately not
+    `is-active`, which cannot say which of two started instances won the race
+    for 8080 — that distinction is the whole reason models.sh has a `serving`
+    verb separate from `active`.
+
+    Resolved ONCE and cached, because it is asked again in the `finally` that
+    restarts production, and by then nothing is serving.
+
+    Returns None when nothing is serving. Then there is nothing to stop and
+    nothing to restart — and inventing a unit to start is precisely how this
+    defect did its damage.
+    """
+    global _UNIT
+    if _UNIT is None:
+        r = subprocess.run(
+            ["bash", os.path.join(REPO, "setup", "lib", "models.sh"),
+             "serving"], capture_output=True, text=True)
+        names = [n for n in (r.stdout or "").split() if n]
+        _UNIT = "llama-user@%s" % names[0] if len(names) == 1 else False
+        if len(names) > 1:
+            say("  MORE THAN ONE llama-server is serving (%s) — refusing to "
+                "guess which one to put back" % " ".join(names))
+    return _UNIT or None
 
 
 def default_model():
@@ -97,16 +141,24 @@ def arm_deadman(minutes):
     """
     subprocess.run(["systemctl", "--user", "stop", DEADMAN + ".timer"],
                    capture_output=True, text=True)
+    target = unit()
+    if target is None:
+        # Nothing is serving, so there is nothing for the switch to put back.
+        # Arming it anyway would mean choosing a model, which is the mistake
+        # unit() exists to prevent.
+        say("  nothing is serving — no dead man's switch to arm")
+        return
     r = subprocess.run(
         ["systemd-run", "--user", "--quiet", "--collect",
          "--unit", DEADMAN, "--on-active=%dmin" % minutes,
          "--timer-property=AccuracySec=10s",
-         "systemctl", "--user", "start", UNIT],
+         "systemctl", "--user", "start", target],
         capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit("could not arm the dead man's switch, refusing to "
                          "stop production: %s" % (r.stderr or r.stdout)[:300])
-    say("  dead man's switch armed: %s starts again in %d min" % (UNIT, minutes))
+    say("  dead man's switch armed: %s starts again in %d min"
+        % (target, minutes))
 
 
 def disarm_deadman():
@@ -365,9 +417,12 @@ def main():
             before = runlib.gtt()
             say("\nGTT now: %.1f GiB" % (before or 0))
             arm_deadman(a.deadline)
-            say("stopping %s" % UNIT)
-            systemctl("stop", UNIT)
-            stopped = True
+            if unit() is None:
+                say("nothing is serving — nothing to stop")
+            else:
+                say("stopping %s" % unit())
+                systemctl("stop", unit())
+                stopped = True
             runlib.wait_for_gtt_to_settle()
             say("GTT after stop: %.1f GiB" % (runlib.gtt() or 0))
 
@@ -400,8 +455,8 @@ def main():
                 say("   (%.0f s)" % (time.time() - t0))
     finally:
         if stopped:
-            say("\nrestarting %s" % UNIT)
-            systemctl("start", UNIT)
+            say("\nrestarting %s" % unit())
+            systemctl("start", unit())
         disarm_deadman()
 
     report(results, arms, a, depths)

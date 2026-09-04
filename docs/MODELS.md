@@ -141,26 +141,39 @@ a tree and a binary are different things.
 
 **Against the incumbent, same morning, same three workloads, same depths.**
 flashnext measured live in its own production shape (MTP head, `-c 240640`),
-qwen36 behind `sideserver` at its own window and at the **Q8** quant it
-settled on. Decode, t/s — qwen36 / flashnext:
+qwen36 behind `sideserver` at its own window. Decode, t/s —
+qwen36 / flashnext:
 
 | | d512 | d8192 | d36k |
 |---|---|---|---|
-| prose | 33.4 / 18.6 | 31.9 / 19.4 | 27.5 / 13.9 |
-| count | 189.1 / 112.3 | 180.0 / 104.8 | 155.3 / 85.1 |
-| copy | 276.7 / 60.7 | 258.9 / 103.4 | 91.1 / 86.6 |
+| prose | 44.9 / 18.6 | 37.8 / 19.4 | 37.3 / 13.9 |
+| count | 265.0 / 112.3 | 261.8 / 104.8 | 212.7 / 85.1 |
+| copy | 171.7 / 60.7 | 263.8 / 103.4 | 215.1 / 86.6 |
+| prefill | 636.6 / 219.5 | 854.5 / 290.4 | 589.2 / 213.9 |
 
-Prefill is about 2.9× at every depth. Memory: **40.8 GiB of GTT against 91.0**,
-because one token of context costs 21.0 KiB rather than 37.3 — measured
-two-point, both points agreeing on the base.
+**1.9× to 2.9× on all twelve cells, with no weak column**, at **27.7 GiB of
+GTT against 91.0** — one token of context costs 21.0 KiB here rather than
+37.3, measured two-point with both points agreeing on the base.
 
-**The quant is Q8 and that is the morning's most useful finding.** Every other
-profile here serves Q4 on the received wisdom that decode is
-weight-bandwidth-bound. Measured on this model, one variable: **Q8 costs
-5–8 %, not half** — 3B of 35B parameters are active per token, so weight
-traffic is not what decode waits for. Which means the model can be served at
-near-checkpoint fidelity for almost nothing, and the quality question below is
-about the model rather than about how this machine stores it.
+**Two findings did that, and neither was the obvious one.**
+
+*The model's own MTP head.* unsloth converts with `--no-nextn` and ships every
+quant without it, which left an n-gram drafter as the only speculation
+available — and an n-gram drafts *from the prompt*, so on novel text its
+acceptance measured 4.7–5.5 % and prose sat at 29–35 t/s while copy was
+already past 200. A publisher who keeps the head (`havenoammo`) closes exactly
+that gap: acceptance on prose rises to 45–49 %, prose gains 15–29 %, count
+31–36 %. It is inside the main GGUF, so no `-md` is involved. **The price is
+provenance** — that quant publishes no imatrix, so the file is trusted for its
+structure, which was read off it, and not for its calibration, which cannot be
+checked.
+
+*The quant is nearly free.* Every other profile here serves Q4 on the received
+wisdom that decode is weight-bandwidth-bound. Measured on this model, one
+variable: **Q8 costs 5–8 %, not half** — 3B of 35B parameters are active per
+token, so weight traffic is not what decode waits for. Q4 is what runs, because
+the operator asked for throughput; the swap is one line and both files are on
+disk.
 
 Six of those eighteen cells carry `speed.py`'s own spread warning, and decode
 on this machine has a 19 % coefficient of variation. The *directions* — two-

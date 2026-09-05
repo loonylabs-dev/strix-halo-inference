@@ -44,7 +44,9 @@ spend an afternoon.
 ## What you get that `ollama` does not
 
 `ollama` has something answering in five minutes, and that is a real
-advantage. Three things it will not do on this hardware.
+advantage. Four things it will not do on this hardware. (The backend here is
+llama.cpp — that is the engine, not the competition. What follows is the
+machine built around it.)
 
 **Tell you what will freeze your machine.** There is no separate VRAM — the
 GPU takes system RAM through GTT, and that allocation is **pinned**. A model
@@ -78,16 +80,23 @@ how a request body is read, which prefix id it produces, when a state may be
 restored — is in [`setup/claude/`](setup/claude/) with the measurements behind
 each step.
 
-**Keep a conversation, and know that keeping it works.** llama-server can save
-a slot to a file and load it back; that is not the hard part. The hard part is
-that on a hybrid model it silently did nothing: the restore reported success,
-`/slots` confirmed the tokens were there, and the next request re-processed the
-entire prompt anyway. Nobody would see it — there is no error, only a bill.
-Found here on 05.09.2026 because this repo measures what others assume, traced
-to two lines four hundred apart (`prompt.clear()` empties the context
-checkpoints; the next prompt needs one and resets when it finds none), and
-fixed in [`setup/patches/`](setup/patches/README.md) by carrying the
-checkpoints beside the state:
+**Keep a conversation — across projects, across restarts, across days.** A
+chat front-end holds your history as TEXT and re-reads it every turn. Here a
+conversation is kept as the model's own computed state: written to disk, put
+back into a slot, continued. That is what turns a 40k-token agent session from
+a minute of waiting into a second, and it is the reason a coding agent is
+usable on one box at all. The chain — which prefix id a request produces, when
+a state may be written, when it may be put back, and what happens when two
+consumers want the same slot — is a gateway
+([`setup/gateway/`](setup/gateway/)), a prefix store, and an admission gate
+with priorities. None of that exists in a stack you install in five minutes.
+
+**And it demonstrably works, which is not the same thing.** The state restore
+was SILENTLY DOING NOTHING on this model class: it reported success, `/slots`
+confirmed the tokens were back, and the next request re-processed the whole
+prompt anyway. No error — only a bill. Found on 05.09.2026 because this is
+measured rather than assumed, traced to two code sites four hundred lines
+apart, and fixed in [`setup/patches/`](setup/patches/README.md):
 
 ```
 a conversation continued from its file, RAM prompt cache OFF
@@ -98,9 +107,8 @@ a conversation continued from its file, RAM prompt cache OFF
 Three checks decide that, not one: the reuse, the answer against a **forced
 recomputation** on an erased slot, and a six-digit value planted mid-context —
 because a fix that buys speed and changes answers would be worse than the
-defect. A fourth run, `restore-determinism.py`, is identical on both builds and
-is quoted here for what it rules OUT: the patch does not disturb the path that
-already worked.
+defect. That is the difference this repo is for: not that a feature exists,
+but that somebody checked it does what it says.
 
 ## Not only a language model — and not a toolbox
 

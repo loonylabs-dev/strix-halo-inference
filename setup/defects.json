@@ -784,8 +784,11 @@
         "how": "python3 bench/suites/restore-reuse.py --env setup/env/<profile>.env --cells default --shapes continuation. cached > 0 on step 5 means the defect is gone."
       },
       "suite": "bench/suites/restore-reuse.py",
-      "upstream": [],
-      "status": "FIX BUILT, MEASURED AND SERVING for qwen36 since 05.09.2026 19:5x (operator's go); every other profile still runs a build without it. setup/patches/restore-carries-checkpoints.patch carries the checkpoints in a sidecar beside the state file; built as family rocm-restoreckpt (b10750-12-gd895be7bf). Production still runs the unpatched build and the switch needs the operator's go. NOT reported upstream: the reproducer is small enough to hand over but CONTRIBUTING means the human writes the report.",
+      "upstream": [
+        "https://github.com/ggml-org/llama.cpp/issues/28194",
+        "https://github.com/ggml-org/llama.cpp/issues/25913"
+      ],
+      "status": "FIXED AND SERVING for qwen36 since 05.09.2026 19:5x, on the operator's go. setup/patches/restore-carries-checkpoints.patch carries the checkpoints in a sidecar beside the state file. THE SERVING BUILD IS build-rocm-restoreckpt-b10750-11-g1559ab34f, NOT the b10750-12-gd895be7bf the fix was developed on: that one also carries restore-says-why.patch, which prints a line per request and must never serve. The serving build was re-measured rather than assumed equivalent. THE PIN IS PER PROFILE - flashnext, qwen38 and gemma26 still run builds without the patch and the defect stands on those. ALREADY REPORTED UPSTREAM, TWICE, AND BY OTHER PEOPLE - checked 05.09.2026 before writing a third one. #28194 (01.09.2026, Intel Arc / SYCL, Qwen3.8-27B) names the same cause in the same words: llama_state_seq_save_file serialises the sequence state and the token list but NOT server_slot::prompt.checkpoints, so find_if over the empty list fails and the slot falls into 'forcing full prompt re-processing'. Its table reads cache_n 8007/8011 on a pure-attention model against 0 on a hybrid one. #25913 (20.07.2026, 11 comments) is the same defect. NEITHER HAS A PR: a search for one found nothing open. So what this stack adds is not a report - it is an independent reproduction on a third backend (ROCm/gfx1151, Qwen3.6) and A FIX. Whether that fix is the right shape for upstream is a question for a PR, and CONTRIBUTING means the human writes it.",
       "first_seen": "2026-09-05",
       "last_checked": "2026-09-05"
     }

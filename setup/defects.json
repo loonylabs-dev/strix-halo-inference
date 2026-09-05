@@ -790,7 +790,16 @@
       ],
       "status": "FIXED AND SERVING for qwen36 since 05.09.2026 19:5x, on the operator's go. setup/patches/restore-carries-checkpoints.patch carries the checkpoints in a sidecar beside the state file. THE SERVING BUILD IS build-rocm-restoreckpt-b10750-11-g1559ab34f, NOT the b10750-12-gd895be7bf the fix was developed on: that one also carries restore-says-why.patch, which prints a line per request and must never serve. The serving build was re-measured rather than assumed equivalent. THE PIN IS PER PROFILE - flashnext, qwen38 and gemma26 still run builds without the patch and the defect stands on those. ALREADY REPORTED UPSTREAM, TWICE, AND BY OTHER PEOPLE - checked 05.09.2026 before writing a third one. #28194 (01.09.2026, Intel Arc / SYCL, Qwen3.8-27B) names the same cause in the same words: llama_state_seq_save_file serialises the sequence state and the token list but NOT server_slot::prompt.checkpoints, so find_if over the empty list fails and the slot falls into 'forcing full prompt re-processing'. Its table reads cache_n 8007/8011 on a pure-attention model against 0 on a hybrid one. #25913 (20.07.2026, 11 comments) is the same defect. NEITHER HAS A PR: a search for one found nothing open. So what this stack adds is not a report - it is an independent reproduction on a third backend (ROCm/gfx1151, Qwen3.6) and A FIX. Whether that fix is the right shape for upstream is a question for a PR, and CONTRIBUTING means the human writes it.",
       "first_seen": "2026-09-05",
-      "last_checked": "2026-09-05"
+      "last_checked": "2026-09-05",
+      "upstream_check": {
+        "kind": "source-contains",
+        "path": "tools/server/server-context.cpp",
+        "pattern": "prompt\\.tokens = std::move\\(restored\\);\\s*\\}\\s*catch",
+        "present_means": "keep",
+        "while_present": "master still assigns the restored tokens and goes straight into the catch block, so prompt.checkpoints stays empty after a restore and the next request re-processes everything on a hybrid/SWA model. Keep carrying setup/patches/restore-carries-checkpoints.patch.",
+        "when_gone": "somebody has touched the restore path — which is NOT proof the defect is fixed, and not proof it was fixed the same way. Re-measure before dropping the patch: python3 bench/suites/restore-reuse.py --env setup/env/qwen36.env --cells default --shapes continuation --np 1 --slot 0 --binary <a build without the patch>. cached > 0 on step 5 with the needle intact is what retires this.",
+        "note": "WATCHES THE SOURCE, NOT THE ISSUES, and the two answer different questions. #28194 and #25913 describe this defect and are linked in `upstream`; watch those to learn whether anybody upstream is looking. Watch this pattern to learn whether the code moved. This repository has been burned by confusing them (see the-previous-answer-is-sometimes-not-reused, and the pull-request-title watch of 26.08.2026 that sat on a closed PR for hours).\n\nTHE PATTERN NAMES AN ABSENCE, which is the awkward half: the defect is that nothing happens between the assignment and the catch. There is no line to watch for, so what is watched is the two statements being adjacent. That makes it sensitive to unrelated reformatting — a RETIRE? here means 'go and look', never 'drop the patch'."
+      }
     }
   ]
 }

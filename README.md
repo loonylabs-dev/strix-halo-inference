@@ -18,7 +18,7 @@ bash setup/preflight.sh              # is this repo for your machine?
 bash setup/install.sh                # once — writes ~/.config/llm-stack.env
 bash setup/get-model.sh qwen38       # fetch: resumable, sha256-checked
 bash setup/switch-model.sh qwen38    # serve it
-bash tests/run.sh                    # the gate (1183 tests, ~20 s, no GPU)
+bash tests/run.sh                    # the gate (1305 tests, ~19 s, no GPU)
 ```
 
 The name you fetch is the name you serve. There is no `pull` command, because
@@ -78,6 +78,30 @@ how a request body is read, which prefix id it produces, when a state may be
 restored — is in [`setup/claude/`](setup/claude/) with the measurements behind
 each step.
 
+**Keep a conversation, and know that keeping it works.** llama-server can save
+a slot to a file and load it back; that is not the hard part. The hard part is
+that on a hybrid model it silently did nothing: the restore reported success,
+`/slots` confirmed the tokens were there, and the next request re-processed the
+entire prompt anyway. Nobody would see it — there is no error, only a bill.
+Found here on 05.09.2026 because this repo measures what others assume, traced
+to two lines four hundred apart (`prompt.clear()` empties the context
+checkpoints; the next prompt needs one and resets when it finds none), and
+fixed in [`setup/patches/`](setup/patches/README.md) by carrying the
+checkpoints beside the state:
+
+```
+a conversation continued from its file, RAM prompt cache OFF
+    before   3.10 s   cached 0     — the whole prompt again
+    after    0.40 s   cached 2,299 — and the planted needle still correct
+```
+
+Three checks decide that, not one: the reuse, the answer against a **forced
+recomputation** on an erased slot, and a six-digit value planted mid-context —
+because a fix that buys speed and changes answers would be worse than the
+defect. A fourth run, `restore-determinism.py`, is identical on both builds and
+is quoted here for what it rules OUT: the patch does not disturb the path that
+already worked.
+
 ## Not only a language model — and not a toolbox
 
 Since 01.09.2026 the same machine renders images, speaks and films. Measured
@@ -101,16 +125,13 @@ same rules:
 - **One guard, one fence.** Each declares its measured footprint in
   [`setup/workloads/`](setup/workloads/), is weighed by `budget.py` before it
   starts, and runs only through the `sideserver` fence.
-- **Determinism as an instrument.** All seven profiles pin a seed, every
-  measured pipeline is **byte-deterministic**, and each profile carries its
-  exact output hash — `bash tests/live_media.sh` re-derives it. A regression
-  is a hash flip, not a statistical argument.
-- **Machine-judged output.** Image, audio and video each have a corruption
-  probe ([bench/](bench/README.md)) whose selftest was seen red before its
-  green counted.
+- **Determinism as an instrument.** All seven profiles pin a seed and carry
+  their exact output hash — `bash tests/live_media.sh` re-derives it. A
+  regression is a hash flip, not a statistical argument.
+- **Machine-judged output**, each probe's selftest seen red before its green
+  counted ([bench/](bench/README.md)).
 - **Honest defects.** The 5B video model shows an artifact in dark regions —
-  its profile says so, with the one-variable A/B that exonerated flash
-  attention.
+  its profile says so, with the A/B that exonerated flash attention.
 - **The Torch border.** The base install stays torch-free (the 16-second
   gate proves it); torch tenants live behind [`media/`](media/README.md).
 
@@ -137,7 +158,7 @@ build — not at a fork's next release.
 | **set the machine up from scratch** — BIOS to first token | [docs/setup/](docs/setup/README.md), six chapters |
 | **run it** — services, boot, the four ceilings | [setup/README.md](setup/README.md) |
 | point **Claude Code or an OpenAI agent** at it — yours or somebody else's | [docs/CONSUMERS.md](docs/CONSUMERS.md), and `bash setup/consumer-info.sh` for the values |
-| decide **which model to take**, and how Flash-Next became production | [docs/MODELS.md](docs/MODELS.md) |
+| decide **which model to take**, and why the current one is production | [docs/MODELS.md](docs/MODELS.md) |
 | generate **images, speech or video** on the same box | [`setup/workloads/`](setup/workloads/) — the profiles carry every measured number — and the workload-registry section of [setup/README.md](setup/README.md) |
 | **verify** a running box — the gate, the live lanes, the smoke test | [tests/README.md](tests/README.md) |
 | see the **raw measurements** | [docs/measurements/](docs/measurements/README.md) and [`bench/reports/`](bench/reports/) |

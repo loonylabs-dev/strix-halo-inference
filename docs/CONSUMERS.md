@@ -411,6 +411,25 @@ cold start on **every** turn.
 
 Different directories are entirely unproblematic, any number of them.
 
+**WHY it happens, measured 05.09.2026** — and it is worth knowing because the
+obvious remedy does not work. llama.cpp picks a slot by longest common prefix
+among the slots that are not busy, and it SKIPS EMPTY ONES. So a second prefix
+that shares your head takes the slot you are using, while a free slot sitting
+right next to it is never considered. Adding slots therefore does nothing on
+its own: measured with two agents in one project, `-np 1` and `-np 2` both
+recomputed 23,765 tokens a turn, and the second slot stayed empty the whole
+run (`bench/suites/slot-affinity.py`).
+
+Two things do help, and only for the right shape:
+
+* **Requests that arrive AT THE SAME TIME are fine even without slots being
+  assigned** — a busy slot is skipped too, so concurrent callers cannot land on
+  the same one. Two at once finished in 8.3 s a round against 50-99 s.
+* **Everything else needs the slot to be named.** A request may carry
+  `id_slot`, and llama-server honours it through `/v1/chat/completions`. Nothing
+  in this stack sends it yet; until it does, the advice above stands unchanged:
+  one directory, one tool set, one session.
+
 The gateway detects this case and writes it into the log:
 
     WARNING  prefix ce4236074506 shares its head with b2205fae3e1c —

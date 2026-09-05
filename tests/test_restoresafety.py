@@ -469,5 +469,207 @@ class TestTheReportSaysWhichBuildProducedIt(unittest.TestCase):
             self.assertEqual(meta["build_id"], meta["build_from_binary"])
 
 
+def _value_of(argv, flag):
+    """The value following `flag`, or None if the flag is absent."""
+    for i, tok in enumerate(argv):
+        if tok == flag:
+            return argv[i + 1] if i + 1 < len(argv) else ""
+    return None
+
+
+class TwoSlotsAreWhatThisSuiteIs(unittest.TestCase):
+    """A profile's `-np 1` must not reach the server this suite starts.
+
+    The built-in qwen38 argv carries `-np 2` because every cell here needs a
+    second slot: `parallel` is two concurrent prefills and nothing else — the
+    bare trigger of llama.cpp #27579 — and the restore cells were measured
+    against a second slot when slot-restore-poison was found.
+
+    `--env` arrived on 02.09.2026 so flashnext could be asked the same
+    question, and it read the profile's argv through unchanged. Every
+    production profile in this repo carries `-np 1`, because that is the
+    mitigation the defect entries prescribe. So the flag that exists to point
+    the instrument at another model also disarmed it: the suite would start
+    ONE slot, run two prefills through it sequentially, find nothing, and
+    write `clean` — for a configuration in which the defect cannot appear.
+
+    That is the same shape slot-corruption.py carries in its own docstring as
+    a paid-for lesson: a check that cannot fail, in the instrument for the
+    defect the mitigation exists for. It could not be found by reading either
+    file alone; it lives in what the two disagree about.
+    """
+
+    def _profile(self, d, args):
+        import os
+        p = os.path.join(d, "sample.env")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("LLAMA_ARGS=%s\n" % args)
+        return p
+
+    def test_a_profile_that_says_one_slot_does_not_get_one_slot(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = self._profile(
+                d, "--alias qwen36 -m /models/x.gguf -ngl 999 -fa on "
+                   "-c 262144 -np 1 -cram 32768")
+            with quiet():
+                base, _ = RS.base_from_profile(p)
+            self.assertEqual(
+                _value_of(base, "-np"), "2",
+                "a one-slot server cannot produce the defect this suite "
+                "measures, so `clean` from it would be a reading of nothing")
+
+    def test_a_profile_with_no_slot_count_at_all_still_gets_two(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = self._profile(d, "--alias m -m /models/x.gguf -c 65536")
+            with quiet():
+                base, _ = RS.base_from_profile(p)
+            self.assertEqual(_value_of(base, "-np"), "2")
+
+    def test_the_long_spelling_is_caught_too(self):
+        """`--parallel 1` is the same instruction as `-np 1`, and a fix that
+        greps for one spelling and not the other is how this repository lost
+        an afternoon on 04.09.2026 — the flag exists twice, so the test does
+        too."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = self._profile(
+                d, "--alias m -m /models/x.gguf -c 65536 --parallel 1")
+            with quiet():
+                base, _ = RS.base_from_profile(p)
+            self.assertNotIn("--parallel", base)
+            self.assertEqual(_value_of(base, "-np"), "2")
+
+    def test_the_override_is_reported_rather_than_done_in_silence(self):
+        """A measurement that quietly runs a different configuration than the
+        profile it names is the failure one level up from the one being
+        fixed. The suite has to say which flag it replaced."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = self._profile(
+                d, "--alias m -m /models/x.gguf -c 65536 -np 1")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                RS.base_from_profile(p)
+            said = out.getvalue()
+            self.assertIn("-np", said)
+            self.assertIn("2", said)
+
+    def test_a_profile_that_already_says_two_is_left_alone(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = self._profile(
+                d, "--alias m -m /models/x.gguf -c 65536 -np 2")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                base, _ = RS.base_from_profile(p)
+            self.assertEqual(_value_of(base, "-np"), "2")
+            self.assertEqual(out.getvalue(), "",
+                             "nothing was overridden, so nothing is reported")
+
+    def test_the_parallel_cell_documents_the_slot_count_it_needs(self):
+        """Pins the reason rather than the mechanics: if somebody ever makes
+        the slot count configurable again, this is the sentence that has to
+        stay true."""
+        src = ast.get_source_segment(SOURCE, _func("cell_parallel")) or ""
+        self.assertIn("-np", src)
+
+
+class TheVerdictNamesWhatWasMeasured(unittest.TestCase):
+    """A run that measured something must not print a verdict of six blanks.
+
+    Found 05.09.2026 by reading the output of a real run: `--cells parallel`
+    measured two cells, wrote both into result.json as clean, and printed a
+    VERDICT listing six OTHER cells as `not run` and neither of the two that
+    had actually happened. The loop iterated a hard-coded tuple that predates
+    the parallel cell.
+
+    Read on its own, that verdict says a run measured nothing. It is the same
+    failure this file was opened for in the first place, one level further
+    out: the suite ran, it exited, and what it was for is not in what it says.
+
+    The second half is older and is quoted in verdict_line's own docstring as
+    though it were fixed: a cell nobody asked for printed the same `?` as a
+    cell an aborted run never reached. Three states were promised, two were
+    implemented. A comment that claims more than the code does is worse than
+    no comment, so either the code grows the third state or the docstring
+    stops claiming it. It grows the state.
+    """
+
+    def test_a_cell_that_ran_is_in_the_verdict(self):
+        lines = RS.verdict_lines({"parallel-spec": {"clean": True}},
+                                 {"parallel"})
+        joined = "\n".join(lines)
+        self.assertIn("parallel-spec", joined)
+        self.assertIn("CLEAN", joined)
+
+    def test_a_cell_nobody_asked_for_reads_differently_from_one_that_was_lost(self):
+        """The distinction the whole verdict turns on: a narrow run and a
+        truncated one must not produce the same page."""
+        narrow = RS.verdict_lines({"parallel-spec": {"clean": True}},
+                                  {"parallel"})
+        idle = [l for l in narrow if l.strip().startswith("idle-spec")]
+        self.assertEqual(len(idle), 1)
+        self.assertNotIn("not run", idle[0])
+
+        truncated = RS.verdict_lines({}, {"idle"})
+        idle2 = [l for l in truncated if l.strip().startswith("idle-spec")]
+        self.assertEqual(len(idle2), 1)
+        self.assertIn("not run", idle2[0])
+
+        self.assertNotEqual(idle[0], idle2[0],
+                            "a cell nobody asked for and a cell the run never "
+                            "reached are different findings")
+
+    def test_every_known_cell_appears_even_when_nothing_ran(self):
+        joined = "\n".join(RS.verdict_lines({}, set()))
+        for cell in ("idle", "busy", "prefill", "parallel"):
+            for half in ("spec", "nospec"):
+                self.assertIn("%s-%s" % (cell, half), joined)
+
+    def test_a_cell_in_the_results_is_never_dropped_for_being_unknown(self):
+        """The hard-coded tuple is what lost the parallel cell. A cell that
+        exists in the results but in no list must still be printed — the next
+        cell somebody adds must not be able to vanish the same way."""
+        joined = "\n".join(RS.verdict_lines({"invented-spec": {"clean": True}},
+                                            set()))
+        self.assertIn("invented-spec", joined)
+
+
+class TheReportCanSayHowItWasMeasured(unittest.TestCase):
+    """`-np` decides whether this suite measures anything at all, and the
+    report of 05.09.2026 could not say what it had used.
+
+    The run was correct — the override had printed itself to the terminal —
+    but a terminal is not a record. result.json carried the binary, the build
+    stamp, its cmake line and the restore timeout, and not one word about the
+    slot count, the context size, or which profile the flags came from. On a
+    suite whose entire subject is a defect that only exists at -np >= 2, that
+    is the one field that cannot be missing.
+
+    This repo's rule is that a figure carries its source. A report that cannot
+    say its conditions held has to say so; this one could not say what its
+    conditions WERE.
+    """
+
+    def _main_source(self):
+        return ast.get_source_segment(SOURCE, _func("main")) or ""
+
+    def test_the_effective_server_argv_is_recorded(self):
+        self.assertIn('meta["argv"]', self._main_source(),
+                      "without the argv nothing downstream can tell a "
+                      "two-slot run from a one-slot one")
+
+    def test_the_profile_the_flags_came_from_is_recorded(self):
+        self.assertIn('meta["profile"]', self._main_source())
+
+    def test_the_cells_that_were_asked_for_are_recorded(self):
+        """Otherwise `not run` in a stored verdict cannot be told from a cell
+        the caller deliberately left out — the same distinction the verdict
+        makes on screen, made durable."""
+        self.assertIn('meta["cells"]', self._main_source())
+
+
 if __name__ == "__main__":
     unittest.main()

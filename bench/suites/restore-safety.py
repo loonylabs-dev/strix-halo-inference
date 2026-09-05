@@ -99,7 +99,7 @@ SPEC = ["--spec-type", "draft-mtp,ngram-mod",
         "--spec-draft-n-max", "12", "--spec-ngram-mod-n-min", "24"]
 
 
-def base_from_profile(env_path, port="8080"):
+def base_from_profile(env_path, port="8080", np=2):
     """BASE and SPEC for a model this suite was not written for.
 
     The list above is qwen38's, down to `-c 65536` and `-np 2`. Asking whether
@@ -107,6 +107,27 @@ def base_from_profile(env_path, port="8080"):
     runs, so they are read from the profile rather than retyped — the same
     source systemd starts the unit from, via the same reader bench/sideserver.py
     uses.
+
+    THE SLOT COUNT IS THE ONE FLAG THAT IS NOT TAKEN FROM THE PROFILE, and it
+    took until 05.09.2026 to notice. Every cell here needs a second slot:
+    `parallel` is two concurrent prefills and nothing else, the bare trigger of
+    llama.cpp #27579, and the restore cells were measured against two slots
+    when slot-restore-poison was found. Every production profile in this repo
+    carries `-np 1`, because that is what those same defect entries prescribe
+    as the mitigation. Read through unchanged, the flag that exists to point
+    this instrument at another model DISARMED it — one slot, two prefills run
+    sequentially through it, nothing found, `clean` written down for a
+    configuration in which the defect cannot appear.
+
+    slot-corruption.py carries that same shape in its docstring as a lesson
+    already paid for: a check that cannot fail, in the instrument for the
+    defect the mitigation exists for. It survived here because neither file is
+    wrong on its own — it lives in what the two disagree about.
+
+    So `-np` is dropped from the profile's argv and re-added at `np`, and the
+    substitution is PRINTED. A measurement that runs a different configuration
+    than the profile it names, without saying so, is the failure one level up
+    from the one being fixed.
 
     WHY THIS EXISTS AT ALL, 02.09.2026: setup/env/flashnext.env removed
     `--slot-save-path` on two upstream reviews of #27742, the QSA indexer
@@ -124,6 +145,7 @@ def base_from_profile(env_path, port="8080"):
     """
     argv = systemdfile.llama_args(env_path)
     base, spec, i = [], [], 0
+    profile_np = None
     while i < len(argv):
         tok = argv[i]
         nxt = argv[i + 1] if i + 1 < len(argv) else None
@@ -132,11 +154,24 @@ def base_from_profile(env_path, port="8080"):
             if nxt is not None and not nxt.startswith("-"):
                 spec.append(nxt)
                 i += 1
+        elif tok in ("-np", "--parallel"):
+            # Both spellings, because a fix that greps for one and not the
+            # other is how a production unit got started under a second name
+            # on 04.09.2026.
+            if nxt is not None and not nxt.startswith("-"):
+                profile_np = nxt
+                i += 1
         elif tok in ("--port", "--host", "--slot-save-path"):
             i += 1 if nxt is not None and not nxt.startswith("-") else 0
         else:
             base.append(tok)
         i += 1
+    base += ["-np", str(np)]
+    if profile_np != str(np):
+        print("NOTE  %s says -np %s — this suite measures %d slots and has "
+              "overridden it. Every cell here needs a second slot; a "
+              "one-slot server cannot produce the defect they look for."
+              % (os.path.basename(env_path), profile_np or "nothing", np))
     base += ["--slot-save-path", SLOT_DIR,
              "--host", "127.0.0.1", "--port", port]
     return base, spec
@@ -454,13 +489,19 @@ def run_cell(name, results, save, argv, logfile, body):
     return r
 
 
-def verdict_line(r):
+def verdict_line(r, asked=True):
     """A cell that was not measured must never read like one that passed —
     and must never read like one that failed either. Three states, three
     words: the reports of 26./27.08. had two, and the cells the aborted run
-    never reached printed the same `?` as the cells nobody asked for."""
+    never reached printed the same `?` as the cells nobody asked for.
+
+    That last sentence stood here from the beginning and was not true until
+    05.09.2026: the third state was described and never implemented, so a
+    narrow run and a truncated one printed the same page. `asked` is what
+    separates them — a cell the caller never requested is an absence with a
+    reason, and only the other kind is a finding."""
     if r is None:
-        return "?         not run"
+        return "?         not run" if asked else "-         not asked for"
     if r.get("skipped"):
         return "SKIPPED   %s" % r.get("error", "")
     if r.get("clean"):
@@ -482,6 +523,35 @@ def verdict_line(r):
     if r.get("prefill_survived") is False:
         why.append("prefill failed")
     return "DIRTY     " + " · ".join(why or ["see result.json"])
+
+
+# The cells this suite knows. `parallel` was added after the verdict loop was
+# written and the loop kept its own hard-coded tuple, so a run measuring only
+# that cell printed six other cells and none of its own (05.09.2026).
+KNOWN_CELLS = ("idle", "busy", "prefill", "parallel")
+
+
+def verdict_lines(results, cells):
+    """One line per cell, in a fixed order, with nothing dropped.
+
+    `cells` is what the caller asked for, so an absent cell can say WHICH kind
+    of absent it is. And anything in `results` that this list does not know is
+    printed anyway — being unknown to a tuple in this file is exactly how the
+    parallel cell became invisible, and the next cell somebody adds must not
+    be able to disappear the same way.
+    """
+    out, seen = [], set()
+    for half in ("spec", "nospec"):
+        for cell in KNOWN_CELLS:
+            name = "%s-%s" % (cell, half)
+            seen.add(name)
+            out.append("  %-16s %s"
+                       % (name, verdict_line(results.get(name), cell in cells)))
+    for name in sorted(results):
+        if name == "_meta" or name in seen:
+            continue
+        out.append("  %-16s %s" % (name, verdict_line(results.get(name))))
+    return out
 
 
 def main():
@@ -534,6 +604,27 @@ def main():
     sweep.reexec_with_inhibit()
     meta = provenance(BINARY)
     meta["restore_timeout"] = RESTORE_TIMEOUT
+    # WHAT THIS RUN ACTUALLY MEASURED, and it was missing until 05.09.2026.
+    # The report carried the binary, its stamp, its cmake line — and no slot
+    # count, no context size, no profile. On a suite whose whole subject is a
+    # defect that exists only at -np >= 2, that is the one field that cannot
+    # be absent: a stored `clean` was indistinguishable from a clean produced
+    # by a server that could not have failed. The override prints itself to
+    # the terminal, but a terminal is not a record.
+    #
+    # The profile is stored by BASENAME. The full path names a checkout on
+    # somebody's disk, and this directory is published.
+    # Expanded to run, UNEXPANDED to record — sweep.py's rule of 27.08., and
+    # this field broke it within the hour of being added: BASE carries
+    # --slot-save-path and -m as absolute paths, so the first report written
+    # with it had a home directory in it. tests/test_localenv.py exists for
+    # exactly this and did not fire, because it walks `git ls-files` and the
+    # report was not committed yet. The path is redundant beside the build
+    # stamp, so folding it changes no measurement.
+    meta["argv"] = [systemdfile.unexpand(x) for x in BASE]
+    meta["spec_flags"] = [systemdfile.unexpand(x) for x in SPEC]
+    meta["profile"] = os.path.basename(a.env) if a.env else None
+    meta["cells"] = sorted(cells)
     stamp = time.strftime("%Y-%m-%d_%H%M")
     # The build belongs in the NAME, not only in the file. Two runs of two
     # builds in one session used to land in directories distinguished by the
@@ -649,10 +740,11 @@ def main():
         save()
         print("report: %s" % dest)
 
-    print("\nVERDICT  (%s)" % meta["build_id"])
-    for cell in ("idle-spec", "busy-spec", "prefill-spec",
-                 "idle-nospec", "busy-nospec", "prefill-nospec"):
-        print("  %-14s %s" % (cell, verdict_line(results.get(cell))))
+    print("\nVERDICT  (%s%s)"
+          % (meta["build_id"],
+             ", %s" % meta["profile"] if meta.get("profile") else ""))
+    for line in verdict_lines(results, cells):
+        print(line)
 
 
 if __name__ == "__main__":

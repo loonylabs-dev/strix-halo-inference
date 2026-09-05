@@ -451,18 +451,29 @@ class TestNothingInTheRepoNamesOneMachine(unittest.TestCase):
         import json as _json, subprocess as _sp
         home = os.path.expanduser("~")
         bad = []
-        files = _sp.run(["git", "ls-files", "bench/reports"], cwd=str(REPO),
-                        capture_output=True, text=True).stdout.split()
-        for f in files:
+        # BOTH tracked and untracked, and the second half was added 05.09.2026
+        # after this test watched a fresh leak go past it. It walked
+        # `git ls-files` alone, so a report only became visible to it once it
+        # was COMMITTED — and a leak that is already in the history is the one
+        # thing this test cannot help with any more. A new field in
+        # restore-safety.py wrote --slot-save-path into result.json unfolded;
+        # the gate was green because the report was still untracked.
+        #
+        # --others --exclude-standard is what adds the untracked ones without
+        # dragging in anything .gitignore already rules out.
+        listed = _sp.run(["git", "ls-files", "--cached", "--others",
+                          "--exclude-standard", "bench/reports"], cwd=str(REPO),
+                         capture_output=True, text=True).stdout.split()
+        for f in sorted(set(listed)):
             p_ = REPO / f
             if not p_.is_file() or not f.endswith(".json"):
                 continue
             text = p_.read_text(encoding="utf-8", errors="replace")
             if home in text or "/home/" in text:
                 bad.append(f)
-        self.assertFalse(bad, "these reports record a home directory — "
-                              "bench/sweep.py must record the UNEXPANDED path: %s"
-                              % ", ".join(bad))
+        self.assertFalse(bad, "these reports record a home directory — a "
+                              "report must record the UNEXPANDED path "
+                              "(systemdfile.unexpand): %s" % ", ".join(bad))
 
     def test_sweep_records_unexpanded_and_runs_expanded(self):
         """Both halves, because getting only one is the bug: recording the

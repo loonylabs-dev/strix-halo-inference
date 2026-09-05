@@ -1,0 +1,220 @@
+From d895be7bfa1ac06ec791ec9794728d2dfbb27365 Mon Sep 17 00:00:00 2001
+From: local <local@local>
+Date: Sat, 5 Sep 2026 19:07:04 +0200
+Subject: [PATCH] server: carry context checkpoints through slot save/restore
+
+A restored slot had its tokens and KV state but an empty checkpoint list,
+because prompt.clear() empties both and only the tokens are put back. On a
+model whose memory cannot be rewound the next request then finds no
+checkpoint before the divergence point and re-processes the whole prompt.
+
+The checkpoints travel in a sidecar beside the state file: the state format
+belongs to libllama, these do not. A missing or unreadable sidecar leaves
+the previous behaviour untouched.
+---
+ tools/server/server-context.cpp | 175 ++++++++++++++++++++++++++++++++
+ 1 file changed, 175 insertions(+)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 19329450c..5b12b3ab0 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -38,6 +38,160 @@
+ 
+ constexpr int HTTP_POLLING_SECONDS = 1;
+ 
++// ---------------------------------------------------------------------------
++// Context checkpoints beside a saved slot state.
++//
++// llama_state_seq_save_file writes the KV state and the token list, which is
++// everything it knows about. The server's context checkpoints live one layer
++// above it, in slot.prompt.checkpoints, and SLOT_RESTORE dropped them:
++// prompt.clear() empties tokens AND checkpoints and only the tokens are put
++// back. On a model whose memory cannot be rewound — SWA, or the linear
++// attention in Qwen3.6 — the next request then finds no checkpoint before the
++// divergence point and discards the entire restored state. Measured 05.09.2026:
++// n_past=564 against a 570-token state, pos_min=569 >= pos_min_thold=564,
++// checkpoints=0, full re-prefill at cached=0. The RAM prompt cache never had
++// this problem, because server_prompt::clone() copies both fields.
++//
++// The checkpoints therefore travel in a SIDECAR beside the state file rather
++// than inside it: the state format belongs to libllama, these do not. A missing
++// or unreadable sidecar is NOT an error — it leaves behaviour exactly as it was
++// before this patch, which is what keeps every state file written so far valid.
++// ---------------------------------------------------------------------------
++
++static constexpr uint32_t SLOT_CKPT_MAGIC   = 0x504B434Cu; // "LCKP"
++static constexpr uint32_t SLOT_CKPT_VERSION = 1u;
++
++static std::string slot_ckpt_path(const std::string & state_path) {
++    return state_path + ".ckpt";
++}
++
++template <typename T>
++static void ckpt_write_pod(std::ofstream & f, const T & v) {
++    f.write(reinterpret_cast<const char *>(&v), sizeof(T));
++}
++
++template <typename T>
++static bool ckpt_read_pod(std::ifstream & f, T & v) {
++    f.read(reinterpret_cast<char *>(&v), sizeof(T));
++    return (bool) f;
++}
++
++static void ckpt_write_blob(std::ofstream & f, const std::vector<uint8_t> & b) {
++    const uint64_t n = b.size();
++    ckpt_write_pod(f, n);
++    if (n > 0) {
++        f.write(reinterpret_cast<const char *>(b.data()), n);
++    }
++}
++
++static bool ckpt_read_blob(std::ifstream & f, std::vector<uint8_t> & b, uint64_t max_bytes) {
++    uint64_t n = 0;
++    if (!ckpt_read_pod(f, n)) {
++        return false;
++    }
++    // A length the file cannot possibly hold means the sidecar is not what it
++    // claims to be. Refuse it rather than resizing to it.
++    if (n > max_bytes) {
++        return false;
++    }
++    b.resize(n);
++    if (n > 0) {
++        f.read(reinterpret_cast<char *>(b.data()), n);
++    }
++    return (bool) f;
++}
++
++static void slot_ckpt_save(const std::string & state_path,
++                           const std::list<common_prompt_checkpoint> & cps) {
++    const std::string path = slot_ckpt_path(state_path);
++
++    // A stale sidecar must never outlive the state it describes: restoring one
++    // set of checkpoints onto a different state is the silent-wrong-answer
++    // failure this whole patch has to avoid.
++    if (cps.empty()) {
++        std::remove(path.c_str());
++        return;
++    }
++
++    std::ofstream f(path, std::ios::binary | std::ios::trunc);
++    if (!f) {
++        LOG_WRN("%s: cannot write %s - the state is saved WITHOUT its checkpoints\n",
++                __func__, path.c_str());
++        return;
++    }
++
++    ckpt_write_pod(f, SLOT_CKPT_MAGIC);
++    ckpt_write_pod(f, SLOT_CKPT_VERSION);
++    ckpt_write_pod(f, (uint32_t) cps.size());
++
++    for (const auto & c : cps) {
++        ckpt_write_pod(f, (int64_t) c.n_tokens);
++        ckpt_write_pod(f, (int32_t) c.pos_min);
++        ckpt_write_pod(f, (int32_t) c.pos_max);
++        ckpt_write_blob(f, c.data_tgt);
++        ckpt_write_blob(f, c.data_dft);
++        ckpt_write_blob(f, c.data_spec);
++    }
++
++    if (!f) {
++        LOG_WRN("%s: %s was not written completely - removing it\n", __func__, path.c_str());
++        f.close();
++        std::remove(path.c_str());
++    }
++}
++
++static bool slot_ckpt_load(const std::string & state_path,
++                           std::list<common_prompt_checkpoint> & cps) {
++    const std::string path = slot_ckpt_path(state_path);
++
++    std::ifstream f(path, std::ios::binary | std::ios::ate);
++    if (!f) {
++        return false;
++    }
++    const uint64_t file_size = (uint64_t) f.tellg();
++    f.seekg(0);
++
++    uint32_t magic   = 0;
++    uint32_t version = 0;
++    uint32_t n       = 0;
++    if (!ckpt_read_pod(f, magic) || magic != SLOT_CKPT_MAGIC) {
++        return false;
++    }
++    if (!ckpt_read_pod(f, version) || version != SLOT_CKPT_VERSION) {
++        return false;
++    }
++    if (!ckpt_read_pod(f, n)) {
++        return false;
++    }
++
++    // Built aside and swapped in only once every entry has been read: a half
++    // read sidecar must leave the slot with NO checkpoints rather than some.
++    std::list<common_prompt_checkpoint> out;
++    for (uint32_t i = 0; i < n; ++i) {
++        common_prompt_checkpoint c;
++        int64_t n_tokens = 0;
++        int32_t pos_min  = 0;
++        int32_t pos_max  = 0;
++        if (!ckpt_read_pod(f, n_tokens) ||
++            !ckpt_read_pod(f, pos_min)  ||
++            !ckpt_read_pod(f, pos_max)) {
++            return false;
++        }
++        if (!ckpt_read_blob(f, c.data_tgt,  file_size) ||
++            !ckpt_read_blob(f, c.data_dft,  file_size) ||
++            !ckpt_read_blob(f, c.data_spec, file_size)) {
++            return false;
++        }
++        c.update_pos(n_tokens, pos_min, pos_max);
++        // The task that created it is gone; nothing may match against it.
++        c.id_task = -1;
++        out.push_back(std::move(c));
++    }
++
++    cps = std::move(out);
++    return true;
++}
++
+ static common_speculative_output_limits server_output_limits(const common_params & params) {
+     if (params.embedding ||
+             (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
+@@ -2561,6 +2715,11 @@ private:
+                         break;
+                     }
+ 
++                    // The context checkpoints go beside the state, not into it.
++                    // Written AFTER the state so a sidecar can never describe a
++                    // state that failed to write.
++                    slot_ckpt_save(filepath, slot->prompt.checkpoints);
++
+                     const int64_t t_end = ggml_time_us();
+                     const double t_save_ms = (t_end - t_start) / 1000.0;
+ 
+@@ -2620,6 +2779,22 @@ private:
+ 
+                         slot->prompt.clear();
+                         slot->prompt.tokens = std::move(restored);
++
++                        // Put the checkpoints back. Without them the state is
++                        // present but unusable on any model whose memory cannot
++                        // be rewound: the next request finds nothing to resume
++                        // from and re-prefills everything. A sidecar that is
++                        // absent or unreadable leaves the list empty, which is
++                        // exactly the behaviour this server had before.
++                        std::list<common_prompt_checkpoint> restored_cps;
++                        if (slot_ckpt_load(filepath, restored_cps)) {
++                            slot->prompt.checkpoints = std::move(restored_cps);
++                            SLT_INF(*slot, "restored %d context checkpoint(s) with the slot state\n",
++                                    (int) slot->prompt.checkpoints.size());
++                        } else {
++                            SLT_WRN(*slot, "%s", "no context checkpoints beside this state - the next "
++                                    "request may have to re-process the whole prompt\n");
++                        }
+                     } catch (const std::exception & err) {
+                         slot->prompt_clear();
+                         send_error(task, std::string("Unable to restore slot: ") + err.what(), ERROR_TYPE_INVALID_REQUEST);
+-- 
+2.55.0
+

@@ -1,0 +1,35 @@
+From e38b4583d911a3aa84736592eefceebd52705bc2 Mon Sep 17 00:00:00 2001
+From: local <local@local>
+Date: Sat, 5 Sep 2026 18:51:35 +0200
+Subject: [PATCH] server: say why a slot's context is reset (diagnostic only)
+
+---
+ tools/server/server-context.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 7f539bdf1..19329450c 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3328,6 +3328,18 @@ private:
+                                     SLT_WRN(slot, "%s\n", st1.str().c_str());
+                                 }
+ 
++                                // DIAGNOSTIC ONLY, 05.09.2026 — the numbers that
++                                // decide whether a slot's context survives. A
++                                // state restored from file arrives with tokens
++                                // and KV but with an EMPTY checkpoint list, and
++                                // the search below then resets everything. This
++                                // says so with the values instead of leaving it
++                                // to be inferred from a prefill that starts at 0.
++                                SLT_WRN(slot, "RESTOREDIAG: n_past=%d, slot_tokens=%d, task_tokens=%d, pos_next=%d, pos_min=%d, pos_min_thold=%d, n_swa=%d, checkpoints=%d\n",
++                                        n_past, (int) slot.prompt.tokens.size(), (int) slot.task->n_tokens(),
++                                        pos_next, pos_min, pos_min_thold, n_swa,
++                                        (int) slot.prompt.checkpoints.size());
++
+                                 if (pos_min >= pos_min_thold) {
+                                     // search for a context checkpoint
+                                     const auto it = std::find_if(
+-- 
+2.55.0
+

@@ -1,0 +1,434 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-restoreckpt-b10750-11-g1559ab34f/bin/llama-server",
+  "build_from_binary": "b381-1559ab3",
+  "build_id": "b10750-11-g1559ab34f",
+  "env": {},
+  "stamp": {
+   "build_id": "b10750-11-g1559ab34f",
+   "backend": "rocm",
+   "family": "rocm-restoreckpt",
+   "patched": "yes",
+   "upstream_ref": "restore-ckpt-clean",
+   "upstream_commit": "1559ab34f4591a21e42bc9634b4da0f47116a3a8",
+   "patch_commit": "1559ab34f4591a21e42bc9634b4da0f47116a3a8",
+   "patch_branch": "restore-ckpt-clean",
+   "rocm_path": "none",
+   "rocm_version": "none",
+   "built_at": "2026-09-05T19:38:04+02:00",
+   "version": "version: 0.3.0-dev (build 381, commit 1559ab34f)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "profile": "qwen36.env",
+  "reps": 250,
+  "np": 1,
+  "slot": 0
+ },
+ "cells": [
+  {
+   "cell": "default",
+   "shape": "same",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "-cram",
+    "32768",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "1",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "slots": 1,
+   "slot": 0,
+   "step1_warm": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 2.98
+   },
+   "step2_save": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_saved": 2309,
+    "n_written": 113217676,
+    "timings": {
+     "save_ms": 82.073
+    }
+   },
+   "step3_displace": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424243",
+    "seconds": 2.92
+   },
+   "slots_after_displace": [
+    2309
+   ],
+   "step4_restore": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_restored": 2309,
+    "n_read": 113217676,
+    "timings": {
+     "restore_ms": 79.699
+    }
+   },
+   "slots_after_restore": [
+    2309
+   ],
+   "step5_reuse": {
+    "prompt": 2303,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.2
+   },
+   "reused": true,
+   "step6_reference": {
+    "prompt": 2303,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.22
+   },
+   "answer_matches": true,
+   "answers": {
+    "after_restore": "424242",
+    "recomputed": "424242"
+   },
+   "needle_after_restore": true,
+   "needle_recomputed": true
+  },
+  {
+   "cell": "default",
+   "shape": "continuation",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "-cram",
+    "32768",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "1",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "slots": 1,
+   "slot": 0,
+   "step1_warm": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 3.02
+   },
+   "step2_save": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_saved": 2309,
+    "n_written": 113217676,
+    "timings": {
+     "save_ms": 80.716
+    }
+   },
+   "step3_displace": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424243",
+    "seconds": 2.99
+   },
+   "slots_after_displace": [
+    2309
+   ],
+   "step4_restore": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_restored": 2309,
+    "n_read": 113217676,
+    "timings": {
+     "restore_ms": 90.034
+    }
+   },
+   "slots_after_restore": [
+    2309
+   ],
+   "step5_reuse": {
+    "prompt": 2332,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.4
+   },
+   "reused": true,
+   "step6_reference": {
+    "prompt": 2332,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.41
+   },
+   "answer_matches": true,
+   "answers": {
+    "after_restore": "424242",
+    "recomputed": "424242"
+   },
+   "needle_after_restore": true,
+   "needle_recomputed": true
+  },
+  {
+   "cell": "no-cram",
+   "shape": "same",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "1",
+    "-cram",
+    "0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "slots": 1,
+   "slot": 0,
+   "step1_warm": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 2.98
+   },
+   "step2_save": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_saved": 2309,
+    "n_written": 113217676,
+    "timings": {
+     "save_ms": 80.99
+    }
+   },
+   "step3_displace": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424243",
+    "seconds": 2.89
+   },
+   "slots_after_displace": [
+    2309
+   ],
+   "step4_restore": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_restored": 2309,
+    "n_read": 113217676,
+    "timings": {
+     "restore_ms": 87.539
+    }
+   },
+   "slots_after_restore": [
+    2309
+   ],
+   "step5_reuse": {
+    "prompt": 2303,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.21
+   },
+   "reused": true,
+   "step6_reference": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 2.95
+   },
+   "answer_matches": true,
+   "answers": {
+    "after_restore": "424242",
+    "recomputed": "424242"
+   },
+   "needle_after_restore": true,
+   "needle_recomputed": true
+  },
+  {
+   "cell": "no-cram",
+   "shape": "continuation",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "1",
+    "-cram",
+    "0",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "slots": 1,
+   "slot": 0,
+   "step1_warm": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 2.98
+   },
+   "step2_save": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_saved": 2309,
+    "n_written": 113217676,
+    "timings": {
+     "save_ms": 79.689
+    }
+   },
+   "step3_displace": {
+    "prompt": 2303,
+    "cached": 0,
+    "text": "424243",
+    "seconds": 2.89
+   },
+   "slots_after_displace": [
+    2309
+   ],
+   "step4_restore": {
+    "id_slot": 0,
+    "filename": "restore-reuse-A.bin",
+    "n_restored": 2309,
+    "n_read": 113217676,
+    "timings": {
+     "restore_ms": 89.187
+    }
+   },
+   "slots_after_restore": [
+    2309
+   ],
+   "step5_reuse": {
+    "prompt": 2332,
+    "cached": 2299,
+    "text": "424242",
+    "seconds": 0.4
+   },
+   "reused": true,
+   "step6_reference": {
+    "prompt": 2332,
+    "cached": 0,
+    "text": "424242",
+    "seconds": 3.08
+   },
+   "answer_matches": true,
+   "answers": {
+    "after_restore": "424242",
+    "recomputed": "424242"
+   },
+   "needle_after_restore": true,
+   "needle_recomputed": true
+  }
+ ]
+}

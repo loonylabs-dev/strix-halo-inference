@@ -1,0 +1,115 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-cachelookup-b10750-10-g6bbb3eecf/bin/llama-server",
+  "build_from_binary": "b380-6bbb3ee",
+  "build_id": "b10750-10-g6bbb3eecf",
+  "env": {},
+  "stamp": {
+   "build_id": "b10750-10-g6bbb3eecf",
+   "backend": "rocm",
+   "family": "rocm-cachelookup",
+   "patched": "yes",
+   "upstream_ref": "restore-lookup-gate",
+   "upstream_commit": "6bbb3eecfe6143963f9a187581cf52ca8a4275d1",
+   "patch_commit": "6bbb3eecfe6143963f9a187581cf52ca8a4275d1",
+   "patch_branch": "restore-lookup-gate",
+   "rocm_path": "none",
+   "rocm_version": "none",
+   "built_at": "2026-09-02T22:04:42+02:00",
+   "version": "version: 0.3.0-dev (build 380, commit 6bbb3eecf)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "profile": "qwen36.env",
+  "reps": 60
+ },
+ "cells": [
+  {
+   "cell": "debug",
+   "shape": "same",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "-cram",
+    "32768",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "2",
+    "--verbose",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "slots": 2,
+   "step1_warm": {
+    "prompt": 568,
+    "cached": 0,
+    "seconds": 0.92
+   },
+   "step2_save": {
+    "id_slot": 1,
+    "filename": "restore-reuse-A.bin",
+    "n_saved": 570,
+    "n_written": 77554268,
+    "timings": {
+     "save_ms": 19.874
+    }
+   },
+   "step3_displace": {
+    "prompt": 568,
+    "cached": 0,
+    "seconds": 0.97
+   },
+   "slots_after_displace": [
+    null,
+    570
+   ],
+   "step4_restore": {
+    "id_slot": 1,
+    "filename": "restore-reuse-A.bin",
+    "n_restored": 570,
+    "n_read": 77554268,
+    "timings": {
+     "restore_ms": 33.578
+    }
+   },
+   "slots_after_restore": [
+    null,
+    570
+   ],
+   "step5_reuse": {
+    "prompt": 568,
+    "cached": 0,
+    "seconds": 0.9
+   },
+   "reused": false
+  }
+ ]
+}

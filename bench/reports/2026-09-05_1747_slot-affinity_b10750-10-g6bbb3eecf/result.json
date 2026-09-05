@@ -1,0 +1,451 @@
+{
+ "_meta": {
+  "binary": "@HOME@/llama.cpp/build-rocm-cachelookup-b10750-10-g6bbb3eecf/bin/llama-server",
+  "build_from_binary": "b380-6bbb3ee",
+  "build_id": "b10750-10-g6bbb3eecf",
+  "env": {},
+  "stamp": {
+   "build_id": "b10750-10-g6bbb3eecf",
+   "backend": "rocm",
+   "family": "rocm-cachelookup",
+   "patched": "yes",
+   "upstream_ref": "restore-lookup-gate",
+   "upstream_commit": "6bbb3eecfe6143963f9a187581cf52ca8a4275d1",
+   "patch_commit": "6bbb3eecfe6143963f9a187581cf52ca8a4275d1",
+   "patch_branch": "restore-lookup-gate",
+   "rocm_path": "none",
+   "rocm_version": "none",
+   "built_at": "2026-09-02T22:04:42+02:00",
+   "version": "version: 0.3.0-dev (build 380, commit 6bbb3eecf)",
+   "cmake": "-DCMAKE_BUILD_TYPE=Release -DCMAKE_BUILD_RPATH_USE_ORIGIN=ON -DGGML_HIP=ON -DGPU_TARGETS=gfx1151 -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_HIP_NO_VMM=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_HIP_COMPILER=/usr/lib64/rocm/llvm/bin/clang -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF"
+  },
+  "stamp_matches_binary": true,
+  "profile": "qwen36.env",
+  "turns": 2,
+  "head_reps": 350,
+  "body_reps": 396,
+  "sps": 0.95,
+  "growth_reps": 95,
+  "pattern": "ABACAD",
+  "cram_arm": 2048,
+  "mode": "sequential",
+  "max_tokens": 48,
+  "persist": true
+ },
+ "arms": [
+  {
+   "arm": "np2-pin-cram2048",
+   "argv": [
+    "--alias",
+    "qwen36",
+    "-m",
+    "@MODELS@/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+    "--spec-type",
+    "draft-mtp,ngram-mod",
+    "--spec-draft-n-max",
+    "4",
+    "--spec-ngram-mod-n-min",
+    "24",
+    "--spec-draft-p-min",
+    "0.75",
+    "-ngl",
+    "999",
+    "-fa",
+    "on",
+    "-fit",
+    "off",
+    "-ub",
+    "512",
+    "-b",
+    "2048",
+    "-c",
+    "262144",
+    "--chat-template-kwargs",
+    "{\"enable_thinking\":false}",
+    "--slot-save-path",
+    "@HOME@/.cache/llama-slots",
+    "--jinja",
+    "-np",
+    "2",
+    "-cram",
+    "2048",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "8081"
+   ],
+   "pinned": true,
+   "growth_reps": 95,
+   "pattern": "ABACAD",
+   "mode": "sequential",
+   "persist": true,
+   "turns": [
+    {
+     "prompt_tokens": 25510,
+     "cached_tokens": 0,
+     "recomputed": 25510,
+     "id_slot": null,
+     "turn": 1,
+     "agent": "A",
+     "seconds": 38.61,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A1",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       25512,
+       null
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 25510,
+     "cached_tokens": 0,
+     "recomputed": 25510,
+     "id_slot": null,
+     "turn": 1,
+     "agent": "B",
+     "seconds": 38.79,
+     "restore_s": "none: HTTPError",
+     "save_s": 0.18,
+     "restore_reply": null,
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-B.bin",
+      "n_saved": 25512,
+      "n_written": 589064804,
+      "timings": {
+       "save_ms": 173.983
+      }
+     },
+     "held_after_restore": null,
+     "text": "B1",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       25512,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 27345,
+     "cached_tokens": 25506,
+     "recomputed": 1839,
+     "id_slot": null,
+     "turn": 2,
+     "agent": "A",
+     "seconds": 4.25,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A2",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       27347,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 25510,
+     "cached_tokens": 0,
+     "recomputed": 25510,
+     "id_slot": null,
+     "turn": 1,
+     "agent": "C",
+     "seconds": 38.84,
+     "restore_s": "none: HTTPError",
+     "save_s": 0.17,
+     "restore_reply": null,
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-C.bin",
+      "n_saved": 25512,
+      "n_written": 589064804,
+      "timings": {
+       "save_ms": 169.87
+      }
+     },
+     "held_after_restore": null,
+     "text": "C1",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       27347,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 29180,
+     "cached_tokens": 27341,
+     "recomputed": 1839,
+     "id_slot": null,
+     "turn": 3,
+     "agent": "A",
+     "seconds": 4.4,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A3",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       29182,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 25510,
+     "cached_tokens": 0,
+     "recomputed": 25510,
+     "id_slot": null,
+     "turn": 1,
+     "agent": "D",
+     "seconds": 38.89,
+     "restore_s": "none: HTTPError",
+     "save_s": 0.17,
+     "restore_reply": null,
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-D.bin",
+      "n_saved": 25512,
+      "n_written": 589064804,
+      "timings": {
+       "save_ms": 167.213
+      }
+     },
+     "held_after_restore": null,
+     "text": "D1",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       29182,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 31015,
+     "cached_tokens": 29176,
+     "recomputed": 1839,
+     "id_slot": null,
+     "turn": 4,
+     "agent": "A",
+     "seconds": 4.51,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A4",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       31017,
+       25512
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 27345,
+     "cached_tokens": 0,
+     "recomputed": 27345,
+     "id_slot": null,
+     "turn": 2,
+     "agent": "B",
+     "seconds": 42.66,
+     "restore_s": 0.09,
+     "save_s": 0.35,
+     "restore_reply": {
+      "id_slot": 1,
+      "filename": "affinity-B.bin",
+      "n_restored": 25512,
+      "n_read": 589064804,
+      "timings": {
+       "restore_ms": 92.424
+      }
+     },
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-B.bin",
+      "n_saved": 27347,
+      "n_written": 626696984,
+      "timings": {
+       "save_ms": 351.503
+      }
+     },
+     "held_after_restore": [
+      31017,
+      25512
+     ],
+     "text": "B2",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       31017,
+       27347
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 32850,
+     "cached_tokens": 31011,
+     "recomputed": 1839,
+     "id_slot": null,
+     "turn": 5,
+     "agent": "A",
+     "seconds": 4.66,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A5",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       32852,
+       27347
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 27345,
+     "cached_tokens": 0,
+     "recomputed": 27345,
+     "id_slot": null,
+     "turn": 2,
+     "agent": "C",
+     "seconds": 42.72,
+     "restore_s": 0.1,
+     "save_s": 0.38,
+     "restore_reply": {
+      "id_slot": 1,
+      "filename": "affinity-C.bin",
+      "n_restored": 25512,
+      "n_read": 589064804,
+      "timings": {
+       "restore_ms": 99.006
+      }
+     },
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-C.bin",
+      "n_saved": 27347,
+      "n_written": 626696984,
+      "timings": {
+       "save_ms": 381.25
+      }
+     },
+     "held_after_restore": [
+      32852,
+      25512
+     ],
+     "text": "C2",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       32852,
+       27347
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 34685,
+     "cached_tokens": 32846,
+     "recomputed": 1839,
+     "id_slot": null,
+     "turn": 6,
+     "agent": "A",
+     "seconds": 4.75,
+     "restore_s": null,
+     "save_s": null,
+     "restore_reply": null,
+     "save_reply": null,
+     "held_after_restore": null,
+     "text": "A6",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       34687,
+       27347
+      ]
+     }
+    },
+    {
+     "prompt_tokens": 27345,
+     "cached_tokens": 0,
+     "recomputed": 27345,
+     "id_slot": null,
+     "turn": 2,
+     "agent": "D",
+     "seconds": 42.79,
+     "restore_s": 0.1,
+     "save_s": 0.4,
+     "restore_reply": {
+      "id_slot": 1,
+      "filename": "affinity-D.bin",
+      "n_restored": 25512,
+      "n_read": 589064804,
+      "timings": {
+       "restore_ms": 102.803
+      }
+     },
+     "save_reply": {
+      "id_slot": 1,
+      "filename": "affinity-D.bin",
+      "n_saved": 27347,
+      "n_written": 626696984,
+      "timings": {
+       "save_ms": 395.298
+      }
+     },
+     "held_after_restore": [
+      34687,
+      25512
+     ],
+     "text": "D2",
+     "concurrent": true,
+     "slots": {
+      "count": 2,
+      "holding": [
+       34687,
+       27347
+      ]
+     }
+    }
+   ],
+   "slots_seen": 2,
+   "premise_holds": true,
+   "steady_state": {
+    "turns": 8,
+    "recomputed_total": 91230,
+    "recomputed_median": 1839,
+    "seconds_total": 150.7
+   }
+  }
+ ]
+}

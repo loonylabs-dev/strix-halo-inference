@@ -429,3 +429,71 @@ process. This prints which of the three conditions refused, with the numbers.
 It is what turned "the recurrent memory cannot roll back" — wrong — into "the
 rollback is already taken" — right — in one run. Independent of the fix, and
 useful to anyone else hitting `failed to remove sequence`.
+
+## restore-says-why.patch
+
+A diagnostic, seven lines, and the reason it exists is that it killed the fix
+it was written to prepare. When a slot's context is about to be discarded, the
+server decides on four numbers and prints none of them. This prints them.
+
+Built as family `rocm-restorediag` (b10750-11-ge38b4583d), never activated.
+What it showed, in the production shape, after restoring a state from file:
+
+    n_past=564  slot_tokens=570  pos_min=569  pos_min_thold=564  checkpoints=0
+    the same server before the restore:                          checkpoints=3
+
+So the common prefix IS found, and the empty checkpoint list is what throws it
+away. The planned fix — create a checkpoint when restoring — would have placed
+that checkpoint at pos 569, the END of the loaded state, while the search wants
+one with `pos_min < pos_min_thold`, i.e. before 564. It would have built,
+passed, and changed nothing.
+
+Keep it for the next time a slot resets for no visible reason. See the defect
+entry `restore-drops-context-checkpoints`.
+
+## restore-carries-checkpoints.patch
+
+The fix for `restore-drops-context-checkpoints`, and the third patch this
+stack carries for a reason of its own rather than for gfx1151.
+
+WHAT IT DOES. `SLOT_RESTORE` called `prompt.clear()` — which empties tokens
+AND checkpoints — and then put only the tokens back. On a model whose memory
+cannot be rewound (SWA, or the linear attention in Qwen3.6) the next request
+found no checkpoint before the divergence point and re-processed the entire
+prompt. The checkpoints now travel in a SIDECAR beside the state file:
+`<state>.bin.ckpt`, written after the state, read on restore. The state format
+belongs to libllama; these do not.
+
+A missing or unreadable sidecar is deliberately NOT an error — it leaves the
+behaviour exactly as before, so every state file written until now stays
+valid. The list is built aside and swapped in only when every entry has been
+read, an empty checkpoint list deletes a stale sidecar, and a declared blob
+length larger than the file is refused rather than allocated.
+
+MEASURED, qwen36, production shape (-np 1, slot 0), -cram 0 so only the file
+can be the source:
+
+    build                  reuse            wall     needle
+    b10750-10 (before)     cached=0         3.10 s   424242 ok
+    b10750-12 (this)       cached=2299      0.38 s   424242 ok
+
+    restore-determinism.py, 14,187-token state, needle at fact 300:
+    restored 0.37 s against 20.37 s fresh, all six verdicts true on BOTH
+    builds — the fix does not disturb the path that already worked.
+
+WHY THE NEEDLE MATTERS. The first version of the answer check compared "A1"
+against "A1", which a damaged context can produce by accident. A six-digit
+value planted mid-context cannot be. This patch makes a rewind path LIVE that
+was previously dead — before it, a restored state was thrown away and
+everything recomputed, so nothing could go quietly wrong. Now the answer
+depends on KV data reassembled from a file, and a wrong reassembly would not
+raise, it would answer differently.
+
+COST: the sidecar is 180.6 MiB beside a 340.3 MiB state at ~14k tokens, so
+about +53 %. It scales with `-ctxcp` (three checkpoints in these runs), which
+is the knob if that ever hurts.
+
+RETIREMENT: when llama.cpp carries the checkpoints through save/restore
+itself. Not reported upstream yet — the reproducer is
+`bench/suites/restore-reuse.py` and CONTRIBUTING means the operator writes the
+report.

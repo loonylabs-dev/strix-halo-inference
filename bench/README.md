@@ -183,6 +183,47 @@ RESTORE with two slots, which was CORRUPT 4/4 with a populated store; and four
 clean starts against an intermittent SILENT failure raise the odds without
 making an argument. The remaining sequence is in setup/patches/README.md.
 
+### Answered 05.09.2026 — and the answer moved
+
+Both objections above are now covered, on the model and the window that
+actually serve:
+
+    slot-corruption.py par-two-prefixes, serving build     0 of 15 CORRUPT
+    the same on build-rocm-unpatched-b10631 (control)      3 of 3  CORRUPT
+    restore-safety.py --env qwen36.env, -np 2 -c 262144    10 of 10 cells CLEAN
+
+The control is what makes the clean column mean anything, and it is what the
+26./28.08. runs never had: a clean run of an intermittent fault is an absence,
+and an absence next to a positive control on the same machine in the same hour
+is an argument. Every answer of the control was pure slashes.
+
+**What did NOT survive the day is the assumption that `-np 2` is the
+interesting variable.** `bench/suites/slot-affinity.py` measured what a second
+slot is worth, and the answer depends entirely on the consumer:
+
+| shape | `-np 2` alone | with `id_slot` pinning |
+|---|---|---|
+| two requests at once | 8.7 s a round | 8.3 s |
+| sequential turns | 23,765 tokens recomputed | 1,839 |
+| mixed (main agent + sub-agents) | 27,345 | 1,839 |
+
+`get_available_slot()` skips EMPTY slots, so a sequential second agent takes
+the first one's slot while the empty one is never considered — two slots, one
+of them permanently idle. Concurrent requests do not hit this, because a BUSY
+slot is skipped too. `-sps` is not a substitute for pinning: it looks equal
+only while turns alternate perfectly.
+
+And aggregate decode throughput does not rise at all — 49.2 t/s at one slot
+against 49.0 at two. A second slot buys latency, not throughput.
+
+**Two traps this cost.** `restore-safety.py --env` read `-np 1` straight out of
+the profile, so every cell would have measured one slot and reported clean for
+a configuration in which the defect cannot appear — the same shape
+slot-corruption.py carries in its own docstring as a lesson already paid for.
+And `slot-affinity.py`'s default pattern `AB` flatters `-sps`, because the LRU
+fallback lands on the caller's own slot whenever the turns alternate. Both are
+fixed; both are recorded where they bit rather than removed.
+
 ## What this measures — and what it deliberately does not
 
 **Not model intelligence.** A coding battery lived here until 26.08. and was

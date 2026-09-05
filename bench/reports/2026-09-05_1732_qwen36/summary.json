@@ -1,0 +1,91 @@
+{
+  "label": "qwen36",
+  "url": "http://127.0.0.1:8080",
+  "started": "2026-09-05 17:30:18",
+  "pid": 3932699,
+  "seed": 1788622218,
+  "probe_stopped": true,
+  "points": [
+    {
+      "tokens": 8000,
+      "prefill": {
+        "wall_s": 9.25,
+        "prompt_n": 8000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.23,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": true,
+      "rss_delta_mib": 568.3,
+      "stored": true
+    },
+    {
+      "tokens": 20000,
+      "prefill": {
+        "wall_s": 27.06,
+        "prompt_n": 20000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.27,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": true,
+      "rss_delta_mib": 843.8,
+      "stored": true
+    },
+    {
+      "tokens": 32000,
+      "prefill": {
+        "wall_s": 49.75,
+        "prompt_n": 32000,
+        "cache_n": 0
+      },
+      "takeover": {
+        "wall_s": 0.32,
+        "prompt_n": 24,
+        "cache_n": 0
+      },
+      "selected_by_lru": true,
+      "rss_delta_mib": 1135.9,
+      "stored": true
+    }
+  ],
+  "flush": {
+    "requests": 40,
+    "evicted_mib": [],
+    "inserted": [
+      {
+        "what": "point",
+        "tokens": 8000
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      },
+      {
+        "what": "point",
+        "tokens": 20000
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      },
+      {
+        "what": "point",
+        "tokens": 32000
+      },
+      {
+        "what": "takeover",
+        "tokens": 24
+      }
+    ],
+    "complete": false
+  },
+  "refused": [],
+  "fit": null
+}

@@ -2538,6 +2538,35 @@ class TestARestartingServerIsNotAStackTrace(unittest.IsolatedAsyncioTestCase):
                       "a 503 nobody asked for")
 
 
+class TestTheBannerSaysTheWholeRule(unittest.TestCase):
+    """A rule that changes and a banner that does not is a lie with a timestamp.
+
+    Caught 07.09.2026, minutes after the displaced save went live: the startup
+    line still read `save every 300s at the earliest, from 20000 tokens up`,
+    which had been the complete rule that morning and was no longer. An
+    operator reading it would have been wrong in exactly the case the change
+    was made for. The banner is built in main() and cannot be called in a test
+    without a server, so this reads the source — weak evidence, but it fires on
+    the thing that actually happened.
+    """
+
+    def setUp(self):
+        self.src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
+            encoding="utf-8")
+
+    def test_both_save_thresholds_reach_the_banner(self):
+        banner = re.search(r'log\("  session persistence: save %s.*?\)\)',
+                           self.src, re.S)
+        self.assertIsNotNone(banner, "the session persistence line moved — this "
+                                     "test found nothing to check")
+        for name in ("SESSION_SAVE_COOLDOWN_S", "SESSION_SAVE_MIN_TOKENS",
+                     "SESSION_SAVE_MIN_TOKENS_DISPLACED"):
+            with self.subTest(name=name):
+                self.assertIn(name, banner.group(0),
+                              "%s decides whether a state is written and the "
+                              "banner does not mention it" % name)
+
+
 class TestSessionSave(unittest.IsolatedAsyncioTestCase):
     """The save that writes the slot AS IT STANDS — cooldown, floor, and the
     one failure mode that must stay loud.
@@ -2556,6 +2585,13 @@ class TestSessionSave(unittest.IsolatedAsyncioTestCase):
         GW.SESSION_SAVE_COOLDOWN_S = 300.0
         GW.SESSION_SAVE_MIN_TOKENS = 20000
         GW.SESSION_SAVED_AT.clear()
+        # The displacement tests write into SERVED_TRAIL, and it is module
+        # state. Left alone, one test's foreign prefix cancels the next test's
+        # cooldown and the assertion passes for the wrong reason — which is how
+        # the pair below first came up green-then-red in the wrong order.
+        GW.SESSION_SAVED_SEQ.clear()
+        self.old_trail = list(GW.SERVED_TRAIL)
+        GW.SERVED_TRAIL.clear()
         self.log_lines = []
         self.patches = [
             mock.patch.object(GW, "log",
@@ -2571,6 +2607,8 @@ class TestSessionSave(unittest.IsolatedAsyncioTestCase):
         for k, v in self.old.items():
             setattr(GW, k, v)
         GW.SESSION_SAVED_AT.clear()
+        GW.SESSION_SAVED_SEQ.clear()
+        GW.SERVED_TRAIL[:] = self.old_trail
 
     def _fake_post(self, url, payload, timeout):
         self.posts.append((url, payload))
@@ -2608,6 +2646,64 @@ class TestSessionSave(unittest.IsolatedAsyncioTestCase):
         await GW.session_save("aaa", (40000, 2000))
         await GW.session_save("bbb", (40000, 2000))
         self.assertEqual(len(self.posts), 2, "one prefix blocked another")
+
+    # --- displacement, and why the clock is the wrong question --------------
+    #
+    # MEASURED 07.09.2026, gateway journal, two agents sharing one slot:
+    #
+    #   10:28:31  saved     c36336bd1680  124810 tokens
+    #   10:29:14  restored  c36336bd1680  124810  — last used by 086817bdc0ce
+    #   10:31:20  restored  c36336bd1680  124810  — last used by 086817bdc0ce
+    #   10:33:19  restored  c36336bd1680  124810  — last used by 086817bdc0ce
+    #   10:39:37  restored  c36336bd1680  124810  — last used by 086817bdc0ce
+    #   10:42:14  saved     c36336bd1680  132350 tokens
+    #
+    # `SESSION_RESTORE=displaced` worked four times in thirteen minutes. Every
+    # restore put back the SAME 124,810 tokens, because the next save was 823 s
+    # behind the first and the cooldown is 300 s. Everything the conversation
+    # gained in between was recomputed at each switch — 155.1 s on the 10:42
+    # turn alone.
+    #
+    # The restore side already asks the right question ("did somebody else take
+    # the slot?"). The save side asked the clock. These tests move it to the
+    # same question.
+
+    async def test_a_displacing_prefix_cancels_the_cooldown(self):
+        await GW.session_save("aaa", (40000, 2000))
+        GW.SERVED_TRAIL.append((GW.SERVED_COUNT + 1, "bbb"))
+        await GW.session_save("aaa", (41000, 2000))
+        self.assertEqual(len(self.posts), 2,
+                         "the slot was taken by another prefix and the state "
+                         "was still held back by the clock")
+
+    async def test_the_cooldown_still_holds_when_nobody_took_the_slot(self):
+        """The other half, and the one that keeps this from becoming
+        `save every turn`: an undisturbed conversation still waits."""
+        await GW.session_save("aaa", (40000, 2000))
+        GW.SERVED_TRAIL.append((GW.SERVED_COUNT + 1, "aaa"))
+        await GW.session_save("aaa", (41000, 2000))
+        self.assertEqual(len(self.posts), 1, "the cooldown did not hold")
+
+    async def test_a_displaced_state_may_be_shallower_than_the_normal_floor(self):
+        """086817bdc0ce never got a file at all: 13,055 and 16,851 tokens, both
+        under the 20,000 floor, so `session_restore` returned at its first
+        condition and every switch paid a full prefill — 31.3 s measured. The
+        floor prices 118 MB of disk against a recompute that is cheap when
+        nobody is competing for the slot. Under displacement it is not cheap."""
+        GW.SESSION_SAVED_SEQ["ccc"] = 0
+        GW.SERVED_TRAIL.append((GW.SERVED_COUNT + 1, "ddd"))
+        await GW.session_save("ccc", (12000, 4851))
+        self.assertEqual(len(self.posts), 1,
+                         "a displaced conversation was left without a file")
+
+    async def test_the_probe_is_still_too_shallow_to_be_worth_a_file(self):
+        """A displaced floor is not the absence of a floor. The watchdog probe
+        takes the slot every 10 minutes with about 30 tokens; writing 118 MB
+        for that would be the cure doing the damage."""
+        GW.SESSION_SAVED_SEQ["eee"] = 0
+        GW.SERVED_TRAIL.append((GW.SERVED_COUNT + 1, "fff"))
+        await GW.session_save("eee", (30, 0))
+        self.assertEqual(self.posts, [])
 
     async def test_a_server_without_the_flag_is_reported_once(self):
         def refuse(url, payload, timeout):
@@ -2662,6 +2758,11 @@ class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
             json.dump({"n_saved": 40000, "n_messages": 2}, f)
         GW.SEEN.clear()
         GW.SERVED_TRAIL.clear()
+        # Module state, and the second time this bit: without the clear, one
+        # case's restore leaves the guard armed and the next case reads "no
+        # restore" as its own result. Cheap to clear, and the alternative is a
+        # suite whose cases only pass in one order.
+        GW.RESTORED_PENDING.clear()
         self.patches = [
             mock.patch.object(GW, "log",
                               lambda *a: self.log_lines.append(" ".join(map(str, a)))),
@@ -2677,6 +2778,7 @@ class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
         GW.SESSION_RESTORE = self.old_mode
         GW.SEEN.clear()
         GW.SERVED_TRAIL.clear()
+        GW.RESTORED_PENDING.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _fake(self, url, payload, timeout):
@@ -2718,6 +2820,42 @@ class TestSessionRestore(unittest.IsolatedAsyncioTestCase):
         GW.SESSION_RESTORE = "cold"
         self.assertIsNone(await GW.session_restore("nosuch", self.SLOTS))
         self.assertEqual(self.restores, [])
+
+    # --- one restore per attempt ------------------------------------------
+    #
+    # MEASURED 07.09.2026, and it cost the operator a quarter of an hour of a
+    # blocked session. After a llama-server restart the gateway's ledger still
+    # held the OLD id_task, so `prefix_is_cold_on_this_server` answered
+    # "llama-server restarted" to every request. A 195k-token prompt then
+    # prefilled for longer than the client's ~300 s timeout, the client
+    # retried, and the retry restored AGAIN — throwing away the prefill the
+    # previous attempt had built. Three rounds, each from zero:
+    #
+    #   11:57:35  restored 194863  -> prefill starts
+    #   12:02:49  restored 194863  -> prefill starts FROM THE TOP
+    #   12:08:02  restored 194863  -> prefill starts FROM THE TOP
+    #
+    # The ledger is deliberately written by the MEASUREMENT and not by the
+    # intention (see the comment at its assignment), so an attempt that never
+    # finishes never corrects it — and nothing else broke the loop.
+
+    async def test_a_second_restore_does_not_undo_the_first_attempt(self):
+        GW.SESSION_RESTORE = "cold"
+        self.assertEqual(await GW.session_restore("abc", self.SLOTS), 40000)
+        self.assertIsNone(await GW.session_restore("abc", self.SLOTS),
+                          "restored twice without a completed request in "
+                          "between — this is the retry loop")
+        self.assertEqual(len(self.restores), 1)
+
+    async def test_a_completed_request_re_arms_the_restore(self):
+        """The guard must not be permanent. Once a request has finished — with
+        any reuse at all, even zero — the situation has been measured and a
+        later displacement may legitimately need the file again."""
+        GW.SESSION_RESTORE = "cold"
+        await GW.session_restore("abc", self.SLOTS)
+        GW.note_request_finished("abc")
+        self.assertEqual(await GW.session_restore("abc", self.SLOTS), 40000)
+        self.assertEqual(len(self.restores), 2)
 
 
 class TestSessionStoreCeiling(unittest.TestCase):
@@ -2816,6 +2954,7 @@ class TestSessionRestoreNeedsAPrefix(unittest.IsolatedAsyncioTestCase):
         GW.SESSION_RESTORE = self.old_mode
         GW.SEEN.clear()
         GW.SERVED_TRAIL.clear()
+        GW.RESTORED_PENDING.clear()
         shutil.rmtree(self.dir, ignore_errors=True)
 
     def _sidecar(self, n_messages):

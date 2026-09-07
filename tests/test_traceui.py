@@ -659,5 +659,63 @@ class TestThePageIsEnglish(unittest.TestCase):
                          "\n  ".join(found))
 
 
+class TestTheSessionColumn(unittest.TestCase):
+    """The column that says WHICH CONVERSATION, added 07.09.2026.
+
+    Until then the table showed `prefix` alone, and on that morning three
+    conversations sat under one prefix id: a sibling's history therefore read
+    as this one's edited history and the row said `rewritten from 2`. The
+    column exists to make that visible; see setup/defects.json,
+    `session-identity-ignores-the-conversation`.
+    """
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_the_header_offers_it(self):
+        self.assertIn("<th>session</th>", self.html)
+
+    def test_every_header_cell_has_a_body_cell(self):
+        """The bug this catches is silent: an added <th> without its <td>
+        shifts every column after it by one, and the table still renders. It
+        just says the wrong things under the right headings."""
+        head = re.search(r"<thead>(.*?)</thead>", self.html, re.S)
+        self.assertIsNotNone(head, "no <thead> — the test found nothing to check")
+        n_head = len(re.findall(r"<th[ >]", head.group(1)))
+
+        body = re.search(r"function row\(r, i\) \{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(body, "row() not found — the test found nothing to check")
+        # The detail pane's <td colspan=N> lives in row() too and spans the
+        # whole table rather than being one column of it. Counting it made this
+        # test read 17 against 16 on its first run — an artefact, not a shift.
+        n_body = len(re.findall(r"<td(?![^>]*colspan)[ >]", body.group(1)))
+        self.assertEqual(n_head, n_body,
+                         "%d header cells against %d body cells — the columns "
+                         "are shifted" % (n_head, n_body))
+
+    def test_the_detail_row_spans_the_whole_table(self):
+        """A colspan left behind by a new column leaves a ragged edge, and the
+        detail pane stops lining up with what it belongs to."""
+        head = re.search(r"<thead>(.*?)</thead>", self.html, re.S)
+        n_head = len(re.findall(r"<th[ >]", head.group(1)))
+        spans = {int(m) for m in re.findall(r"colspan=(\d+)", self.html)}
+        self.assertEqual(spans, {n_head},
+                         "colspan %s against %d columns" % (sorted(spans), n_head))
+
+    def test_a_shared_prefix_is_marked_rather_than_left_to_the_eye(self):
+        """Twelve hex characters compared by eye down a long table is not a
+        reading. The collision has to be flagged."""
+        self.assertIn("sharedPrefix", self.html)
+        self.assertIn("function sessionCell", self.html)
+
+    def test_a_record_without_a_session_says_unknown_not_single(self):
+        """Rows written before the gateway recorded the id carry no session.
+        Rendering that as "one conversation" would be a claim the data does not
+        make — the same discipline the empty rate columns follow."""
+        cell = re.search(r"function sessionCell\(r\) \{(.*?)\n\}", self.html, re.S)
+        self.assertIsNotNone(cell)
+        self.assertRegex(cell.group(1), r"unknown, not single")
+
+
 if __name__ == "__main__":
     unittest.main()

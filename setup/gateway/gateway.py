@@ -288,6 +288,24 @@ SESSION_SAVE_COOLDOWN_S = float(env("SESSION_SAVE_COOLDOWN_S", default="300"))
 # Below this the fixed 118 MB every state pays dominates, and a session that
 # shallow is cheap to recompute anyway.
 SESSION_SAVE_MIN_TOKENS = int(env("SESSION_SAVE_MIN_TOKENS", default="20000"))
+# THE SAME TWO GATES, ASKED AGAIN WHEN ANOTHER PREFIX HAS TAKEN THE SLOT.
+# Both numbers above price disk against a recompute, and both were chosen for
+# traffic where a conversation keeps its slot: then a shallow state really is
+# cheap to rebuild, and a five-minute-old file really is good enough.
+#
+# Under displacement neither holds. MEASURED 07.09.2026 on two agents sharing
+# one slot at `-np 1`: a 16,851-token conversation stayed under the 20,000
+# floor, never got a file, and therefore paid 31.3 s of full prefill at every
+# switch — while the deep conversation was restored four times in thirteen
+# minutes from the SAME 124,810-token file, because the next save sat 823 s
+# behind the first. `SESSION_RESTORE=displaced` already asks "did somebody else
+# take the slot?"; these let the save side ask it too.
+#
+# The displaced floor is a floor, not its absence: llama-probe takes the slot
+# every ten minutes with ~30 tokens, and writing 118 MB for that would be the
+# cure doing the damage.
+SESSION_SAVE_MIN_TOKENS_DISPLACED = int(
+    env("SESSION_SAVE_MIN_TOKENS_DISPLACED", default="4000"))
 # The write is 1.9-3.0 s at 180k and the gate is held for it. This bound is
 # what keeps a hung server from holding the gate indefinitely; it is not a
 # tuning knob.
@@ -1843,6 +1861,16 @@ async def handler(req):
             # This catches what actually happened, because what changed was the
             # prefix TEXT.
             post_id = DIA.prefix_id(p, dialect, HEAD_BYTES)[0]
+            # WHICH CONVERSATION, as opposed to which prefix. Recorded only —
+            # nothing keys on it yet. It is here so the trace can SHOW the
+            # collision that `session-identity-ignores-the-conversation`
+            # describes: on 07.09.2026 three conversations sat under one
+            # `prefix`, and the UI could not say so, which is why a sibling's
+            # history read as `rewritten from 2`. Taken from the corrected body
+            # for the same reason post_id is — correct() hoists stable system
+            # text to the front, and an id taken before that describes a prompt
+            # nobody sends.
+            sess_id = DIA.session_id(p, dialect, HEAD_BYTES)
             if MID_SYSTEM_TO_USER:
                 p, _ = mid_system_to_user(p, dialect)
             out = json.dumps(p).encode()
@@ -2200,6 +2228,12 @@ async def handler(req):
             if ident:
                 PREFIXES[ident]["took_sum"] += took
                 PREFIXES[ident]["last"] = time.time()
+                # The attempt is over, whatever it measured — the restore may
+                # arm again. This sits beside the ledger update rather than in
+                # it on purpose: the ledger asks whether reuse was GOOD, this
+                # only asks whether a request FINISHED, and conflating the two
+                # is what let the retry loop of 07.09. run three times.
+                note_request_finished(ident)
             log("DONE        %-15s %-6s who=%-12s prefix=%s took=%.1fs%s"
                 % (ip, PRIORITY_NAME[prio], who, ident, took,
                    "" if not reuse else
@@ -2228,6 +2262,15 @@ async def handler(req):
                          "dialect": dialect,
                          "path": req.path,
                          "prefix": ident,
+                         # WHICH CONVERSATION under that prefix. Two records
+                         # sharing `prefix` and differing here are two agents
+                         # sharing one identity — the shape that read as
+                         # `rewritten from N` and cost a full re-prefill on
+                         # 07.09.2026. In `summary` rather than `detail`
+                         # because it answers "whose turn was this", which is
+                         # the first question asked of a row, not a detail of
+                         # it.
+                         "session": sess_id,
                          "cold": was_cold, "took_s": round(took, 2),
                          "waited_s": round(waited, 2),
                          # read and written, and the split inside "read":
@@ -2347,6 +2390,46 @@ async def handler(req):
         IN_FLIGHT_PER_TOKEN[who] = max(0, IN_FLIGHT_PER_TOKEN.get(who, 1) - 1)
 
 SESSION_SAVED_AT = {}          # prefix -> when its state was last written
+SESSION_SAVED_SEQ = {}         # prefix -> SERVED_COUNT at that write
+
+# Prefixes restored since their last COMPLETED request — one restore per
+# attempt. MEASURED 07.09.2026: after a llama-server restart the ledger still
+# held the old id_task, so every request for the prefix answered "llama-server
+# restarted" and restored again. A 195k prompt then prefilled past the client's
+# ~300 s timeout, the client retried, and the retry's restore threw away the
+# prefill the previous attempt had built — three rounds from zero (11:57:35,
+# 12:02:49, 12:08:02), none able to finish. The ledger is written by the
+# MEASUREMENT rather than by the intention, which is right and which is exactly
+# why an attempt that never completes can never correct it. This breaks that
+# loop, and nothing else in the path could.
+RESTORED_PENDING = set()
+
+
+def note_request_finished(ident):
+    """A request for this prefix ran to completion — re-arm its restore.
+
+    Any outcome counts, reuse of zero included: the point is that the restore
+    HAD its chance and the result was measured. A guard lifted only by success
+    would make one bad file permanent.
+    """
+    RESTORED_PENDING.discard(ident)
+
+
+def displaced_since_last_save(ident):
+    """Has another prefix held the slot since this one's state was written?
+
+    The same question `session_restore` asks before it restores, asked on the
+    way in. It is answered from SERVED_TRAIL, which the gateway already keeps
+    and which the restore side already reads — no new bookkeeping, and the two
+    sides therefore cannot drift apart in what they mean by "displaced".
+
+    False when this prefix has never been saved: there is no window to look
+    back over, and the ordinary floor should decide that first write.
+    """
+    seq = SESSION_SAVED_SEQ.get(ident)
+    if seq is None:
+        return False
+    return any(other != ident for n, other in SERVED_TRAIL if n > seq)
 
 
 def session_file(ident):
@@ -2401,6 +2484,14 @@ async def session_restore(ident, slots, body=None, dialect=DIA.ANTHROPIC):
     """
     if SESSION_RESTORE == "off" or not ident:
         return None
+    # ONE RESTORE PER ATTEMPT. A second one before the first attempt has
+    # finished does not add a state — it REPLACES whatever the slot has built
+    # since, which on a long prefix is the entire attempt.
+    if ident in RESTORED_PENDING:
+        log("NOTE        not restoring %s again: the last restore has not been "
+            "followed by a completed request, so the slot is still building on "
+            "it" % ident)
+        return None
     path = session_file(ident)
     if not os.path.exists(path):
         return None
@@ -2440,6 +2531,7 @@ async def session_restore(ident, slots, body=None, dialect=DIA.ANTHROPIC):
         log("NOTE        session restore of %s failed: %s" % (ident, e))
         return None
     n = r.get("n_restored")
+    RESTORED_PENDING.add(ident)
     log("SESSION     restored %s: %s tokens — %s" % (ident, n, why))
     TRACE.record("session-restore",
                  summary={"prefix": ident, "n_restored": n, "why": why})
@@ -2484,11 +2576,19 @@ async def session_save(ident, reuse, body=None):
     # below ~20k tokens, and a session that shallow is cheap to recompute
     # anyway. Unknown token count means the answer carried no timings — the
     # Anthropic route does not — so fall through and let the cooldown decide.
-    if tokens is not None and tokens < SESSION_SAVE_MIN_TOKENS:
+    displaced = displaced_since_last_save(ident)
+    floor = (SESSION_SAVE_MIN_TOKENS_DISPLACED if displaced
+             else SESSION_SAVE_MIN_TOKENS)
+    if tokens is not None and tokens < floor:
         return
     now = time.time()
     last = SESSION_SAVED_AT.get(ident)
-    if last is not None and now - last < SESSION_SAVE_COOLDOWN_S:
+    # The cooldown protects the disk from a conversation that keeps its slot.
+    # It must not hold back a state that another prefix has already displaced —
+    # that file is what the next switch restores from, and a stale one is
+    # restored just as confidently as a fresh one.
+    if (not displaced and last is not None
+            and now - last < SESSION_SAVE_COOLDOWN_S):
         return
     name = "%s%s.bin" % (SESSION_PREFIX, ident)
     session_prune(keep=name)
@@ -2512,6 +2612,11 @@ async def session_save(ident, reuse, body=None):
         SESSION_SAVED_AT[ident] = now
         return
     SESSION_SAVED_AT[ident] = time.time()
+    # Where in the serving order this write happened, so the NEXT call can ask
+    # what took the slot since. Set only on a write that succeeded: a failed
+    # save leaves the old file in place, and the window that matters is the one
+    # since the file on disk was last correct.
+    SESSION_SAVED_SEQ[ident] = SERVED_COUNT
     # HOW LONG THE STATE IS, written beside it. The restore side needs this
     # BEFORE it decides, and a gateway restart must not lose it — see
     # session_restore(): a state longer than the incoming prompt is discarded
@@ -2952,10 +3057,17 @@ def main():
     # quality drifting without an error).
     if SESSION_SAVE or SESSION_RESTORE != "off":
         n_files = len(session_files())
+        # BOTH RULES OR NEITHER. The line named the cooldown and the floor and
+        # stopped there, which was complete until displacement started
+        # overriding both — after that an operator reading it would take "every
+        # 300s at the earliest, from 20000 tokens up" for the whole rule and be
+        # wrong exactly in the case the change was made for.
         log("  session persistence: save %s, restore %s, %d state(s) on disk, "
             "limit %g GB"
-            % ("every %gs at the earliest, from %d tokens up"
-               % (SESSION_SAVE_COOLDOWN_S, SESSION_SAVE_MIN_TOKENS)
+            % ("every %gs at the earliest, from %d tokens up — or at once from "
+               "%d tokens when another prefix has taken the slot since"
+               % (SESSION_SAVE_COOLDOWN_S, SESSION_SAVE_MIN_TOKENS,
+                  SESSION_SAVE_MIN_TOKENS_DISPLACED)
                if SESSION_SAVE else "off",
                SESSION_RESTORE, n_files, SESSION_MAX_GB))
         if SESSION_RESTORE == "displaced":

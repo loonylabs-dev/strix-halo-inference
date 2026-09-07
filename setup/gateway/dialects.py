@@ -162,6 +162,63 @@ def prefix_id(body, dialect, head_bytes=HEAD_BYTES):
             hashlib.sha256(full[:head_bytes].encode("utf-8")).hexdigest()[:12])
 
 
+def conversation_head(body):
+    """The first user message as text — what distinguishes two CONVERSATIONS.
+
+    `prefix_text` above answers "what can llama.cpp reuse". This answers "whose
+    turn is this", and the two are not the same question: two conversations
+    genuinely share their system head and tool block (3,691 tokens of it,
+    measured 07.09.2026), so that span is reusable and must stay in the prefix
+    id. What separates them is the conversation itself.
+
+    The first user message is the one part of a conversation that is present in
+    every one of its turns and is not shared with a sibling. MEASURED before
+    choosing it, over three trace days: across 210 requests under one prefix id
+    it took exactly THREE values with TWO switches — long stable phases, not
+    per-turn churn, and the three phases are three conversations that had been
+    sharing one identity and one state file. `shape[0]` (the system message) is
+    constant, so it cannot separate them.
+
+    Returns "" when there is no user message at all, which is not an error:
+    prewarm saves a bare prefix and has none.
+    """
+    for m in (body.get("messages") or []):
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return blocks_to_text(c)
+        return ""
+    return ""
+
+
+def session_id(body, dialect, head_bytes=HEAD_BYTES):
+    """Id of this CONVERSATION — what a state file may be named after.
+
+    `prefix_id` is deliberately stable across conversations that share a system
+    prompt and a tool set, because that shared span really is one reusable
+    prefix. Naming the slot state after it was the defect
+    `session-identity-ignores-the-conversation`: an agent and its sub-agents
+    wrote over each other's session-<id>.bin and shared one bookkeeping entry,
+    so the trace read a sibling's history as an edit of this one's
+    (`rewritten from 2`, measured live 07.09.2026).
+
+    Falls back to the plain prefix id when there is no user message, so a
+    prewarmed bare prefix keeps the name that prewarm.py files it under —
+    otherwise the state a cold start depends on becomes unfindable.
+    """
+    import hashlib
+    full, _ = prefix_id(body, dialect, head_bytes)
+    head = conversation_head(body)
+    if not head:
+        return full
+    return hashlib.sha256(
+        (prefix_text(body, dialect) + "\x00" + head).encode("utf-8")
+    ).hexdigest()[:12]
+
+
 def iter_system_messages(body):
     """(index, message) of every system message inside `messages`."""
     msgs = body.get("messages")

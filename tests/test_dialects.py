@@ -480,5 +480,62 @@ class TestTheShapesRealAnswersContain(unittest.TestCase):
         self.assertTrue(D.looks_degenerate("The answer is " + "/" * 300)[0])
 
 
+class TestSessionId(unittest.TestCase):
+    """The identity of a CONVERSATION, which is not the identity of a prefix.
+
+    MEASURED 07.09.2026 in production and filed as
+    `session-identity-ignores-the-conversation`: an agent and its sub-agents
+    share a system prompt and a tool set, therefore shared `prefix_id`,
+    therefore one bookkeeping entry and ONE session-<id>.bin they overwrote in
+    turn. The trace read the collision as `rewritten from 2` — a client editing
+    its history — when it was a different conversation wearing the same name.
+
+    Both properties below must hold at once, and that is the whole difficulty:
+    stable across the turns of one conversation (or every turn goes cold),
+    distinct between conversations (or they clobber each other).
+    """
+
+    def test_two_conversations_sharing_system_and_tools_are_not_one_session(self):
+        a = D.session_id(oai_body(question="build the parser"), D.OPENAI)
+        b = D.session_id(oai_body(question="review the tests"), D.OPENAI)
+        self.assertNotEqual(a, b)
+
+    def test_it_is_stable_across_the_turns_of_one_conversation(self):
+        first = oai_body(question="build the parser")
+        later = oai_body(question="build the parser", extra_messages=[
+            {"role": "assistant", "content": "here is the parser"},
+            {"role": "user", "content": "now add error handling"}])
+        self.assertEqual(D.session_id(first, D.OPENAI),
+                         D.session_id(later, D.OPENAI))
+
+    def test_system_and_tools_still_change_it(self):
+        base = D.session_id(oai_body(), D.OPENAI)
+        self.assertNotEqual(base, D.session_id(oai_body(system="other"), D.OPENAI))
+        self.assertNotEqual(base, D.session_id(oai_body(tools=[]), D.OPENAI))
+
+    def test_a_body_with_no_user_message_falls_back_to_the_prefix_id(self):
+        """prewarm.py saves a BARE prefix — system and tools, no conversation.
+
+        It has no first user message to be distinguished by, and inventing one
+        would file it under a name no real request ever produces. Falling back
+        keeps the prewarmed state findable.
+        """
+        bare = {"model": "qwen38",
+                "messages": [{"role": "system", "content": "You are an agent."}],
+                "tools": list(TOOLS_OAI)}
+        self.assertEqual(D.session_id(bare, D.OPENAI),
+                         D.prefix_id(bare, D.OPENAI)[0])
+
+    def test_the_slot_prefix_id_is_deliberately_left_alone(self):
+        """`prefix_id` describes what llama.cpp can REUSE, not who is asking.
+
+        Two conversations really do share their system head and tools, and that
+        span really is reusable — 3,691 tokens of it on 07.09. Folding the
+        conversation into this id would make the gateway blind to it.
+        """
+        self.assertEqual(D.prefix_id(oai_body(question="alpha"), D.OPENAI),
+                         D.prefix_id(oai_body(question="beta"), D.OPENAI))
+
+
 if __name__ == "__main__":
     unittest.main()

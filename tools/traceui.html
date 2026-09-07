@@ -68,7 +68,7 @@
 <header>
   <h1>llm-gateway trace</h1>
   <select id=day></select>
-  <input id=q placeholder="filter: slug, prefix, who, mode…" size=26>
+  <input id=q placeholder="filter: slug, prefix, session, who, mode…" size=26>
   <select id=kind>
     <option value="">all kinds</option>
     <option>request</option><option>save</option><option>restore</option>
@@ -103,7 +103,7 @@
 <table>
   <thead><tr>
     <th>time</th><th>kind</th><th>who</th><th>client</th><th>slug</th><th>served/mode</th>
-    <th>prefix</th><th></th><th class=num>s</th>
+    <th>prefix</th><th>session</th><th></th><th class=num>s</th>
     <th class=num>in</th><th class=num>cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>history</th><th>share</th>
   </tr></thead>
   <tbody id=rows></tbody>
@@ -266,6 +266,25 @@ function saveRate(r) {
   return `~${Math.round(tokens / compute)}·–`;
 }
 
+// The session column. Empty for records written before the gateway recorded it
+// — an empty cell is the honest answer, not a claim that there was only one
+// conversation. Red when the prefix carries more than one: that is the whole
+// point of the column, and without the highlight the reader has to compare
+// twelve hex characters by eye down a long table.
+function sessionCell(r) {
+  if (r.kind !== "request") return {label: "", why: "", bad: false};
+  if (!r.session) return {label: "", why: "written before the gateway recorded "
+                                        + "a session id — unknown, not single",
+                          bad: false};
+  const n = (sharedPrefix.get(r.prefix) || new Set()).size;
+  if (n > 1)
+    return {label: r.session, bad: true,
+            why: `${n} conversations share prefix ${r.prefix} — they also share `
+                 + `one session-<id>.bin and one set of prev_in/msgs_prev, so a `
+                 + `sibling's history reads here as an edit of this one's`};
+  return {label: r.session, why: "", bad: false};
+}
+
 function row(r, i) {
   const req = r.kind === "request";
   const cold = r.kind !== "request" ? "" :
@@ -281,6 +300,7 @@ function row(r, i) {
     <td class="${slugBad ? "bad" : ""}">${esc(r.slug || r.model || "")}</td>
     <td class=dim>${mode}</td>
     <td class=dim>${esc(r.prefix || r.file || "")}</td>
+    <td class="${sessionCell(r).bad ? "bad" : "dim"}" title="${esc(sessionCell(r).why)}">${esc(sessionCell(r).label)}</td>
     <td>${cold}</td>
     <td class=num title="${saveHint(r)}">${r.took_s ?? r.saved_s ?? ""}</td>
     <td class=num>${inAny(r) ?? ""}</td>
@@ -289,7 +309,7 @@ function row(r, i) {
     <td class=num title="read·write. Without ~ measured by the server; with ~ derived by the gateway from the time to the first token">${rates(r)}</td>
     <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=15><pre id=detail>loading …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=16><pre id=detail>loading …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------
@@ -393,7 +413,29 @@ function drawCharts(rows) {
 
 let listed = [];            // exactly what the table shows, newest first
 
+// Which prefixes carry MORE THAN ONE conversation. Computed over everything
+// loaded, not over the filtered view: a collision is a property of the traffic,
+// and filtering to one session must not make it disappear from the row that
+// belongs to it.
+//
+// This is the reading the UI could not give on 07.09.2026. Three conversations
+// sat under prefix c36336bd1680 and a fourth under another; the table showed
+// one `prefix` column, so a sibling's history looked like this one's edited
+// history and the row said `rewritten from 2`. See setup/defects.json,
+// `session-identity-ignores-the-conversation`.
+let sharedPrefix = new Map();   // prefix -> Set of session ids
+function indexSessions() {
+  const m = new Map();
+  for (const r of records) {
+    if (r.kind !== "request" || !r.prefix || !r.session) continue;
+    if (!m.has(r.prefix)) m.set(r.prefix, new Set());
+    m.get(r.prefix).add(r.session);
+  }
+  sharedPrefix = m;
+}
+
 function render() {
+  indexSessions();
   // The charts read TIME, so they stay chronological; the table is read from
   // the top, so the newest belongs there. Two orders, one set of rows — and
   // the click handler uses `listed`, so the two can never drift apart.

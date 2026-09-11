@@ -30,10 +30,11 @@ if [ -z "${LLAMA_ARGS:-}" ]; then
   exit 0
 fi
 
-# @MODELS@ and @HOME@ are placeholders a profile uses so that it is not tied
-# to one person's directories. Expanded here as well as in the unit's ExecStart
-# and in setup/lib/systemdfile.py — three call sites, one meaning, and they
-# must not drift. tests/test_scripts.py pins that they all know both tokens.
+# @MODELS@, @HOME@ and @SLOTS@ are placeholders a profile uses so that it is
+# not tied to one person's directories. Expanded here as well as in the unit's
+# ExecStart and in setup/lib/systemdfile.py — three call sites, one meaning,
+# and they must not drift. tests/test_scripts.py pins that all three know every
+# token.
 # Bash parameter expansion rather than sed: no delimiter to collide with a
 # path, and no '&' to be reinterpreted in a replacement.
 #
@@ -52,6 +53,12 @@ case "$ARGS" in
   loads it from ~/.config/llm-stack.env; run bash setup/install.sh}" ;;
 esac
 ARGS="${ARGS//@MODELS@/${LLAMA_MODELS:-}}"
+# This script only looks for the model file, so an unexpanded @SLOTS@ would do
+# no harm HERE — which is exactly the argument for expanding it anyway. The
+# rule the three call sites share is "nobody silently forgets a token"; an
+# exception that is harmless today is the one that gets copied tomorrow.
+# Default kept identical to systemdfile.SLOTS_DEFAULT and to llamaexec.
+ARGS="${ARGS//@SLOTS@/${LLAMA_SLOTS:-$HOME/.cache/llama-slots}}"
 
 model=""
 # shellcheck disable=SC2086  # word splitting is exactly what is wanted here

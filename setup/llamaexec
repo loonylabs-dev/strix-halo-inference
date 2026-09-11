@@ -22,6 +22,10 @@
 #   @MODELS@   $LLAMA_MODELS, which the unit loads from
 #              ~/.config/llm-stack.env. NO default: a directory that
 #              exists on one machine is not one.
+#   @SLOTS@    $LLAMA_SLOTS, same file — but WITH a default, because a
+#              cache directory can be derived where a model directory
+#              cannot. See systemdfile.SLOTS_DEFAULT for why it exists:
+#              the default filled the root filesystem on 11.09.2026.
 #
 # Parameter expansion, not sed: no delimiter that a path could contain, and
 # no '&' to be reinterpreted in a replacement. Deliberately not `eval`: a
@@ -41,6 +45,11 @@ case "$A" in
   loads it from ~/.config/llm-stack.env; run bash setup/install.sh}" ;;
 esac
 A="${A//@MODELS@/${LLAMA_MODELS:-}}"
+# No `case` guard here, unlike @MODELS@ above: this one always has an answer,
+# so there is nothing to refuse. Keep the default identical to
+# systemdfile.SLOTS_DEFAULT — two spellings of one default is how a server
+# and the tool that prunes its store end up on different directories.
+A="${A//@SLOTS@/${LLAMA_SLOTS:-$HOME/.cache/llama-slots}}"
 BIN="$HOME/${LLAMA_BIN:-llama.cpp/build-vulkan/bin/llama-server}"
 
 # Word splitting on whitespace is exactly what systemd would have done, and

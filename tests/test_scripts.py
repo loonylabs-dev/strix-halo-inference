@@ -367,7 +367,7 @@ class TestPlaceholdersAgree(unittest.TestCase):
     and modelless, and /slots answered so it looked alive.
     """
 
-    TOKENS = ("@HOME@", "@MODELS@")
+    TOKENS = ("@HOME@", "@MODELS@", "@SLOTS@")
     PLACES = ("setup/lib/systemdfile.py", "setup/waitformodel", "setup/llamaexec")
 
     def test_all_three_expanders_know_both_tokens(self):

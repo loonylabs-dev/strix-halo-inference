@@ -52,8 +52,23 @@ for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
         break
 import dialects as DIA                                    # noqa: E402
 
+# systemdfile.py answers where the store IS — same two-location dance as
+# dialects above: setup/lib/ in the repo, side by side here once installed.
+# Reading the answer rather than repeating the default matters more here than
+# it looks: this file DELETES. A prewarm that fell back to `~/.cache/
+# llama-slots` on a machine whose store had moved would tidy an empty
+# directory and report success, and the real store would grow unwatched —
+# which is the failure of 11.09.2026 repeated one level down.
+for _cand in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "..", "setup", "lib"),
+              os.path.dirname(os.path.abspath(__file__))):
+    if os.path.exists(os.path.join(_cand, "systemdfile.py")):
+        sys.path.insert(0, _cand)
+        break
+import systemdfile as SDF                                 # noqa: E402
+
 SRV        = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
-SLOT_PATH   = os.environ.get("SLOT_PATH", os.path.expanduser("~/.cache/llama-slots"))
+SLOT_PATH   = os.environ.get("SLOT_PATH") or SDF.slots_dir()
 VOLATILE  = [re.compile(r"<total_tokens>\s*\d+\s*tokens left\s*</total_tokens>")]
 
 def req(path, payload=None, method=None, t=1800):

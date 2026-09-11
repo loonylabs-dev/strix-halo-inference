@@ -36,8 +36,13 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.addCleanup(__import__("shutil").rmtree, self.d, ignore_errors=True)
+        # LLAMA_SLOTS belongs in this list for the same reason as the others:
+        # slots_dir() consults the environment first, so an operator who has
+        # moved their store would otherwise run a DIFFERENT test suite than
+        # one who has not.
         self.saved = {k: os.environ.pop(k, None)
-                      for k in ("LLAMA_MODELS", "LLM_STACK_ENV", "MODELLPFAD")}
+                      for k in ("LLAMA_MODELS", "LLM_STACK_ENV", "MODELLPFAD",
+                                "LLAMA_SLOTS")}
 
     def tearDown(self):
         for k, v in self.saved.items():
@@ -188,6 +193,119 @@ class TestWhereTheModelsAre(Base):
                          os.path.expanduser("~") + "/x")
         with self.assertRaises(SystemExit):
             systemdfile.expand("@MODELS@/x")
+
+
+class TestTheSlotStoreHasAnAddress(Base):
+    """@SLOTS@ exists because the DEFAULT filled a disk on 11.09.2026.
+
+    106 GiB of saved prefixes on a 233 GiB root filesystem, 3.4 GiB free —
+    and nothing had failed. prefix-cleanup.timer ran weekly and exited 0
+    every time, because AUTO_MAX_GB=100 is a budget that partition can never
+    enforce. The root subvolume is snapshotted on top of that, so deleting
+    the files freed nothing for the retention period.
+
+    None of that is fixable by a better default: the right volume differs per
+    machine, and until now saying so meant writing one machine's path into a
+    public repository. Hence a placeholder, and hence these tests.
+    """
+
+    def test_the_default_resolves_without_any_configuration(self):
+        """The one property that separates @SLOTS@ from @MODELS@. A model
+        directory cannot be derived and fails loudly; a cache directory can,
+        and a machine that has never run install.sh still has to start."""
+        self.config("")
+        self.assertEqual(systemdfile.slots_dir(),
+                         os.path.expanduser("~/.cache/llama-slots"))
+
+    def test_the_machine_file_overrides_the_default(self):
+        self.config("LLAMA_SLOTS=/mnt/elsewhere/slots\n")
+        self.assertEqual(systemdfile.slots_dir(), "/mnt/elsewhere/slots")
+
+    def test_the_environment_overrides_the_machine_file(self):
+        """Same precedence as LLAMA_MODELS: one command can say otherwise
+        without editing the machine's answer."""
+        self.config("LLAMA_SLOTS=/mnt/elsewhere/slots\n")
+        os.environ["LLAMA_SLOTS"] = "/just/this/once"
+        self.assertEqual(systemdfile.slots_dir(), "/just/this/once")
+
+    def test_expand_puts_the_configured_store_into_the_arguments(self):
+        self.config("LLAMA_SLOTS=/mnt/elsewhere/slots\n")
+        self.assertEqual(systemdfile.expand("--slot-save-path @SLOTS@"),
+                         "--slot-save-path /mnt/elsewhere/slots")
+
+    def test_the_fold_beats_the_home_when_the_store_is_the_default(self):
+        """The ordering property, and @SLOTS@ is a sharper case than
+        @MODELS@ because its default LIVES under the home directory. Fold
+        $HOME first and `~/.cache/llama-slots` becomes
+        `@HOME@/.cache/llama-slots` — a correct path and a lost placeholder.
+        A profile recorded that way names the default forever, including on
+        the machine that had just moved its store off a full disk.
+        """
+        got = systemdfile.unexpand("/h/.cache/llama-slots/session-a.bin",
+                                   home="/h", models=None,
+                                   slots="/h/.cache/llama-slots")
+        self.assertEqual(got, "@SLOTS@/session-a.bin")
+
+    def test_no_profile_names_the_store_by_hand(self):
+        """The rule that would have prevented this, applied where it broke.
+
+        Five profiles carried `@HOME@/.cache/llama-slots` — not a private
+        path, so test_no_env_file_names_a_real_directory never objected, and
+        not a placeholder either, so no machine could answer differently.
+
+        The RAW text, deliberately: llama_args() expands, and a test that read
+        the expanded value would be asking this machine where its store is
+        rather than asking the file what it says.
+        """
+        profiles = sorted((REPO / "setup" / "env").glob("*.env"))
+        # Positive control: an empty glob would make every assertion below
+        # vacuous and this test green forever. The five profiles that carried
+        # the hand-written path are exactly what it has to be reading.
+        self.assertGreaterEqual(len(profiles), 5,
+                                "found no profiles to check — the glob is "
+                                "wrong, not the profiles")
+        checked = 0
+        for f in profiles:
+            text = f.read_text(encoding="utf-8")
+            if "--slot-save-path" in text:
+                checked += 1
+            with self.subTest(profile=f.name):
+                self.assertNotIn(
+                    ".cache/llama-slots", text,
+                    "%s spells the default store out by hand; use @SLOTS@, "
+                    "which every machine can point elsewhere" % f.name)
+        # And a second one: the rule is about profiles that SAVE. If none of
+        # them does any more, this test has stopped watching its subject.
+        self.assertTrue(checked, "no profile names --slot-save-path at all")
+
+    def test_no_profile_names_a_store_it_has_switched_off(self):
+        """--no-slots and --slot-save-path in one profile is a contradiction.
+
+        batch.env carried both until 11.09.2026: --no-slots switches off the
+        API that saves, so the path named a destination nothing could write
+        to — and an impossible one at that, /var/cache/llama under a service
+        that runs as the user. Neither half is wrong on its own, which is why
+        it sat there unread; a reader who sees a save path reasonably assumes
+        something gets saved.
+
+        Parsed as ARGUMENTS rather than as text on purpose. The comment that
+        now explains the removal names both flags, and a grep over the raw
+        file would find them there and fail on the very profile it fixed.
+        """
+        profiles = sorted((REPO / "setup" / "env").glob("*.env"))
+        self.assertGreaterEqual(len(profiles), 5,
+                                "found no profiles to check — the glob is "
+                                "wrong, not the profiles")
+        for f in profiles:
+            # models="" keeps @MODELS@ from being resolved: this test asks
+            # about flags and must not need a model directory to run.
+            args = systemdfile.args_of(str(f), "LLAMA_ARGS", models="") or []
+            with self.subTest(profile=f.name):
+                if "--no-slots" in args:
+                    self.assertNotIn(
+                        "--slot-save-path", args,
+                        "%s switches the slots API off and still names a "
+                        "save path; one of the two is not meant" % f.name)
 
 
 class TestRecordingIsTheInverseOfRunning(unittest.TestCase):

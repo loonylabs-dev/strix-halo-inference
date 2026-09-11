@@ -45,7 +45,8 @@ import glob, os, sys
 
 __all__ = ["llama_args", "args_of", "variable", "directive", "flag", "expand",
            "LLAMA_ARGS",
-           "local_env_path", "local_var", "models_dir", "MODELS_CONVENTIONS"]
+           "local_env_path", "local_var", "models_dir", "MODELS_CONVENTIONS",
+           "slots_dir", "SLOTS_DEFAULT"]
 
 LLAMA_ARGS = "LLAMA_ARGS"
 
@@ -132,6 +133,37 @@ def models_dir(required=True):
         % (local_env_path(), ", ".join(MODELS_CONVENTIONS)))
 
 
+# Where the saved prefixes go. UNLIKE the model directory this one HAS a
+# default, and the difference is the point: a model directory cannot be
+# derived — guessing one aims a server at somebody else's files — while a
+# cache directory can always fall back to the XDG-ish location every machine
+# has. So @MODELS@ fails loudly when unset and @SLOTS@ quietly resolves.
+#
+# It became a placeholder on 11.09.2026, after the default filled the root
+# filesystem. The store had grown to 106 GiB across three directories on a
+# 233 GiB partition (69 GiB live, 37 GiB parked by hand) and the machine
+# reported 3.4 GiB free while a second volume sat at 35 % used. Nothing was
+# broken: `prefix-cleanup.timer` ran weekly and exited 0 every time, because
+# AUTO_MAX_GB=100 is a budget that a 233 GiB partition can never enforce. The
+# limit was fine, the VOLUME it was written for was not — and until now there
+# was no way to say so without writing one machine's path into a public repo.
+SLOTS_DEFAULT = "~/.cache/llama-slots"
+
+
+def slots_dir():
+    """Where the saved prefixes live:
+
+        $LLAMA_SLOTS                an explicit answer for this one command
+        ~/.config/llm-stack.env     this machine's answer, written once
+        ~/.cache/llama-slots        the default, which always resolves
+
+    Never raises: see the comment above on why this differs from models_dir().
+    """
+    return os.path.expanduser(
+        os.environ.get("LLAMA_SLOTS") or local_var("LLAMA_SLOTS")
+        or SLOTS_DEFAULT)
+
+
 def _assignment(path, name):
     """The raw value of `name`, continuation lines joined, or None.
 
@@ -169,21 +201,27 @@ def _assignment(path, name):
 #
 # systemd's own %h is not available either: specifiers are expanded in unit
 # files, not in EnvironmentFile values.
-def expand(text, home=None, models=None):
-    """Replace @HOME@ and @MODELS@. Pure, so the unit and the tools agree.
+def expand(text, home=None, models=None, slots=None):
+    """Replace @HOME@, @MODELS@ and @SLOTS@. Pure, so the unit and the tools
+    agree.
 
     The model directory is resolved ONLY when @MODELS@ is actually in the
     text. A missing answer is a problem for a profile that names a model, and
     no problem at all for a unit file that does not — raising in both cases
     would make a machine without models unable to read its own configuration.
+    @SLOTS@ needs no such guard: slots_dir() always answers.
     """
     home = home if home is not None else os.path.expanduser("~")
     if models is None and "@MODELS@" in text:
         models = models_dir()
-    return text.replace("@HOME@", home).replace("@MODELS@", models or "")
+    if slots is None and "@SLOTS@" in text:
+        slots = slots_dir()
+    return (text.replace("@HOME@", home)
+                .replace("@MODELS@", models or "")
+                .replace("@SLOTS@", slots or ""))
 
 
-def unexpand(text, home=None, models=None):
+def unexpand(text, home=None, models=None, slots=None):
     """The inverse: a path as it should be RECORDED rather than run.
 
     "Expanded to run, unexpanded to record" was the rule bench/sweep.py
@@ -199,12 +237,23 @@ def unexpand(text, home=None, models=None):
     sit under the home directory, and folding the home first would leave
     "@HOME@/models" with nothing left for @MODELS@ to match. The more
     specific replacement has to go first or it never happens.
+
+    @SLOTS@ is the same argument and a sharper case, because its DEFAULT sits
+    under the home directory: fold $HOME first and `~/.cache/llama-slots`
+    becomes `@HOME@/.cache/llama-slots` — a correct path and a lost
+    placeholder. A profile recorded that way would name the default forever,
+    including on a machine that had moved its store off the root filesystem,
+    which is the whole reason the token exists.
     """
     home = home if home is not None else os.path.expanduser("~")
     if models is None:
         models = models_dir(required=False)
+    if slots is None:
+        slots = slots_dir()
     if models:
         text = text.replace(models.rstrip("/"), "@MODELS@")
+    if slots:
+        text = text.replace(slots.rstrip("/"), "@SLOTS@")
     return text.replace(home.rstrip("/"), "@HOME@") if home else text
 
 

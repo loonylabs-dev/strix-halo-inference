@@ -220,7 +220,16 @@ IN_FLIGHT_PER_TOKEN = {}
 # The disk therefore covers any number of projects, not just as many as there
 # are slots. When a cold request arrives whose prefix lies there, it is pulled
 # into a free slot before forwarding — ~0.15 s instead of 110 s.
-SLOT_PATH = env("SLOT_PATH", "SLOTPFAD", os.path.expanduser("~/.cache/llama-slots"))
+# The default comes from systemdfile rather than being spelled out again: the
+# SERVER is told where to save by @SLOTS@ in its profile, and this process
+# decides what AUTO_MAX_GB has room for by listing that same directory. Two
+# spellings of one default is how those two end up on different directories —
+# and the failure is silent in the worst direction, because a gateway looking
+# at an empty directory reports 0 GB used and keeps saving forever. SDF is
+# None only outside the repo, where the old default is still the best guess.
+SLOT_PATH = env("SLOT_PATH", "SLOTPFAD",
+                SDF.slots_dir() if SDF
+                else os.path.expanduser("~/.cache/llama-slots"))
 SAVED = {}
 # How many requests have been forwarded to the model. Not a statistic: a save
 # takes ~102 s here and there is ONE slot, so anything served in that window

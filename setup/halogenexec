@@ -152,6 +152,16 @@ POOL_WANT="${POOL_WANT:-524288}"
 MAX_TOK_WANT="${HALOGEN_MAX_TOK:-$(local_var HALOGEN_MAX_TOK 2>/dev/null || true)}"
 MAX_TOK_WANT="${MAX_TOK_WANT:-16384}"
 
+EXTRA_ENV=()
+for var in HALOGEN_TEMPERATURE HALOGEN_TOP_P HALOGEN_TOP_K HALOGEN_MIN_P \
+           HALOGEN_MAX_THINKING_TOKENS HALOGEN_MAX_TOKENS_DEFAULT \
+           HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES; do
+  val="${!var:-$(local_var "$var" 2>/dev/null || true)}"
+  if [ -n "$val" ]; then
+    EXTRA_ENV+=(-e "$var=$val")
+  fi
+done
+
 if [ "$FLAVOR" = "qwen38" ]; then
   SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"
   SLOTS_WANT="${SLOTS_WANT:-1}"
@@ -172,6 +182,7 @@ if [ "$FLAVOR" = "qwen38" ]; then
     -e HALOGEN_SLOT_CTX="$SLOT_CTX" \
     -e HALOGEN_DRAFTER="$DRAFTER_WANT" \
     -e HALOGEN_CHECKPOINT="/models/$(basename "$CHECKPOINT_FILE")" \
+    "${EXTRA_ENV[@]}" \
     "$IMAGE"
 fi
 
@@ -191,4 +202,5 @@ exec podman run --rm \
   -e HALOGEN_CHECKPOINT=/models/qwen38-flash-next-w4b.hgn \
   -e HALOGEN_ADMIT_CHUNK="${HALOGEN_ADMIT_CHUNK:--1}" \
   "${VISION_ARGS[@]}" \
+  "${EXTRA_ENV[@]}" \
   "$IMAGE" all

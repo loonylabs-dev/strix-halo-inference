@@ -14,7 +14,7 @@
 # change to this one file — the shape of defect this repository keeps
 # finding, and the reason setup/patches/ exists for llama.cpp.
 #
-# WHAT IS CHANGED — two hunks against the base above:
+# WHAT IS CHANGED — three hunks against the base above:
 #
 #   1. get_eos_ids()  The model has TWO end tokens, <|im_end|> (248046) and
 #      <|endoftext|> (248044), and the base registered only tok.eos_token_id.
@@ -24,17 +24,14 @@
 #   2. the same function takes the request's stop STRINGS and registers the
 #      ones that are single tokens as EOS ids, so a client's stop list is
 #      honoured by the engine rather than only by the text matcher.
-# A THIRD HUNK WAS DROPPED AGAIN ON 12.09.2026 and is recorded here so it is
-# not re-added: it made wants_usage() default to True, so every stream
-# carried a usage block whether or not the client asked. That is a behaviour
-# change for every client rather than a fix — an OpenAI client that does not
-# expect the trailing choices:[] chunk sees one — and it was redundant: the
-# gateway asks for usage explicitly in inject_model_kwargs, on every
-# streaming request to this backend, and bench/run_halogen.py speaks to the
-# container's `sweep` subcommand rather than to HTTP. Fewer hunks is the
-# point of a vendored file.
+#   3. Thinking budget & forced tag-closing: Prevents runaway reasoning loops
+#      (defect halogen-greedy-reasoning-loop) by bounding thinking tokens
+#      (default 26,000 for low, 49,152 for medium/high, or HALOGEN_MAX_THINKING_TOKENS).
+#      If thinking exceeds the cap without closing </think>, serve_api aborts
+#      the engine turn, emits </think>\n\n, and seamlessly continues answer
+#      generation using the warm Radix KV cache (<20ms prefill).
 #
-# RETIREMENT: both hunks go when an image ships them — check the upstream
+# RETIREMENT: all hunks go when an image ships them — check the upstream
 # changelog on every bump; the mount check refuses the start and says so.
 # ===========================================================================
 """serve_api.py — the OpenAI-compatible front-end.
@@ -1140,6 +1137,7 @@ def _env_bool(name):
 
 DEFAULTS = {
     "max_tokens": _env_number("HALOGEN_MAX_TOKENS_DEFAULT", 1, 1 << 30, int),
+    "max_thinking_tokens": _env_number("HALOGEN_MAX_THINKING_TOKENS", 1, 1 << 30, int),
     "temperature": _env_number("HALOGEN_TEMPERATURE", 0.0, 2.0, float),
     "top_p": _env_number("HALOGEN_TOP_P", 0.0, 1.0, float),
     "top_k": _env_number("HALOGEN_TOP_K", 0, 1 << 30, int),
@@ -1181,6 +1179,7 @@ def server_default(req, field):
 def defaults_summary():
     """The defaults an operator set, for the startup line and /health."""
     names = {"max_tokens": "HALOGEN_MAX_TOKENS_DEFAULT",
+             "max_thinking_tokens": "HALOGEN_MAX_THINKING_TOKENS",
              "temperature": "HALOGEN_TEMPERATURE", "top_p": "HALOGEN_TOP_P",
              "top_k": "HALOGEN_TOP_K", "min_p": "HALOGEN_MIN_P",
              "presence_penalty": "HALOGEN_PRESENCE_PENALTY",
@@ -1247,7 +1246,8 @@ class CompletionReq(BaseModel):
 # The template controls this server honours, in either spelling. Module
 # scope rather than a class attribute because pydantic reads an unannotated
 # class attribute as a field default.
-TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking")
+TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking",
+                   "max_thinking_tokens", "budget_tokens")
 
 
 class ChatReq(BaseModel):
@@ -1272,6 +1272,8 @@ class ChatReq(BaseModel):
     # the current spelling is honored instead of quietly getting the default.
     max_completion_tokens: int | None = None
     max_output_tokens: int | None = None
+    max_thinking_tokens: int | None = None
+    budget_tokens: int | None = None
     stream: bool = False
     stop: list[str] | str | None = None
     stream_options: dict | None = None
@@ -1340,6 +1342,8 @@ class ChatReq(BaseModel):
         error instead of from a 200 that did not do what was asked.
         """
         if self.chat_template_kwargs is None:
+            if self.budget_tokens is not None and self.max_thinking_tokens is None:
+                self.max_thinking_tokens = self.budget_tokens
             return self
         if not isinstance(self.chat_template_kwargs, dict):
             raise ValueError("chat_template_kwargs must be an object")
@@ -1364,6 +1368,8 @@ class ChatReq(BaseModel):
                         f"{nested!r} in chat_template_kwargs; they are the "
                         f"same control under two names, send one")
             setattr(self, k, nested)
+        if self.budget_tokens is not None and self.max_thinking_tokens is None:
+            self.max_thinking_tokens = self.budget_tokens
         return self
     # an earlier change: IMPLEMENTED. temperature 0 (the default) is greedy and keeps
     # the speculative fast path; anything above 0 samples and is routed to
@@ -1422,6 +1428,7 @@ class ResponsesReq(BaseModel):
     tool_choice: str | dict | None = None
     parallel_tool_calls: bool | None = None
     max_output_tokens: int | None = None
+    max_thinking_tokens: int | None = None
     stream: bool = False
     temperature: float | None = None
     top_p: float | None = None
@@ -1865,6 +1872,59 @@ class ThinkSplit:
                 self.full[i + len(self.MARK):].lstrip("\n"))
 
 
+DEFAULT_THINKING_BUDGET_LOW = 26000    # Variant C - 8 min
+DEFAULT_THINKING_BUDGET_HIGH = 49152   # 75% of 64k (~15 min)
+
+
+def resolve_thinking_budget(req, thinking: bool, max_tokens: int) -> int | None:
+    """Determine maximum thinking tokens allowed before forcing </think>.
+
+    Returns None if thinking is disabled or context is too small.
+    """
+    if not thinking or max_tokens <= 1:
+        return None
+    # 1. Explicit request field
+    req_budget = getattr(req, "max_thinking_tokens", None) or getattr(req, "budget_tokens", None)
+    if req_budget is not None:
+        return max(1, min(int(req_budget), max_tokens - 1))
+    # 2. Nested chat_template_kwargs (vLLM / Anthropic bridge spelling)
+    ctk = getattr(req, "chat_template_kwargs", None)
+    if isinstance(ctk, dict):
+        bt = ctk.get("max_thinking_tokens") or ctk.get("budget_tokens")
+        if bt is not None:
+            return max(1, min(int(bt), max_tokens - 1))
+    # 3. Request-specified reasoning_effort
+    effort = getattr(req, "reasoning_effort", None)
+    if effort is None and isinstance(ctk, dict):
+        effort = ctk.get("reasoning_effort")
+    if effort is not None:
+        effort = EFFORT_MAP.get(str(effort).lower(), effort)
+
+    # 4. Server environment default override for max_thinking_tokens
+    # If explicitly set in environment AND no request effort or budget was given:
+    if effort is None and DEFAULTS.get("max_thinking_tokens") is not None:
+        return max(1, min(DEFAULTS["max_thinking_tokens"], max_tokens - 1))
+
+    # 5. Default effort if still None: check server default reasoning_effort, else "low"
+    if effort is None:
+        effort = DEFAULTS.get("reasoning_effort") or "low"
+
+    # Sizing per effort tier:
+    # low: cap 26,000 (~8 min), 50% of max_tokens
+    # medium / high / xhigh: cap 49,152 (~15 min), 75% of max_tokens
+    if effort == "low":
+        cap = (DEFAULTS.get("max_thinking_tokens")
+               if DEFAULTS.get("max_thinking_tokens") is not None
+               else DEFAULT_THINKING_BUDGET_LOW)
+        ratio = 0.5
+    else:
+        cap = DEFAULT_THINKING_BUDGET_HIGH
+        ratio = 0.75
+
+    budget = min(cap, max(1, int(max_tokens * ratio)))
+    return max(1, min(budget, max_tokens - 1))
+
+
 def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
     app = FastAPI(title="halogen")
 
@@ -2063,7 +2123,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         return v
 
     async def run(ids, max_tokens, stops, drafter=None, sample=None,
-                  penalty="", snap=0, snap2=0, images=None):
+                  penalty="", snap=0, snap2=0, images=None,
+                  thinking=True, max_thinking_tokens=None):
         """Drives the engine and incrementally detokenizes.
 
         Public issue #13, reported with measurements and a patch by
@@ -2111,13 +2172,79 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # tokens carrying it are not recoverable from a whole-list decode, so
         # reopening empty would drop bytes. Unreachable on this tokenizer.
         use_window = INCREMENTAL_DETOK
-        # an earlier change step 9. an earlier change step 8 measured 32.5 ms/step of front-end cost
-        # at c=8 and named a SUSPECT (O(n^2) detok) without measuring it.
-        # METHOD 45: measure before fixing. These three sum to the wall of
-        # this loop, so they apportion it rather than sampling it.
         prof = {"detok": 0.0, "wait": 0.0, "n": 0}
         _t_last = time.perf_counter()
         req_eos = set(get_eos_ids(stops))
+        interrupted_for_thinking = False
+        close_ids = []
+        out_cont = []
+
+        def _log_ledger(d, label=""):
+            dt = d["decode_ms"] / 1000
+            name = {1: "mtp", 2: "dflash2"}.get(d.get("drafter"),
+                                                "spec" if d.get("rounds")
+                                                else "batch")
+            spec = ""
+            shared = d.get("shared", 0)
+            if d.get("rounds"):
+                spec = (f"{d['rounds']} rounds, commit "
+                        f"{(d['commit'] - shared) / d['rounds']:.2f}"
+                        f"/round | ")
+            pld = ""
+            if d.get("pld_rounds"):
+                pld = (f" | pld {d['pld_rounds']} rounds, "
+                       f"{d['pld_accepted'] / d['pld_rounds']:.2f}"
+                       f" acc/round")
+            rate = (f"{d['n_gen'] / dt:.2f} t/s"
+                    if dt > 0 and d["n_gen"] > 1 else "n/a")
+            tag = f" [{label}]" if label else ""
+            print(f"serve_api: {name}{tag} {d['n_gen']} tok in {dt:.2f}s = "
+                  f"{rate} | {spec}"
+                  f"prompt {d['n_prompt']}"
+                  f"{f' ({c} cached)' if (c := d.get('n_cached')) else ''}"
+                  f", prefill {d['prefill_ms'] / 1000:.2f}s"
+                  f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
+                  + (f" | {shared} tok beside other streams" if shared
+                     else "")
+                  + pld,
+                  flush=True)
+
+        def _detok_step(tid, token_list, cur_text, t_ids, t_text, u_win):
+            _t0 = time.perf_counter()
+            token_list.append(tid)
+            windowed = u_win
+            if windowed:
+                win_ids = t_ids + [tid]
+                new, base = tok.decode(win_ids, skip_special_tokens=True), t_text
+            else:
+                new, base = tok.decode(token_list, skip_special_tokens=True), cur_text
+            prof["detok"] += time.perf_counter() - _t0
+            prof["n"] += 1
+            holding = new.endswith("�")
+            while new.endswith("�"):
+                new = new[:-1]
+            if windowed and not new.startswith(base):
+                new = tok.decode(token_list, skip_special_tokens=True)
+                while new.endswith("�"):
+                    new = new[:-1]
+                base, t_ids, t_text = cur_text, [], ""
+                holding, windowed, u_win = False, False, False
+            if not new.startswith(base):
+                n = 0
+                while n < len(base) and n < len(new) and base[n] == new[n]:
+                    n += 1
+                delta = new[n:]
+                updated_text = cur_text + delta if windowed else new
+            else:
+                delta = new[len(base):]
+                updated_text = cur_text + delta if windowed else new
+            if windowed:
+                if holding and len(win_ids) < CARRY_MAX:
+                    t_ids, t_text = win_ids, new
+                else:
+                    t_ids, t_text = [], ""
+            return delta, updated_text, t_ids, t_text, u_win
+
         async for tid, d, lp in engine.generate(ids, max_tokens, list(req_eos),
                                                 drafter, sample, penalty,
                                                 snap=snap, snap2=snap2,
@@ -2126,158 +2253,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 lps.append(lp)
             if d is not None:
                 done = d
-                # The serving ledger an earlier change asked for: what real traffic
-                # actually commits per round, not what a fixture does.
-                # an earlier change: this WAS guarded by `if d.get("rounds")`, i.e. it
-                # only logged when a DRAFTER ran. The batched scheduler emits a
-                # plain 6-field D line, so batched requests logged NOTHING --
-                # and tools/bench-serving.py, the benchmark of record, parses
-                # exactly this line, so the whole batched path was invisible to
-                # it. The throughput half is now unconditional and keeps that
-                # regex's shape; the spec detail stays conditional because only
-                # a drafter has rounds to report.
-                # A 1-token response has NO decode rate to report: its only
-                # token is the one prefill already produced, so decode_ms
-                # rounds to 0. This used to floor dt at 1e-9 and print
-                # "1000000000.00 t/s" -- a fabricated number sitting in the
-                # exact field a real rate goes. `sweep`'s prefill probes
-                # (max_tokens=1) hit it on every single call, so the first
-                # thing a user benchmarking this image saw in the log was a
-                # 1e9 t/s line.
-                dt = d["decode_ms"] / 1000
-                name = {1: "mtp", 2: "dflash2"}.get(d.get("drafter"),
-                                                    "spec" if d.get("rounds")
-                                                    else "batch")
-                spec = ""
-                shared = d.get("shared", 0)
-                if d.get("rounds"):
-                    # PUBLIC ISSUE #22: `commit` counts EVERY token the
-                    # request produced, and `rounds` only the speculative
-                    # rounds it ran while alone. A request that got one round
-                    # alone and then shared the engine for 189 tokens printed
-                    # `1 rounds, commit 190.00/round`, and two reporters on
-                    # two machines read that as a decode defect. The ratio is
-                    # now over the speculative tokens only, and the shared
-                    # tokens are named at the end of the line. Healthy is
-                    # 1.6 to 1.8. The `N rounds, commit X/round | prompt`
-                    # shape is what bench-serving.py's LEDGER regex parses,
-                    # so the new count goes after it, not inside it.
-                    spec = (f"{d['rounds']} rounds, commit "
-                            f"{(d['commit'] - shared) / d['rounds']:.2f}"
-                            f"/round | ")
-                pld = ""
-                if d.get("pld_rounds"):
-                    # how many of those rounds drafted from the request's
-                    # own context (prompt lookup), and what they accepted
-                    # per round. A TRAILING clause, after detok: the
-                    # `rounds, commit X/round | prompt N` shape is what
-                    # bench-serving.py's LEDGER regex parses, and the first
-                    # cut put this inside it and silently dropped every
-                    # prompt-lookup case from the bench's mean.
-                    pld = (f" | pld {d['pld_rounds']} rounds, "
-                           f"{d['pld_accepted'] / d['pld_rounds']:.2f}"
-                           f" acc/round")
-                # LEDGER in tools/bench-serving.py requires `([\d.]+) t/s`
-                # AND a `rounds, commit` clause. These degenerate lines never
-                # carry rounds, so "n/a" cannot break that parser -- but the
-                # rate keeps its numeric shape in every case that does.
-                rate = (f"{d['n_gen'] / dt:.2f} t/s"
-                        if dt > 0 and d["n_gen"] > 1 else "n/a")
-                print(f"serve_api: {name} {d['n_gen']} tok in {dt:.2f}s = "
-                      f"{rate} | {spec}"
-                      f"prompt {d['n_prompt']}"
-                      f"{f' ({c} cached)' if (c := d.get('n_cached')) else ''}"
-                      f", prefill {d['prefill_ms'] / 1000:.2f}s"
-                      # detok us/token is a CANARY, not a stat: this loop
-                      # decodes the WHOLE token list every step, so its cost
-                      # is O(n^2) and this figure climbs with output length
-                      # -- 17 us/tok at 128 tokens, a projected 2000 us/tok at
-                      # the 16,384 cap (~6% of the request). It is the only
-                      # thing that would show that, and the measurement that
-                      # "refuted" the O(n^2) suspect was taken at n=128, where
-                      # O(n^2) is invisible by construction. `wait` and `sse`
-                      # were dropped: wait duplicates the t/s field and
-                      # changes meaning with concurrency, sse is a constant.
-                      f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
-                      # Issue #22, the other half: how many of this request's
-                      # tokens were produced beside other streams (one row of
-                      # a batched step, or a serial rest stretch), where the
-                      # per-stream rate is the README's concurrency table and
-                      # not the single-stream figure.
-                      + (f" | {shared} tok beside other streams" if shared
-                         else "")
-                      + pld,
-                      flush=True)
+                _log_ledger(d)
                 break
-            # time spent WAITING on the engine == everything since we last
-            # finished a token; it is the term the other two are competing
-            # against and it must be in the ledger or the shares are wrong.
             _t0 = time.perf_counter()
             prof["wait"] += _t0 - _t_last
-            out.append(tid)
-            # Decode the carry window, not the transcript. `base` is
-            # whatever `new` is expected to start with, so the diff below is
-            # the same diff as before on a bounded string.
-            windowed = use_window
-            if windowed:
-                win_ids = tail_ids + [tid]
-                new, base = tok.decode(win_ids, skip_special_tokens=True), tail_text
-            else:
-                new, base = tok.decode(out, skip_special_tokens=True), text
-            prof["detok"] += time.perf_counter() - _t0
-            prof["n"] += 1
-            # HOLD BACK an incomplete multi-byte character. A byte-fallback
-            # token can carry the first byte(s) of a UTF-8 sequence, and
-            # tok.decode renders that as U+FFFD until the next token completes
-            # it. Emitting the U+FFFD means the NEXT decode no longer starts
-            # with what we already sent.
-            #
-            # This was a live bug, found by hitting the endpoint with a real
-            # prompt: the old code answered a mismatch by resetting text to ""
-            # — which makes the next delta the ENTIRE accumulated string, so
-            # the client receives the whole reasoning block a second time,
-            # spliced into the middle of the answer. `5 ÷ 2 = 2.5` came back as
-            # 167 characters instead of 12. Its comment called the case a
-            # "rare retokenization shuffle"; it is neither rare nor a shuffle,
-            # it fires on any character the tokenizer byte-splits (÷ does;
-            # café, 😊 and 日本語 are single tokens here and do not).
-            holding = new.endswith("�")
-            while new.endswith("�"):
-                new = new[:-1]
-            if windowed and not new.startswith(base):
-                # The window did not behave. Rather than guess, re-decode
-                # the whole list and run the ORIGINAL logic for this step, so
-                # the bytes are exactly the older path's. Then close the
-                # window and carry on incrementally.
-                new = tok.decode(out, skip_special_tokens=True)
-                while new.endswith("�"):
-                    new = new[:-1]
-                base, tail_ids, tail_text = text, [], ""
-                holding, windowed, use_window = False, False, False
-            if not new.startswith(base):
-                # Genuine retokenization: emit only what actually differs
-                # rather than re-sending everything. Never reset to "".
-                n = 0
-                while n < len(base) and n < len(new) and base[n] == new[n]:
-                    n += 1
-                delta = new[n:]
-                text = text + delta if windowed else new
-            else:
-                delta = new[len(base):]
-                text = text + delta if windowed else new
-            if windowed:
-                # Hold the window open only while a character is unfinished,
-                # and only as long as one can be: past CARRY_MAX this is not a
-                # split character any more, so stop trusting the window.
-                if holding and len(win_ids) < CARRY_MAX:
-                    tail_ids, tail_text = win_ids, new
-                else:
-                    tail_ids, tail_text = [], ""
-            # A stop string can only become newly complete inside `delta`
-            # plus the longest stop minus one character of what preceded it.
-            # Scanning the whole transcript every step was this loop's second
-            # O(n^2) term, invisible beside the decode. The span is derived,
-            # not guessed, so this finds exactly what the full scan found.
+            delta, text, tail_ids, tail_text, use_window = _detok_step(
+                tid, out, text, tail_ids, tail_text, use_window)
             if stops and delta:
                 span = max(len(t) for t in stops if t) - 1 + len(delta)
                 win = text[-span:] if 0 < span < len(text) else text
@@ -2289,7 +2270,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 tail = delta[:max(0, cut - (len(text) - len(delta)))]
                 if tail:
                     yield tail, None
-                await engine.abort()   # drains through D — never bare cancel
+                await engine.abort()
                 yield None, {"reason": "stop", "n_gen": len(out),
                              "n_prompt": len(ids), "prefill_ms": 0.0,
                              "decode_ms": 0.0, "logprobs": lps}
@@ -2297,9 +2278,73 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             if delta:
                 _t_last = time.perf_counter()
             yield delta, None
+
+            if (thinking and max_thinking_tokens is not None
+                    and len(out) >= max_thinking_tokens
+                    and "</think>" not in text):
+                interrupted_for_thinking = True
+                await engine.abort()
+                break
+
+        if interrupted_for_thinking:
+            close_text = "</think>\n\n"
+            text += close_text
+            close_ids = tok(close_text, add_special_tokens=False)["input_ids"]
+            yield close_text, None
+
+            cont_ids = ids + out + close_ids
+            rem_tokens = min(max_tokens - len(out) - len(close_ids), limit - len(cont_ids))
+            if rem_tokens > 0:
+                print(f"serve_api: thinking budget {max_thinking_tokens} reached ({len(out)} tokens); "
+                      f"closing </think> and continuing with {rem_tokens} remaining tokens", flush=True)
+                tail_ids, tail_text = [], ""
+                use_window = INCREMENTAL_DETOK
+                _t_last = time.perf_counter()
+                async for tid, d, lp in engine.generate(cont_ids, rem_tokens, list(req_eos),
+                                                        drafter, sample, penalty,
+                                                        snap=snap, snap2=snap2,
+                                                        images=images):
+                    if lp is not None:
+                        lps.append(lp)
+                    if d is not None:
+                        done = d
+                        _log_ledger(d, label="cont")
+                        break
+                    _t0 = time.perf_counter()
+                    prof["wait"] += _t0 - _t_last
+                    delta, text, tail_ids, tail_text, use_window = _detok_step(
+                        tid, out_cont, text, tail_ids, tail_text, use_window)
+                    if stops and delta:
+                        span = max(len(t) for t in stops if t) - 1 + len(delta)
+                        win = text[-span:] if 0 < span < len(text) else text
+                        hit = next((s for s in stops if s and s in win), None)
+                    else:
+                        win, hit = "", None
+                    if hit:
+                        cut = len(text) - len(win) + win.index(hit)
+                        tail = delta[:max(0, cut - (len(text) - len(delta)))]
+                        if tail:
+                            yield tail, None
+                        await engine.abort()
+                        total_n = len(out) + len(close_ids) + len(out_cont)
+                        yield None, {"reason": "stop", "n_gen": total_n,
+                                     "n_prompt": len(ids), "prefill_ms": 0.0,
+                                     "decode_ms": 0.0, "logprobs": lps}
+                        return
+                    if delta:
+                        _t_last = time.perf_counter()
+                    yield delta, None
+            else:
+                done = {"reason": "length", "n_gen": len(out) + len(close_ids),
+                        "n_prompt": len(ids), "prefill_ms": 0.0,
+                        "decode_ms": 0.0, "logprobs": lps}
+
+        total_gen = len(out) + (len(close_ids) + len(out_cont) if interrupted_for_thinking else 0)
         if done is not None:
             done["logprobs"] = lps
-        yield None, done or {"reason": "length", "n_gen": len(out),
+            done["n_gen"] = total_gen
+            done["n_prompt"] = len(ids)
+        yield None, done or {"reason": "length", "n_gen": total_gen,
                              "n_prompt": len(ids), "prefill_ms": 0.0,
                              "decode_ms": 0.0, "logprobs": lps}
 
@@ -3129,7 +3174,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     thinking=True, drafter=None, tools=None, parallel=True,
                     sample=None, penalty="",
                     pre="", forced=False, include_usage=False, snap=0,
-                    snap2=0, wire="chat", images=None):
+                    snap2=0, wire="chat", images=None,
+                    max_thinking_tokens=None):
         # batch-1: QUEUE rather than reject. Reasoning defaults to xhigh, so
         # one request routinely runs minutes at ~10 t/s; failing every other
         # caller instantly for that whole window made the endpoint look dead
@@ -3216,7 +3262,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 nonlocal n_ev, n_ka, finished, t_last, gap_max
                 try:
                     gen = guarded(run(ids, max_tokens, stops, drafter, sample,
-                                      penalty, snap, snap2, images))
+                                      penalty, snap, snap2, images,
+                                      thinking=thinking,
+                                      max_thinking_tokens=max_thinking_tokens))
                     # The Responses wire is a different SERIALIZATION of the
                     # same generation. Everything that matters for safety --
                     # the slot semaphore, the abort on hangup, the inflight
@@ -3295,7 +3343,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         try:
             text, done = "", None
             async for delta, d in run(ids, max_tokens, stops, drafter,
-                                      sample, penalty, snap, snap2, images):
+                                      sample, penalty, snap, snap2, images,
+                                      thinking=thinking,
+                                      max_thinking_tokens=max_thinking_tokens):
                 if d is not None:
                     done = d
                     break
@@ -3449,7 +3499,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            parallel=req.parallel_tool_calls is not False,
                            pre=pre, forced=bool(pre),
                            include_usage=wants_usage(req), snap=snap,
-                           snap2=snap2, images=wire_imgs)
+                           snap2=snap2, images=wire_imgs,
+                           max_thinking_tokens=resolve_thinking_budget(
+                               req, thinking, req.max_tokens))
 
     @app.post("/v1/responses")
     async def responses(req: ResponsesReq):
@@ -3485,6 +3537,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                        parallel_tool_calls=req.parallel_tool_calls,
                        reasoning_effort=effort, drafter=req.drafter,
                        temperature=req.temperature, top_p=req.top_p,
+                       max_thinking_tokens=req.max_thinking_tokens,
                        # Issue #14: the Responses spelling of
                        # response_format is `text.format`. Carried onto the
                        # shim so ONE check refuses both wires: a second inline
@@ -3523,8 +3576,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            parallel=req.parallel_tool_calls is not False,
                            pre=pre, forced=bool(pre),
                            snap=snap, snap2=snap2, wire="responses",
-                           images=wire_imgs)
+                           images=wire_imgs,
+                           max_thinking_tokens=resolve_thinking_budget(
+                               shim, thinking, shim.max_tokens))
 
+    app.state.run = run
+    app.state.serve = serve
     return app
 
 

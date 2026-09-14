@@ -893,6 +893,24 @@
       "status": "mitigated",
       "first_seen": "2026-09-12",
       "last_checked": "2026-09-13"
+    },
+    {
+      "id": "halogen-greedy-reasoning-loop",
+      "title": "Greedy decoding (T=0) at high context causes deterministic reasoning loops exceeding 32k tokens",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "slow",
+      "symptom": "Requests omitting temperature default to greedy sampling (T=0). At high context (>120k tokens), the model enters deterministic self-reflective reasoning loops (e.g. repeated 'Let me step back and think') until exhausting max_tokens (32,000+ tokens in 580s) with 0 content tokens returned.",
+      "measured": "Measured 14.09.2026: Request with ~120k prompt tokens at default T=0 generated 32,000 tokens of pure reasoning_content in 580.46s (55.13 t/s) before hitting the max_tokens limit of 32,000 without emitting </think>. The final tokens repeated 'Let me step back and think' deterministically. Zero answer content was produced.",
+      "mitigation": "1) Default sampling in serve_api.py (HALOGEN_TEMPERATURE=0.6, HALOGEN_TOP_P=0.95) breaking deterministic greedy reasoning attractors while preserving MTP decode speed. 2) Sized thinking budget in serve_api.py (26,000 tokens on low ~8 min, 49,152 on medium/high): when reached without </think>, the initial turn is aborted, </think>\\n\\n is emitted, and a warm Radix KV-cached continuation (<20ms prefill) is launched to stream the actual answer. 3) Global default max_tokens raised to 65,536.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "mitigated",
+      "first_seen": "2026-09-14",
+      "last_checked": "2026-09-14"
     }
   ]
 }

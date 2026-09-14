@@ -2427,6 +2427,8 @@ async def handler(req):
                 oai_p["enable_thinking"] = p["enable_thinking"]
             if "reasoning_effort" in p:
                 oai_p["reasoning_effort"] = p["reasoning_effort"]
+            if "max_thinking_tokens" in p:
+                oai_p["max_thinking_tokens"] = p["max_thinking_tokens"]
             if "stop" in p:
                 oai_p["stop"] = p["stop"]
             out_p = json.dumps(oai_p).encode("utf-8")

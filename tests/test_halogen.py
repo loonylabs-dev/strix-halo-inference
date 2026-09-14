@@ -847,6 +847,170 @@ class TestTheDefectIsFiled(unittest.TestCase):
             any("halogen" in i for i in ids),
             "no defects.json entry mentions halogen — the EOS defect lives "
             "only in a commit message")
+        self.assertIn("halogen-greedy-reasoning-loop", ids,
+                      "halogen-greedy-reasoning-loop is not filed in setup/defects.json")
+
+
+def load_serve_api():
+    """Loads setup/halogen/serve_api.py, stubbing container-only packages if needed."""
+    import sys, types, importlib.util
+    if "serve_api_module" in sys.modules:
+        return sys.modules["serve_api_module"]
+    class DummyBaseModel:
+        def __init__(self, **kw):
+            for k, v in kw.items():
+                setattr(self, k, v)
+    for name in ["fastapi", "fastapi.exceptions", "fastapi.responses", "pydantic",
+                 "starlette", "starlette.exceptions", "uvicorn", "PIL", "PIL.Image"]:
+        if name not in sys.modules:
+            sys.modules[name] = types.ModuleType(name)
+    if not hasattr(sys.modules["pydantic"], "BaseModel"):
+        sys.modules["pydantic"].BaseModel = DummyBaseModel
+        sys.modules["pydantic"].model_validator = lambda **kwargs: lambda f: f
+    if not hasattr(sys.modules["fastapi"], "FastAPI"):
+        class DummyFastAPI:
+            def __init__(self, **kw):
+                self.state = types.SimpleNamespace()
+            def post(self, *a, **k):
+                return lambda f: f
+            def get(self, *a, **k):
+                return lambda f: f
+            def middleware(self, *a, **k):
+                return lambda f: f
+            def exception_handler(self, *a, **k):
+                return lambda f: f
+        sys.modules["fastapi"].FastAPI = DummyFastAPI
+        sys.modules["fastapi"].HTTPException = type("HTTPException", (Exception,), {})
+        sys.modules["fastapi.exceptions"].RequestValidationError = type("RequestValidationError", (Exception,), {})
+        sys.modules["fastapi.responses"].JSONResponse = type("JSONResponse", (), {})
+        sys.modules["fastapi.responses"].StreamingResponse = type("StreamingResponse", (), {})
+        sys.modules["starlette.exceptions"].HTTPException = type("StarletteHTTPException", (Exception,), {})
+
+    spec = importlib.util.spec_from_file_location("serve_api_module", REPO / "setup" / "halogen" / "serve_api.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules["serve_api_module"] = mod
+    return mod
+
+
+class TestThinkingBudgetResolution(unittest.TestCase):
+    """resolve_thinking_budget sizes the thinking cap per effort tier and request field."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_serve_api()
+
+    def test_disabled_thinking_returns_none(self):
+        import types
+        req = types.SimpleNamespace()
+        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=False, max_tokens=65536))
+
+    def test_insufficient_tokens_returns_none(self):
+        import types
+        req = types.SimpleNamespace()
+        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=True, max_tokens=1))
+        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=True, max_tokens=0))
+
+    def test_explicit_request_fields(self):
+        import types
+        req1 = types.SimpleNamespace(max_thinking_tokens=1500)
+        self.assertEqual(self.mod.resolve_thinking_budget(req1, True, 65536), 1500)
+        req2 = types.SimpleNamespace(budget_tokens=2500)
+        self.assertEqual(self.mod.resolve_thinking_budget(req2, True, 65536), 2500)
+        # Clamped to max_tokens - 1
+        req3 = types.SimpleNamespace(max_thinking_tokens=1000)
+        self.assertEqual(self.mod.resolve_thinking_budget(req3, True, 100), 99)
+
+    def test_chat_template_kwargs_nested_budget(self):
+        import types
+        req = types.SimpleNamespace(chat_template_kwargs={"budget_tokens": 3000})
+        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 3000)
+
+    def test_low_effort_budget(self):
+        import types
+        req = types.SimpleNamespace(reasoning_effort="low")
+        # Low effort: min(26000, 50% of max_tokens)
+        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 26000)
+        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 20000), 10000)
+
+    def test_high_effort_budget(self):
+        import types
+        req_med = types.SimpleNamespace(reasoning_effort="medium")
+        self.assertEqual(self.mod.resolve_thinking_budget(req_med, True, 65536), 49152)
+        req_high = types.SimpleNamespace(reasoning_effort="high")
+        self.assertEqual(self.mod.resolve_thinking_budget(req_high, True, 65536), 49152)
+        self.assertEqual(self.mod.resolve_thinking_budget(req_high, True, 20000), 15000)
+
+    def test_unspecified_effort_defaults_to_low(self):
+        import types
+        req = types.SimpleNamespace()
+        # Default tier is low -> 26000 at 64k
+        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 26000)
+
+
+class TestThinkingBudgetContinuation(unittest.IsolatedAsyncioTestCase):
+    """When thinking exceeds the budget, the engine is aborted, </think>\n\n is injected,
+    and a warm KV continuation stream is launched for the answer."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_serve_api()
+
+    async def test_budget_cutoff_forces_tag_and_continues(self):
+        mod = self.mod
+        class DummyTokenizer:
+            clean_up_tokenization_spaces = False
+            eos_token_id = 248046
+            def convert_tokens_to_ids(self, s):
+                return {"<|im_end|>": 248046, "<|endoftext|>": 248044}.get(s, None)
+            def __call__(self, text, **kw):
+                if text == "</think>\n\n":
+                    return {"input_ids": [248069, 271]}
+                return {"input_ids": [hash(text) % 100000]}
+            def decode(self, ids, **kw):
+                id_map = {100: "<think>\nThinking", 101: " deeply", 248069: "</think>",
+                          271: "\n\n", 200: "The answer is 42."}
+                return "".join(id_map.get(i, f"[tok_{i}]") for i in ids)
+
+        class DummyEngine:
+            def __init__(self):
+                self.info = {"ctx": 32768}
+                self.aborted = 0
+                self.calls = []
+            async def abort(self):
+                self.aborted += 1
+            async def generate(self, ids, max_tokens, stops, drafter, sample, penalty, snap=0, snap2=0, images=None):
+                self.calls.append(list(ids))
+                if len(self.calls) == 1:
+                    yield 100, None, None
+                    yield 101, None, None
+                else:
+                    yield 200, None, None
+                    yield None, {"reason": "stop", "n_gen": 1, "n_prompt": len(ids),
+                                 "decode_ms": 10.0, "prefill_ms": 1.0}, None
+
+        engine = DummyEngine()
+        tok = DummyTokenizer()
+        app = mod.build_app(tok, engine, ctx=32768)
+        run_fn = app.state.run
+
+        deltas = []
+        done_record = None
+        prompt_ids = [1, 2, 3]
+        async for delta, d in run_fn(prompt_ids, max_tokens=100, stops=[], thinking=True, max_thinking_tokens=2):
+            if delta is not None:
+                deltas.append(delta)
+            if d is not None:
+                done_record = d
+
+        full_output = "".join(deltas)
+        self.assertGreaterEqual(engine.aborted, 1, "engine.abort() must be called on budget cutoff")
+        self.assertEqual(len(engine.calls), 2, "continuation generation must be called")
+        self.assertIn("</think>\n\n", full_output, "</think> must be injected")
+        self.assertIn("The answer is 42.", full_output, "answer from continuation must be streamed")
+        self.assertEqual(done_record["reason"], "stop")
+        # Initial 2 tokens + close_ids (2 tokens: 248069, 271) + 1 answer token = 5 total
+        self.assertEqual(done_record["n_gen"], 5)
 
 
 if __name__ == "__main__":

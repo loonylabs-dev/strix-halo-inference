@@ -222,12 +222,16 @@ def anthropic_to_openai_request(body: dict, target_model: Optional[str] = None) 
             out["enable_thinking"] = True
             budget = thinking.get("budget_tokens")
             if budget:
+                out["max_thinking_tokens"] = budget
                 out["reasoning_effort"] = "high"
         elif thinking.get("type") == "disabled":
             out["enable_thinking"] = False
     else:
         # Default in Anthropic is disabled unless explicitly requested
         out["enable_thinking"] = False
+
+    if "max_thinking_tokens" in body:
+        out["max_thinking_tokens"] = body["max_thinking_tokens"]
 
     return out
 

@@ -116,7 +116,6 @@ fi
 FAIL=0
 while IFS=$'\t' read -r size sha path; do
   [ -n "$path" ] || continue
-  name="$(basename "$path")"
   dir="$(dirname "$path")"
   if [ "$dir" != "." ]; then
     mkdir -p "$DEST/$dir"

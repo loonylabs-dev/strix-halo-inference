@@ -412,7 +412,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     serving)  models_serving ;;
     serving-unit) models_serving_unit ;;
     slots)    slots_dir ;;
-    halogen-image)  halogen_image ;;
+    halogen-image)  halogen_image "${2:-}" ;;
     halogen-models) halogen_models_dir ;;
     known)    models_known "${2:-}" ;;
     args)     model_args "${2:?model name}" ;;

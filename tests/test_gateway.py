@@ -3164,6 +3164,8 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
             _reading_paused = False
             def resume_writing(self): pass
             def pause_writing(self): pass
+            def resume_reading(self, *args, **kwargs): pass
+            def pause_reading(self, *args, **kwargs): pass
 
         reader = StreamReader(DummyProtocol(), limit=2**16)
 
@@ -3197,6 +3199,8 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
             _reading_paused = False
             def resume_writing(self): pass
             def pause_writing(self): pass
+            def resume_reading(self, *args, **kwargs): pass
+            def pause_reading(self, *args, **kwargs): pass
 
         class FakeClientResponse:
             def __init__(self):
@@ -3262,6 +3266,8 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
             _reading_paused = False
             def resume_writing(self): pass
             def pause_writing(self): pass
+            def resume_reading(self, *args, **kwargs): pass
+            def pause_reading(self, *args, **kwargs): pass
 
         class FakeClientResponse:
             def __init__(self):

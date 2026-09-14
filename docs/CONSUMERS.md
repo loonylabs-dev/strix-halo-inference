@@ -375,6 +375,14 @@ While reading uncached table entries, the GPU waits on I/O. As soon as prefill
 completes and decoding begins, SSD traffic drops to zero and the GPU runs fully
 compute-bound at ~40–50 tokens/s.
 
+### Concurrency, timeouts, and Gateway arbitration
+
+On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full speed (~45–50 tokens/s) when a request runs alone (`speculates while alone`). Admitting multiple requests concurrently on the engine disables MTP speculation and causes chunked prefill/decode time-slicing across the 47.7 GiB disk table, starving decoding sessions to ~1 token/minute and risking client-side read timeouts (such as DSH's `pi ai stream idle timeout 300000ms` or Cloudflare 524).
+
+The gateway protects against this:
+1. **Serialised GPU execution (`MAX_INFLIGHT=1`)**: Requests are queued and served one by one at full MTP decode speed. While in the queue or awaiting upstream prefill, the gateway emits periodic SSE keepalive comments / Anthropic pings every 15 seconds, preventing timeouts and retry storms.
+2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 262,144-position KV pool. Multiple client sessions (e.g. DSH and a second chat) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
+
 The prefix rules of the last section apply unchanged: the id is formed
 from the system prompt and the tool block, so a changed plugin set means
 one cold start. When starting a chat, `dsh` fires a short background request

@@ -3184,6 +3184,69 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"data: second\n\n", received)
         self.assertEqual(received[-2:], [b"data: first\n\n", b"data: second\n\n"])
 
+    async def test_forward_emits_keepalive_during_slow_prefill(self):
+        """During a slow upstream prefill (>15s in production, 0.03s in test),
+        forward() opens the StreamResponse early and writes keepalives so the
+        client and Cloudflare tunnel do not hit idle timeouts."""
+        import asyncio
+        from aiohttp import web, StreamReader
+
+        class DummyProtocol:
+            connected = True
+            _reading_paused = False
+            def resume_writing(self): pass
+            def pause_writing(self): pass
+
+        class FakeClientResponse:
+            def __init__(self):
+                self.status = 200
+                self.headers = {"content-type": "text/event-stream"}
+                self.content = StreamReader(DummyProtocol(), limit=2**16)
+                self.content.feed_data(b"data: done\n\n")
+                self.content.feed_eof()
+
+        class FakeCtx:
+            def __init__(self, delay=0.08):
+                self.delay = delay
+            async def __aenter__(self):
+                await asyncio.sleep(self.delay)
+                return FakeClientResponse()
+            async def __aexit__(self, *a):
+                pass
+
+        class FakeReq:
+            method = "POST"
+            path_qs = "/v1/chat/completions"
+            headers = {}
+            remote = "127.0.0.1"
+
+        written = []
+        prepared = []
+
+        class MockStreamResponse:
+            def __init__(self, status=200, headers=None):
+                self.status = status
+                self.headers = headers or {}
+            async def prepare(self, r):
+                prepared.append(r)
+            async def write(self, data):
+                written.append(data)
+            async def write_eof(self):
+                pass
+
+        old_interval = GW.STREAM_KEEPALIVE_INTERVAL
+        GW.STREAM_KEEPALIVE_INTERVAL = 0.03
+        try:
+            with mock.patch("aiohttp.ClientSession.request", lambda s, *a, **k: FakeCtx(delay=0.08)), \
+                 mock.patch("aiohttp.web.StreamResponse", MockStreamResponse):
+                body = b'{"model": "qwen", "stream": true}'
+                resp = await GW.forward(FakeReq(), body, None)
+                self.assertTrue(len(prepared) > 0, "response was prepared early during slow prefill")
+                self.assertIn(b": keep-alive\n\n", written)
+                self.assertIn(b"data: done\n\n", written)
+        finally:
+            GW.STREAM_KEEPALIVE_INTERVAL = old_interval
+
 
 if __name__ == "__main__":
     unittest.main()

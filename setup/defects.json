@@ -875,6 +875,24 @@
       "status": "mitigated",
       "first_seen": "2026-09-12",
       "last_checked": "2026-09-12"
+    },
+    {
+      "id": "halogen-concurrency-prefill-deadlock",
+      "title": "Concurrent Halogen sessions disable MTP speculation and starve decoding streams during chunked SSD prefill",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "slow",
+      "symptom": "When two sessions hit Halogen concurrently, active decoding collapses from ~45 t/s to ~1 token per minute, while incoming requests wait minutes without HTTP headers and abort with stream idle timeouts (e.g. DSH 'pi ai stream idle timeout 300000ms' or Cloudflare 524), triggering client retries that lock the engine in continuous SSD prefill thrashing.",
+      "measured": "Measured 12.09.2026: Halogen container logs recorded 'serve_api: mtp 695 tok in 655.03s = 1.06 t/s | 352 rounds' when a second request arrived during generation. Halogen's internal scheduler admitted the prompt in 32k chunks with 1-token decode ticks, starving the active stream while performing random N-gram reads across the 47.7 GiB disk table. Concurrently, DSH waited 300s without HTTP headers, timed out, and retried, creating an endless contention loop. As soon as the second session disconnected, decode speed immediately surged to 44.0 t/s.",
+      "mitigation": "1) Set MAX_INFLIGHT=1 in setup/llm-gateway.env to serialise GPU turns through the gateway while retaining Halogen's 4-slot KV pool in RAM. 2) In gateway.py forward(), emit SSE keepalive comments / Anthropic pings every 15s during upstream prefill wait before headers arrive, preventing client and Cloudflare idle timeouts. 3) In setup/halogenexec, pass HALOGEN_ADMIT_CHUNK=-1 so direct requests prefill at once instead of time-slicing into 1-token ticks.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "mitigated",
+      "first_seen": "2026-09-12",
+      "last_checked": "2026-09-12"
     }
   ]
 }

@@ -191,5 +191,6 @@ exec podman run --rm \
   -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
   -e HALOGEN_KV_POOL_POSITIONS="$POOL_WANT" \
   -e HALOGEN_CHECKPOINT=/models/qwen38-flash-next-w4b.hgn \
+  -e HALOGEN_ADMIT_CHUNK="${HALOGEN_ADMIT_CHUNK:--1}" \
   "${VISION_ARGS[@]}" \
   "$IMAGE" all

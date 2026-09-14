@@ -3008,9 +3008,10 @@ async def models_with_aliases(req, body):
 # carries `timings` in the last one. 8 KiB of each is far more than either
 # needs and small enough that a 200 MB answer costs nothing to watch.
 SNIFF_BYTES = 8192
+STREAM_KEEPALIVE_INTERVAL = 15.0
 
 
-async def iter_stream_with_heartbeat(reader, interval=15.0):
+async def iter_stream_with_heartbeat(reader, interval=STREAM_KEEPALIVE_INTERVAL):
     """Yield chunks from an aiohttp StreamReader. If upstream is silent for
     `interval` seconds, yields None as a heartbeat signal so the proxy can
     emit an SSE keep-alive before Cloudflare's idle timeout triggers."""
@@ -3063,9 +3064,41 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
         # same question for free.
         try:
             path_to_call = target_path if target_path is not None else req.path_qs
-            async with s.request(req.method, LLAMA + path_to_call,
-                                 data=(out if out is not None else body),
-                                 headers=hdrs, allow_redirects=False) as up:
+            req_ctx = s.request(req.method, LLAMA + path_to_call,
+                                data=(out if out is not None else body),
+                                headers=hdrs, allow_redirects=False)
+            is_stream = (translate_stream is not None or resp is not None or
+                         bool(re.search(rb'"stream"\s*:\s*true', out or b"")) or
+                         bool(re.search(rb'"stream"\s*:\s*true', body or b"")))
+            up = None
+            enter_task = asyncio.create_task(req_ctx.__aenter__())
+            try:
+                while True:
+                    try:
+                        up = await asyncio.wait_for(asyncio.shield(enter_task), timeout=STREAM_KEEPALIVE_INTERVAL)
+                        break
+                    except asyncio.TimeoutError:
+                        if enter_task.done():
+                            up = await enter_task
+                            break
+                        if is_stream and req is not None:
+                            if resp is None:
+                                rh = {"content-type": "text/event-stream; charset=utf-8",
+                                      "cache-control": "no-cache",
+                                      "connection": "keep-alive"}
+                                resp = web.StreamResponse(status=200, headers=rh)
+                                await resp.prepare(req)
+                            if translate_stream is not None:
+                                await resp.write(b"event: ping\ndata: {\"type\": \"ping\"}\n\n")
+                            else:
+                                await resp.write(b": keep-alive\n\n")
+            except BaseException:
+                if not enter_task.done():
+                    enter_task.cancel()
+                elif up is not None:
+                    await req_ctx.__aexit__(*sys.exc_info())
+                raise
+            try:
                 if translate_stream is not None:
                     if resp is None and up.status != 200:
                         # Before the headers are out, a failure can still be
@@ -3093,7 +3126,7 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
                         return resp
                     line_buf = ""
                     bad_chunks = 0
-                    async for ch in iter_stream_with_heartbeat(up.content, interval=15.0):
+                    async for ch in iter_stream_with_heartbeat(up.content, interval=STREAM_KEEPALIVE_INTERVAL):
                         if ch is None:
                             # Anthropic official ping event: keeps proxy / tunnel alive during long prefill
                             await resp.write(b"event: ping\ndata: {\"type\": \"ping\"}\n\n")
@@ -3179,7 +3212,7 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
                     await resp.write(sse_error(up.status, (await up.text())))
                     await resp.write_eof()
                     return resp
-                async for ch in iter_stream_with_heartbeat(up.content, interval=15.0):   # no buffering -> SSE stays intact
+                async for ch in iter_stream_with_heartbeat(up.content, interval=STREAM_KEEPALIVE_INTERVAL):   # no buffering -> SSE stays intact
                     if ch is None:
                         # W3C SSE comment: keeps proxy / tunnel alive during long prefill
                         await resp.write(b": keep-alive\n\n")
@@ -3205,6 +3238,8 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
                     answered["ok"] = True    # the model is done; the slot holds it
                 await resp.write_eof()
                 return resp
+            finally:
+                await req_ctx.__aexit__(None, None, None)
         except asyncio.CancelledError:
             raise
         except (OSError, aiohttp.ClientConnectionError) as e:

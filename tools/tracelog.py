@@ -5,6 +5,7 @@
     python3 tools/tracelog.py on text --minutes 30    prompts too, briefly
     python3 tools/tracelog.py off
     python3 tools/tracelog.py status
+    python3 tools/tracelog.py cap 2gb          set maximum trace disk usage
 
     python3 tools/tracelog.py serve            a table in the browser, live,
                                                with the same switch in its bar
@@ -81,6 +82,28 @@ def cmd_off(a):
     print("trace: %s" % _tr().set_level("off"))
 
 
+def _parse_size(s):
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*([kmgt]?b?)?$", s.strip(), re.IGNORECASE)
+    if not m:
+        raise ValueError("unrecognised size %r — use e.g. 2gb, 500mb, 1073741824" % s)
+    val = float(m.group(1))
+    unit = (m.group(2) or "b").lower().rstrip("b")
+    multipliers = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3, "t": 1024**4}
+    if unit not in multipliers:
+        raise ValueError("unrecognised unit %r" % unit)
+    return int(val * multipliers[unit])
+
+
+def cmd_cap(a):
+    t = _tr()
+    bytes_val = _parse_size(a.size)
+    new_cap = t.set_cap(bytes_val)
+    if new_cap >= 1e9:
+        print("trace cap: %.1f GB (%d bytes)" % (new_cap / 1e9, new_cap))
+    else:
+        print("trace cap: %.0f MB (%d bytes)" % (new_cap / 1e6, new_cap))
+
+
 def cmd_status(a):
     t = _tr()
     print("level: %s" % t.level)
@@ -94,7 +117,10 @@ def cmd_status(a):
             n = os.path.getsize(os.path.join(t.dir, f))
             total += n
             print("  %-24s %8.1f MB" % (f, n / 1e6))
-    print("  %.1f MB of %.0f MB" % (total / 1e6, t.cap / 1e6))
+    if t.cap >= 1e9:
+        print("  %.1f MB of %.1f GB" % (total / 1e6, t.cap / 1e9))
+    else:
+        print("  %.1f MB of %.0f MB" % (total / 1e6, t.cap / 1e6))
 
 
 def _load(a):
@@ -641,6 +667,8 @@ def main():
                         "result of forgetting.")
     sub.add_parser("off").set_defaults(fn=cmd_off)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    cp = sub.add_parser("cap"); cp.set_defaults(fn=cmd_cap)
+    cp.add_argument("size", help="disk cap, e.g. 2gb, 500mb, 2147483648")
     sv = sub.add_parser("serve"); sv.set_defaults(fn=cmd_serve)
     sv.add_argument("--port", type=int, default=8092)
     for name, fn in (("show", cmd_show), ("lies", cmd_lies),

@@ -162,6 +162,25 @@ class TestTheFilesThemselves(Base):
         self.assertLess(len(files), 4, "nothing was pruned: %s" % files)
         self.assertIn("trace-", files[-1])
 
+    def test_default_cap_is_two_gigabytes(self):
+        t = TR.Trace(directory=self.dir)
+        self.assertEqual(t.cap, 2 * 1024 * 1024 * 1024)
+
+    def test_cap_can_be_configured_via_control_file(self):
+        t = TR.Trace(directory=self.dir)
+        t.set_cap(500 * 1024 * 1024)
+        self.assertEqual(t.cap, 500 * 1024 * 1024)
+        # Another instance reading the same control file picks it up on refresh
+        t2 = TR.Trace(directory=self.dir)
+        self.assertEqual(t2.cap, 500 * 1024 * 1024)
+
+    def test_tracelog_tool_parse_size(self):
+        import tools.tracelog as TL
+        self.assertEqual(TL._parse_size("2gb"), 2 * 1024**3)
+        self.assertEqual(TL._parse_size("500mb"), 500 * 1024**2)
+        self.assertEqual(TL._parse_size("1024k"), 1024 * 1024)
+        self.assertEqual(TL._parse_size("100"), 100)
+
 
 class TestItCannotBreakTheGateway(Base):
     def test_an_unwritable_directory_is_survived(self):

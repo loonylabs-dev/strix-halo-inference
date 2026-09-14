@@ -39,7 +39,7 @@ DEFAULT_DIR = os.path.expanduser("~/.cache/llm-gateway-trace")
 # Total across all days. A debugging session is megabytes; a month of `text`
 # would be gigabytes, and the point at which somebody notices is the point at
 # which the disk is full.
-DEFAULT_CAP_BYTES = 200 * 1024 * 1024
+DEFAULT_CAP_BYTES = int(os.environ.get("TRACE_CAP_BYTES", 2 * 1024 * 1024 * 1024))
 CONTROL = "level"
 
 
@@ -58,9 +58,9 @@ class Trace:
     touching the service. The check is a stat(), not a read.
     """
 
-    def __init__(self, directory=None, cap_bytes=DEFAULT_CAP_BYTES, now=time.time):
+    def __init__(self, directory=None, cap_bytes=None, now=time.time):
         self.dir = directory or os.environ.get("TRACE_DIR") or DEFAULT_DIR
-        self.cap = cap_bytes
+        self.cap = DEFAULT_CAP_BYTES if cap_bytes is None else cap_bytes
         self._now = now
         self._level = "off"
         self._expires = 0.0
@@ -81,7 +81,12 @@ class Trace:
             return self._level
         if state != self._seen:
             self._seen = state
-            self._level, self._expires = self._read_control()
+            self._level, self._expires, cap = self._read_control()
+            if cap is not None:
+                try:
+                    self.cap = int(cap)
+                except (ValueError, TypeError):
+                    pass
         # `text` gives itself back. An operator who forgets is the normal
         # case, not the exception, and the cost of forgetting is a disk full
         # of prompts.
@@ -94,11 +99,13 @@ class Trace:
             with open(self._control_path(), encoding="utf-8") as f:
                 d = json.load(f)
             level = d.get("level", "off")
-            return (level if level in LEVELS else "off"), float(d.get("expires", 0) or 0)
+            return ((level if level in LEVELS else "off"),
+                    float(d.get("expires", 0) or 0),
+                    d.get("cap_bytes"))
         except Exception:
-            return "off", 0.0
+            return "off", 0.0, None
 
-    def set_level(self, level, minutes=None):
+    def set_level(self, level, minutes=None, cap_bytes=None):
         """Write the control file. `minutes` arms an expiry — required for
         `text`, which must not be able to run for a week by accident."""
         if level not in LEVELS:
@@ -110,15 +117,48 @@ class Trace:
             os.chmod(self.dir, 0o700)
         except OSError:
             pass
+        cur_cap = None
+        if os.path.exists(self._control_path()):
+            try:
+                with open(self._control_path(), encoding="utf-8") as f:
+                    cur_cap = json.load(f).get("cap_bytes")
+            except Exception:
+                pass
         payload = {"level": level,
                    "expires": (self._now() + minutes * 60) if minutes else 0,
                    "set_at": time.strftime("%Y-%m-%d %H:%M")}
+        eff_cap = cap_bytes if cap_bytes is not None else cur_cap
+        if eff_cap is not None:
+            payload["cap_bytes"] = int(eff_cap)
         path = self._control_path()
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
         os.chmod(path, 0o600)
         self._seen = None
         return self.refresh()
+
+    def set_cap(self, cap_bytes):
+        """Update cap_bytes in the control file and refresh."""
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self.dir, 0o700)
+        except OSError:
+            pass
+        payload = {}
+        if os.path.exists(self._control_path()):
+            try:
+                with open(self._control_path(), encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception:
+                pass
+        payload["cap_bytes"] = int(cap_bytes)
+        path = self._control_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.chmod(path, 0o600)
+        self._seen = None
+        self.refresh()
+        return self.cap
 
     @property
     def level(self):

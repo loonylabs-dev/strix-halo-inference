@@ -443,12 +443,13 @@ class TestTheImageAndTheModelsAreResolvedOnce(unittest.TestCase):
         files = sorted(f for f in hits.stdout.split()
                        if f and not f.startswith("bench/reports/"))
         self.assertEqual(
-            files, ["setup/halogen/serve_api.py", "setup/lib/models.sh"],
+            files, ["setup/halogen/serve_api.py", "setup/halogen/tool_parse.py",
+                    "setup/lib/models.sh"],
             "the image tag is spelled out in %s — one of them will be "
             "forgotten on the next bump. models.sh answers `halogen-image`; "
-            "serve_api.py names the tag it was CUT from, which is a different "
-            "statement and is compared against the running one by "
-            "halogenexec." % files)
+            "serve_api.py and tool_parse.py name the tag they were CUT from, "
+            "which is a different statement and is compared against the running "
+            "one by halogenexec." % files)
 
     def test_models_sh_answers_for_the_image(self):
         import subprocess
@@ -686,12 +687,23 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
     """
 
     PATH = REPO / "setup" / "halogen" / "serve_api.py"
+    TOOL_PARSE_PATH = REPO / "setup" / "halogen" / "tool_parse.py"
 
     def test_it_names_the_image_it_was_cut_from(self):
         head = self.PATH.read_text(encoding="utf-8")[:4000]
         self.assertRegex(
             head, r"halogen-flash-server:\d+\.\d+\.\d+",
             "the vendored copy does not say which image tag it patches")
+        self.assertRegex(
+            head, r"BASE_SHA256\s*[:=]\s*[0-9a-f]{64}",
+            "without the base file's hash nothing can notice that the image "
+            "moved underneath this copy")
+
+    def test_tool_parse_names_the_image_it_was_cut_from(self):
+        head = self.TOOL_PARSE_PATH.read_text(encoding="utf-8")[:4000]
+        self.assertRegex(
+            head, r"halogen-flash-server:\d+\.\d+\.\d+",
+            "the vendored tool_parse.py does not say which image tag it patches")
         self.assertRegex(
             head, r"BASE_SHA256\s*[:=]\s*[0-9a-f]{64}",
             "without the base file's hash nothing can notice that the image "
@@ -709,6 +721,9 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
         self.assertIn("BASE_SHA256", src,
                       "halogenexec mounts the copy without checking that the "
                       "image still carries the file it was cut from")
+        self.assertIn("TOOL_PARSE_BASE_SHA256", src,
+                      "halogenexec mounts tool_parse.py without checking that the "
+                      "image still carries the file it was cut from")
 
     def test_the_image_tag_agrees_with_the_one_that_is_started(self):
         """The header names the image the copy was CUT from; models.sh names
@@ -725,6 +740,20 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
                         r.stdout).group(1)
         self.assertEqual(want, got,
                          "the vendored file was cut from %s and models.sh "
+                         "starts %s — re-cut the copy or move the tag back"
+                         % (want, got))
+
+    def test_tool_parse_tag_agrees_with_the_one_that_is_started(self):
+        import subprocess
+        head = self.TOOL_PARSE_PATH.read_text(encoding="utf-8")[:4000]
+        want = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)", head).group(1)
+        r = subprocess.run(["bash", str(REPO / "setup" / "lib" / "models.sh"),
+                            "halogen-image"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)",
+                        r.stdout).group(1)
+        self.assertEqual(want, got,
+                         "the vendored tool_parse.py was cut from %s and models.sh "
                          "starts %s — re-cut the copy or move the tag back"
                          % (want, got))
 

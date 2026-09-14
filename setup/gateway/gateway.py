@@ -3001,6 +3001,21 @@ async def models_with_aliases(req, body):
 SNIFF_BYTES = 8192
 
 
+async def iter_stream_with_heartbeat(reader, interval=15.0):
+    """Yield chunks from an aiohttp StreamReader. If upstream is silent for
+    `interval` seconds, yields None as a heartbeat signal so the proxy can
+    emit an SSE keep-alive before Cloudflare's idle timeout triggers."""
+    while True:
+        try:
+            chunk = await asyncio.wait_for(reader.readany(), timeout=interval)
+        except asyncio.TimeoutError:
+            yield None
+            continue
+        if not chunk:
+            break
+        yield chunk
+
+
 async def forward(req, body, out, resp=None, answered=None, sniff=None,
                   target_path=None, translate_stream=None):
     """Pass the request through. `resp` is an already-prepared response.
@@ -3069,7 +3084,11 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
                         return resp
                     line_buf = ""
                     bad_chunks = 0
-                    async for ch in up.content.iter_any():
+                    async for ch in iter_stream_with_heartbeat(up.content, interval=15.0):
+                        if ch is None:
+                            # Anthropic official ping event: keeps proxy / tunnel alive during long prefill
+                            await resp.write(b"event: ping\ndata: {\"type\": \"ping\"}\n\n")
+                            continue
                         if sniff is not None:
                             if sniff.get("first_token_at") is None and (
                                     b"content_block_delta" in ch or b'"delta"' in ch):
@@ -3151,7 +3170,11 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
                     await resp.write(sse_error(up.status, (await up.text())))
                     await resp.write_eof()
                     return resp
-                async for ch in up.content.iter_any():   # no buffering -> SSE stays intact
+                async for ch in iter_stream_with_heartbeat(up.content, interval=15.0):   # no buffering -> SSE stays intact
+                    if ch is None:
+                        # W3C SSE comment: keeps proxy / tunnel alive during long prefill
+                        await resp.write(b": keep-alive\n\n")
+                        continue
                     await resp.write(ch)
                     if sniff is not None:
                         # THE FIRST GENERATED TOKEN, not the first chunk. A stream

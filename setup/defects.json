@@ -838,6 +838,25 @@
       "first_seen": "2026-09-11",
       "last_checked": "2026-09-12",
       "note": "NO upstream_check: that probe reads llama.cpp's source on master, and this defect is in a third-party container image with no public source to read. The retirement condition is mechanical instead — halogenexec hashes the image's own copy of the file against BASE_SHA256 and REFUSES to start when they differ, so the next image bump stops the service and says so rather than silently reverting the patch. Re-read the upstream changelog then; if the fix has landed, drop hunks 1 and 2 and the mount with them."
+    },
+    {
+      "id": "halogen-tool-call-streaming-deadlock",
+      "title": "Halogen's tool parser buffers unclosed function blocks until </function>, causing 0-byte SSE silences that trip reverse proxy timeouts",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "loud",
+      "symptom": "After a long reasoning phase, when a model calls a tool with a large payload (such as writing an HTML file taking 3,000+ tokens), Halogen emits 0 bytes over SSE for >100 seconds. Cloudflare Tunnel or client read timeouts terminate the connection with HTTP 500 / 524 / context canceled after ~130s.",
+      "measured": "Reproduced live on 12.09.2026 across six consecutive requests in trace-2026-09-12.jsonl at 13:16, 13:18, 13:21, 13:24, 13:26, 13:29: each aborted at exactly ~133.2s with cloudflared context canceled and gateway logging 'ABORTED after 133.2s — no answer, nothing saved'. Verified inside container that ToolStream.push() emitted empty deltas because _parse_block returned None mid-stream when </function> was missing.",
+      "mitigation": "setup/halogen/tool_parse.py mounted over /halogen/tools/tool_parse.py by setup/halogenexec, implementing incremental token-by-token streaming of tool arguments in delta.tool_calls[0].function.arguments JSON format. Guarded by TOOL_PARSE_BASE_SHA256 in halogenexec. In tandem, gateway.py emits periodic SSE heartbeats (keep-alive comments for OpenAI, ping events for Anthropic) during any upstream pauses >15s.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "mitigated",
+      "first_seen": "2026-09-12",
+      "last_checked": "2026-09-12",
+      "note": "Guarded by TOOL_PARSE_BASE_SHA256 in setup/halogenexec. On upstream image bumps, halogenexec refuses to start if the image's tool_parse.py changes, alerting the operator to check whether upstream fixed incremental tool streaming before refreshing the mount."
     }
   ]
 }

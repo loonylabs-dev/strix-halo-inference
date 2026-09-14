@@ -3116,5 +3116,40 @@ class TestDegeneracyStreak(unittest.TestCase):
         self.assertEqual(GW.DEGENERATE_RUN, 2)
 
 
+class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
+    """If upstream is silent for the interval (e.g. 15s prefill), the stream
+    iterator yields None as a heartbeat signal to emit keep-alives."""
+
+    async def test_heartbeat_yields_none_on_silence_then_resumes(self):
+        import asyncio
+        from aiohttp import StreamReader
+
+        class DummyProtocol:
+            connected = True
+            _reading_paused = False
+            def resume_writing(self): pass
+            def pause_writing(self): pass
+
+        reader = StreamReader(DummyProtocol(), limit=2**16)
+
+        async def feed():
+            await asyncio.sleep(0.08)
+            reader.feed_data(b"data: first\n\n")
+            await asyncio.sleep(0.02)
+            reader.feed_data(b"data: second\n\n")
+            reader.feed_eof()
+
+        asyncio.create_task(feed())
+        received = []
+        async for chunk in GW.iter_stream_with_heartbeat(reader, interval=0.03):
+            received.append(chunk)
+
+        # Must have received at least one None (heartbeat) during the 0.08s silence
+        self.assertIn(None, received)
+        self.assertIn(b"data: first\n\n", received)
+        self.assertIn(b"data: second\n\n", received)
+        self.assertEqual(received[-2:], [b"data: first\n\n", b"data: second\n\n"])
+
+
 if __name__ == "__main__":
     unittest.main()

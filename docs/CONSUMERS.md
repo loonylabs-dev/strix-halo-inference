@@ -377,11 +377,11 @@ compute-bound at ~48–56 tokens/s (with Prompt Lookup Decoding and MTP active).
 
 ### Concurrency, timeouts, and Gateway arbitration
 
-On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full speed (~48–56 tokens/s with PLD) when a request runs alone (`speculates while alone`). Admitting multiple requests concurrently on the engine disables MTP speculation and causes chunked prefill/decode time-slicing across the 47.7 GiB disk table, starving decoding sessions and risking client-side read timeouts (such as DSH's `pi ai stream idle timeout 300000ms` or Cloudflare 524). Furthermore, on Halogen 0.6.3, cold-start prompt loading parallelizes N-gram disk reads across 64 threads (`HALOGEN_NGRAM_GATHER_THREADS`), cutting cold table lookup times from minutes down to seconds even on 150k+ token sessions.
+On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full speed (~48–56 tokens/s with PLD) when a request runs alone (`speculates while alone`). Admitting multiple requests concurrently on the engine disables MTP speculation and causes chunked prefill/decode time-slicing across the 47.7 GiB disk table, starving decoding sessions and risking client-side read timeouts (such as DSH's `pi ai stream idle timeout 300000ms` or Cloudflare 524). Furthermore, cold-start prompt loading parallelizes N-gram disk reads across 64 threads (`HALOGEN_NGRAM_GATHER_THREADS`), cutting cold table lookup times from minutes down to seconds even on 150k+ token sessions.
 
 The gateway protects against contention:
 1. **Serialised GPU execution (`MAX_INFLIGHT=1`)**: Requests are queued and served one by one at full MTP + PLD decode speed. While in the queue or awaiting upstream prefill, the gateway emits periodic SSE keepalive comments / Anthropic pings every 10 seconds (`QUEUE_KEEPALIVE=10`), preventing client read timeouts (such as DSH's 40s timeout or Cloudflare 524).
-2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 524,288-position KV pool. Multiple client sessions (e.g. DSH main coding at 112k+ and background resource inspector at 71k+) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
+2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 786,432-position KV pool. Multiple client sessions (e.g. concurrent deep coding sessions at 228k and 187k with 65k output reservations) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
 
 The prefix rules of the last section apply unchanged: the id is formed
 from the system prompt and the tool block, so a changed plugin set means

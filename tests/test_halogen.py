@@ -894,123 +894,209 @@ def load_serve_api():
 
 
 class TestThinkingBudgetResolution(unittest.TestCase):
-    """resolve_thinking_budget sizes the thinking cap per effort tier and request field."""
+    """0.8.1 native thinking budget: defaults, request fields, and server_default resolution."""
 
     @classmethod
     def setUpClass(cls):
         cls.mod = load_serve_api()
 
-    def test_disabled_thinking_returns_none(self):
-        import types
-        req = types.SimpleNamespace()
-        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=False, max_tokens=65536))
-
-    def test_insufficient_tokens_returns_none(self):
-        import types
-        req = types.SimpleNamespace()
-        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=True, max_tokens=1))
-        self.assertIsNone(self.mod.resolve_thinking_budget(req, thinking=True, max_tokens=0))
-
-    def test_explicit_request_fields(self):
-        import types
-        req1 = types.SimpleNamespace(max_thinking_tokens=1500)
-        self.assertEqual(self.mod.resolve_thinking_budget(req1, True, 65536), 1500)
-        req2 = types.SimpleNamespace(budget_tokens=2500)
-        self.assertEqual(self.mod.resolve_thinking_budget(req2, True, 65536), 2500)
-        # Clamped to max_tokens - 1
-        req3 = types.SimpleNamespace(max_thinking_tokens=1000)
-        self.assertEqual(self.mod.resolve_thinking_budget(req3, True, 100), 99)
-
-    def test_chat_template_kwargs_nested_budget(self):
-        import types
-        req = types.SimpleNamespace(chat_template_kwargs={"budget_tokens": 3000})
-        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 3000)
-
-    def test_low_effort_budget(self):
-        import types
-        req = types.SimpleNamespace(reasoning_effort="low")
-        # Low effort: min(26000, 50% of max_tokens)
-        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 26000)
-        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 20000), 10000)
-
-    def test_high_effort_budget(self):
-        import types
-        req_med = types.SimpleNamespace(reasoning_effort="medium")
-        self.assertEqual(self.mod.resolve_thinking_budget(req_med, True, 65536), 49152)
-        req_high = types.SimpleNamespace(reasoning_effort="high")
-        self.assertEqual(self.mod.resolve_thinking_budget(req_high, True, 65536), 49152)
-        self.assertEqual(self.mod.resolve_thinking_budget(req_high, True, 20000), 15000)
-
-    def test_unspecified_effort_defaults_to_low(self):
-        import types
-        req = types.SimpleNamespace()
-        # Default tier is low -> 26000 at 64k
-        self.assertEqual(self.mod.resolve_thinking_budget(req, True, 65536), 26000)
-
-
-class TestThinkingBudgetContinuation(unittest.IsolatedAsyncioTestCase):
-    """When thinking exceeds the budget, the engine is aborted, </think>\n\n is injected,
-    and a warm KV continuation stream is launched for the answer."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.mod = load_serve_api()
-
-    async def test_budget_cutoff_forces_tag_and_continues(self):
+    def test_thinking_budget_defaults_and_request_override(self):
         mod = self.mod
+        import types
+        # Default fallback when request has None
+        req_none = types.SimpleNamespace(max_thinking_tokens=None)
+        self.assertEqual(mod.server_default(req_none, "max_thinking_tokens"), mod.DEFAULTS["max_thinking_tokens"])
+        # Explicit request override
+        req_custom = types.SimpleNamespace(max_thinking_tokens=1500)
+        self.assertEqual(mod.server_default(req_custom, "max_thinking_tokens"), 1500)
+
+    def test_chat_request_schema_declares_max_thinking_tokens(self):
+        mod = self.mod
+        req = mod.ChatReq(messages=[{"role": "user", "content": "hi"}], max_thinking_tokens=1234)
+        self.assertEqual(req.max_thinking_tokens, 1234)
+
+
+class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
+    """0.8.1 wire protocol: GEN ... THINK <budget> <end_id> <len> <close_ids...>"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_serve_api()
+
+    def test_engine_generate_formats_think_line(self):
+        mod = self.mod
+        import asyncio
+
+        class BufferWriter:
+            def __init__(self):
+                self.buf = bytearray()
+            def write(self, data):
+                self.buf.extend(data)
+            async def drain(self):
+                pass
+            def is_closing(self):
+                return False
+
+        class DummyReader:
+            async def readline(self):
+                return b"D 1 stop 3 1 0.0 0.0\n"
+
+        eng = mod.Engine("127.0.0.1", 8730)
+        eng.r = DummyReader()
+        eng.w = BufferWriter()
+        eng.n_slots = 1
+        eng.info = {"ctx": 32768}
+
+        think_spec = (26000, 248069, [10, 20, 30])
+        async def run_gen():
+            async for _ in eng.generate([1, 2, 3], max_tokens=100, eos=[248046, 248044], think=think_spec):
+                pass
+
+        asyncio.run(run_gen())
+        line = eng.w.buf.decode("utf-8")
+        self.assertIn("THINK 26000 248069 3 10 20 30", line)
+
+    async def test_serve_propagates_think_tuple_to_engine(self):
+        mod = self.mod
+        import types, asyncio
+
         class DummyTokenizer:
             clean_up_tokenization_spaces = False
             eos_token_id = 248046
             def convert_tokens_to_ids(self, s):
-                return {"<|im_end|>": 248046, "<|endoftext|>": 248044}.get(s, None)
+                return {"<|im_end|>": 248046, "<|endoftext|>": 248044, "</think>": 248069}.get(s, None)
             def __call__(self, text, **kw):
-                if text == "</think>\n\n":
-                    return {"input_ids": [248069, 271]}
-                return {"input_ids": [hash(text) % 100000]}
+                return {"input_ids": [42]}
             def decode(self, ids, **kw):
-                id_map = {100: "<think>\nThinking", 101: " deeply", 248069: "</think>",
-                          271: "\n\n", 200: "The answer is 42."}
-                return "".join(id_map.get(i, f"[tok_{i}]") for i in ids)
+                return ""
+
+        captured_think = []
+        captured_eos = []
 
         class DummyEngine:
             def __init__(self):
-                self.info = {"ctx": 32768}
-                self.aborted = 0
-                self.calls = []
+                self.info = {"ctx": 32768, "version": "0.8.1"}
+                self.slots = asyncio.Semaphore(10)
+                self.waiting = 0
+                self.inflight = {}
+                self.reserved = {}
+                self.busy_since = None
+                self.metrics = types.SimpleNamespace(record=lambda *a, **k: None)
             async def abort(self):
-                self.aborted += 1
-            async def generate(self, ids, max_tokens, stops, drafter, sample, penalty, snap=0, snap2=0, images=None):
-                self.calls.append(list(ids))
-                if len(self.calls) == 1:
-                    yield 100, None, None
-                    yield 101, None, None
-                else:
-                    yield 200, None, None
-                    yield None, {"reason": "stop", "n_gen": 1, "n_prompt": len(ids),
-                                 "decode_ms": 10.0, "prefill_ms": 1.0}, None
+                pass
+            async def generate(self, ids, max_tokens, eos, drafter=None, sample=None, penalty="",
+                                snap=0, snap2=0, images=None, schema=None, after=None, escape=(), think=None):
+                captured_think.append(think)
+                captured_eos.append(list(eos))
+                yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
+                             "decode_ms": 1.0, "prefill_ms": 1.0}, None
 
         engine = DummyEngine()
         tok = DummyTokenizer()
         app = mod.build_app(tok, engine, ctx=32768)
-        run_fn = app.state.run
+        serve_fn = app.state.serve
 
-        deltas = []
-        done_record = None
-        prompt_ids = [1, 2, 3]
-        async for delta, d in run_fn(prompt_ids, max_tokens=100, stops=[], thinking=True, max_thinking_tokens=2):
-            if delta is not None:
-                deltas.append(delta)
-            if d is not None:
-                done_record = d
+        # 1. With thinking enabled and budget set
+        await serve_fn([1, 2, 3], max_tokens=100, stops=[], stream=False, chat=True, prefix="chat",
+                       thinking=True, think_budget=26000)
+        self.assertEqual(len(captured_think), 1)
+        self.assertIsNotNone(captured_think[0])
+        budget, end_id, close_ids = captured_think[0]
+        self.assertEqual(budget, 26000)
+        self.assertEqual(end_id, 248069)
+        # Check EOS includes both <|im_end|> and <|endoftext|>
+        self.assertIn(248046, captured_eos[0])
+        self.assertIn(248044, captured_eos[0])
 
-        full_output = "".join(deltas)
-        self.assertGreaterEqual(engine.aborted, 1, "engine.abort() must be called on budget cutoff")
-        self.assertEqual(len(engine.calls), 2, "continuation generation must be called")
-        self.assertIn("</think>\n\n", full_output, "</think> must be injected")
-        self.assertIn("The answer is 42.", full_output, "answer from continuation must be streamed")
-        self.assertEqual(done_record["reason"], "stop")
-        # Initial 2 tokens + close_ids (2 tokens: 248069, 271) + 1 answer token = 5 total
-        self.assertEqual(done_record["n_gen"], 5)
+        # 2. With thinking disabled
+        captured_think.clear()
+        captured_eos.clear()
+        await serve_fn([1, 2, 3], max_tokens=100, stops=[], stream=False, chat=True, prefix="chat",
+                       thinking=False, think_budget=26000)
+        self.assertEqual(len(captured_think), 1)
+        self.assertIsNone(captured_think[0])
+
+
+class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
+    """HALOGEN_FIT_TO_ROOM: a budget that does not fit the remaining window is
+    clamped to the room when the gate is on, and refused when it is off or when
+    less than the floor is left — so a near-empty budget is never a silent
+    one-token answer, and an ungated side server (bench) keeps the hard 400."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_serve_api()
+
+    def setUp(self):
+        self._fit = self.mod.FIT_TO_ROOM
+        self._floor = self.mod.FIT_TO_ROOM_FLOOR
+
+    def tearDown(self):
+        self.mod.FIT_TO_ROOM = self._fit
+        self.mod.FIT_TO_ROOM_FLOOR = self._floor
+
+    async def _generate_maxtok(self, prompt_len, want):
+        """Runs serve() once on a 1000-token context and returns the budgets
+        the engine was actually asked for."""
+        import types, asyncio
+        mod = self.mod
+        seen = []
+
+        class Tok:
+            clean_up_tokenization_spaces = False
+            eos_token_id = 248046
+            def convert_tokens_to_ids(self, s):
+                return {"</think>": 248069}.get(s)
+            def __call__(self, text, **kw):
+                return {"input_ids": [42]}
+            def decode(self, ids, **kw):
+                return ""
+
+        class Eng:
+            def __init__(self):
+                self.info = {"ctx": 1000, "version": "0.8.1"}
+                self.slots = asyncio.Semaphore(10)
+                self.waiting = 0
+                self.inflight = {}
+                self.reserved = {}
+                self.busy_since = None
+                self.metrics = types.SimpleNamespace(record=lambda *a, **k: None)
+            async def abort(self):
+                pass
+            async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
+                               penalty="", snap=0, snap2=0, images=None, schema=None,
+                               after=None, escape=(), think=None):
+                seen.append(max_tokens)
+                yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
+                             "decode_ms": 1.0, "prefill_ms": 1.0}, None
+
+        app = mod.build_app(Tok(), Eng(), ctx=1000)
+        await app.state.serve([1] * prompt_len, max_tokens=want, stops=[],
+                              stream=False, chat=True, prefix="chat",
+                              thinking=False)
+        return seen
+
+    async def test_gate_off_refuses(self):
+        """Default: the refusal that names the numbers stays."""
+        self.mod.FIT_TO_ROOM = False
+        with self.assertRaises(Exception) as cm:
+            await self._generate_maxtok(950, 100)          # room = 50, want = 100
+        self.assertIn("does not fit", str(cm.exception))
+
+    async def test_gate_on_clamps_to_room(self):
+        """Gated: the budget is what the prompt left, not the refusal."""
+        self.mod.FIT_TO_ROOM = True
+        self.mod.FIT_TO_ROOM_FLOOR = 16
+        seen = await self._generate_maxtok(950, 100)        # room = 50 >= floor 16
+        self.assertEqual(seen, [50])
+
+    async def test_gate_on_below_floor_still_refuses(self):
+        """Gated but the prompt has eaten the window: still an honest error."""
+        self.mod.FIT_TO_ROOM = True
+        self.mod.FIT_TO_ROOM_FLOOR = 1024
+        with self.assertRaises(Exception) as cm:
+            await self._generate_maxtok(950, 100)          # room = 50 < floor 1024
+        self.assertIn("below the floor", str(cm.exception))
 
 
 if __name__ == "__main__":

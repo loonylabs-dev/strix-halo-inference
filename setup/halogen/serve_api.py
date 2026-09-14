@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.6.3
-#             image digest sha256:23008b9580b8bdba59c491939d3a7212f728384ddfdb4655b4a580b5b1914645
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.8.1
+#             image digest sha256:d444524bffb6f487650cb1c29e3dae67fcebf0c6a22abe5a6342f0e4315567e0
 #   base file /halogen/tools/serve_api.py
-#   BASE_SHA256 = ada3bee2da0baf5efe6cd2be82e9899e909f558bbe36c17452878affc4dd4f2d
+#   BASE_SHA256 = 018c899b43e496bb27c082a7ffe2f1da17d898144e1f5832607d797478d55cb6
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -24,12 +24,7 @@
 #   2. the same function takes the request's stop STRINGS and registers the
 #      ones that are single tokens as EOS ids, so a client's stop list is
 #      honoured by the engine rather than only by the text matcher.
-#   3. Thinking budget & forced tag-closing: Prevents runaway reasoning loops
-#      (defect halogen-greedy-reasoning-loop) by bounding thinking tokens
-#      (default 26,000 for low, 49,152 for medium/high, or HALOGEN_MAX_THINKING_TOKENS).
-#      If thinking exceeds the cap without closing </think>, serve_api aborts
-#      the engine turn, emits </think>\n\n, and seamlessly continues answer
-#      generation using the warm Radix KV cache (<20ms prefill).
+#   3. app.state bindings: exposes app.state.run and app.state.serve for tests.
 #
 # RETIREMENT: all hunks go when an image ships them — check the upstream
 # changelog on every bump; the mount check refuses the start and says so.
@@ -468,6 +463,152 @@ KEEPALIVE_S = float(os.environ.get("HALOGEN_KEEPALIVE_TIMEOUT", 300.0))
 SSE_KEEPALIVE_S = float(os.environ.get("HALOGEN_SSE_KEEPALIVE_S", 10.0))
 
 
+def schema_text(rf):
+    """The schema the engine gets, from either wire's spelling of
+    response_format: chat nests it (`{"type": "json_schema", "json_schema":
+    {"name", "schema", "strict"}}`), the Responses `text.format` is flat
+    (`{"type": "json_schema", "name", "schema", "strict"}`; recorded from the
+    Codex source). `json_object` is the literal "json".
+    Compact JSON text, so the engine's cache keys on the bytes."""
+    if rf.get("type") == "json_object":
+        return "json"
+    schema = rf.get("schema")
+    if schema is None and isinstance(rf.get("json_schema"), dict):
+        schema = rf["json_schema"].get("schema")
+    if not isinstance(schema, dict):
+        raise HTTPException(400, "response_format json_schema needs a "
+                                 "`schema` object (OpenAI's `json_schema: "
+                                 "{name, schema}` on chat, `text.format: "
+                                 "{type, name, schema}` on /v1/responses)")
+    return json.dumps(schema, separators=(",", ":"), ensure_ascii=False)
+
+
+# The byte-level BPE remap (GPT-2's bytes_to_unicode), inverted: a token's
+# vocabulary string is unicode; its BYTES are what the engine's grammar
+# matches. Byte-exact, so a token that is half of a multi-byte character
+# stays half of one.
+def _bytes_to_unicode():
+    bs = (list(range(ord("!"), ord("~") + 1)) + list(range(ord("\xa1"), ord("\xac") + 1))
+          + list(range(ord("\xae"), ord("\xff") + 1)))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return dict(zip(bs, [chr(c) for c in cs]))
+
+
+_VOCAB_BLOB = None
+
+
+def vocab_blob(tok):
+    """The VOCAB payload (0.8.0): `HGV1`, u32 n, then per id u8 flags
+    (1 = an added/special token, never text under a grammar), u16 length,
+    the token's bytes. Built once per process from this front end's own
+    tokenizer, so the engine's grammar sees exactly the tokens this file
+    will detokenize."""
+    global _VOCAB_BLOB
+    if _VOCAB_BLOB is not None:
+        return _VOCAB_BLOB
+    import struct
+    u2b = {u: b for b, u in _bytes_to_unicode().items()}
+    vocab = tok.get_vocab()
+    added = set(tok.get_added_vocab().values()) if hasattr(tok, "get_added_vocab") else set()
+    n = max(vocab.values()) + 1
+    inv = {i: t for t, i in vocab.items()}
+    out = bytearray(b"HGV1" + struct.pack("<I", n))
+    for i in range(n):
+        t = inv.get(i)
+        if t is None:
+            out += struct.pack("<BH", 1, 0)
+        elif i in added:
+            b = t.encode("utf-8")
+            out += struct.pack("<BH", 1, len(b)) + b
+        else:
+            b = bytes(u2b[ch] for ch in t)
+            out += struct.pack("<BH", 0, len(b)) + b
+    _VOCAB_BLOB = (n, bytes(out))
+    return _VOCAB_BLOB
+
+
+class Metrics:
+    """0.8.0: the totals behind `/metrics`, llama-server's Prometheus names
+    so a dashboard built for llama.cpp (or behind llama-swap) reads this
+    server unchanged. Every number is the engine's own D line, the same
+    fields `timings` copies, summed once per request; nothing is measured
+    here. The two rate gauges are over the requests since the last scrape,
+    as llama-server's are (it resets its bucket on every /metrics read), so
+    a scraper sees the rate of the interval it asked about."""
+    def __init__(self):
+        self.prompt_tokens = 0          # processed prompt tokens (prompt minus the cached prefix)
+        self.prompt_seconds = 0.0
+        self.predicted_tokens = 0
+        self.predicted_seconds = 0.0
+        self.requests = 0
+        self.cache_tokens = 0           # prompt tokens the cache covered
+        self.draft_tokens = 0
+        self.draft_accepted = 0
+        self.structured_requests = 0
+        self.b_prompt_tokens = 0        # the bucket since the last scrape
+        self.b_prompt_seconds = 0.0
+        self.b_predicted_tokens = 0
+        self.b_predicted_seconds = 0.0
+
+    def record(self, t, structured=False):
+        """`t` is `timings(d)` for one finished request."""
+        pn = int(t.get("prompt_n", 0)); gn = int(t.get("predicted_n", 0))
+        ps = float(t.get("prompt_ms", 0.0)) / 1000.0
+        gs = float(t.get("predicted_ms", 0.0)) / 1000.0
+        self.prompt_tokens += pn; self.prompt_seconds += ps
+        self.predicted_tokens += gn; self.predicted_seconds += gs
+        self.b_prompt_tokens += pn; self.b_prompt_seconds += ps
+        self.b_predicted_tokens += gn; self.b_predicted_seconds += gs
+        self.requests += 1
+        self.cache_tokens += int(t.get("cache_n", 0))
+        self.draft_tokens += int(t.get("draft_n", 0))
+        self.draft_accepted += int(t.get("draft_n_accepted", 0))
+        self.structured_requests += 1 if structured else 0
+
+    def render(self, processing, deferred, kv_reserved, kv_pool):
+        """The Prometheus text exposition, and the bucket resets."""
+        b_ps = (self.b_prompt_tokens / self.b_prompt_seconds
+                if self.b_prompt_seconds > 0 and self.b_prompt_tokens > 0 else 0.0)
+        b_gs = (self.b_predicted_tokens / self.b_predicted_seconds
+                if self.b_predicted_seconds > 0 else 0.0)
+        self.b_prompt_tokens = 0; self.b_prompt_seconds = 0.0
+        self.b_predicted_tokens = 0; self.b_predicted_seconds = 0.0
+        rows = [
+            ("counter", "llamacpp:prompt_tokens_total", "Number of prompt tokens processed.", self.prompt_tokens),
+            ("counter", "llamacpp:prompt_seconds_total", "Prompt process time.", self.prompt_seconds),
+            ("counter", "llamacpp:tokens_predicted_total", "Number of generation tokens processed.", self.predicted_tokens),
+            ("counter", "llamacpp:tokens_predicted_seconds_total", "Predict process time.", self.predicted_seconds),
+            ("gauge", "llamacpp:prompt_tokens_seconds", "Average prompt throughput in tokens/s. (since the last scrape)", b_ps),
+            ("gauge", "llamacpp:predicted_tokens_seconds", "Average generation throughput in tokens/s. (since the last scrape)", b_gs),
+            ("gauge", "llamacpp:requests_processing", "Number of requests processing.", processing),
+            ("gauge", "llamacpp:requests_deferred", "Number of requests deferred.", deferred),
+        ]
+        if kv_pool:
+            rows += [
+                ("gauge", "llamacpp:kv_cache_tokens", "KV-cache tokens (positions reserved by the requests in flight: prompt + max_tokens each).", kv_reserved),
+                ("gauge", "llamacpp:kv_cache_usage_ratio", "KV-cache usage. 1 means 100 percent usage. (reserved positions over the pool)", min(1.0, kv_reserved / kv_pool)),
+            ]
+        rows += [
+            ("counter", "halogen:requests_total", "Requests completed.", self.requests),
+            ("counter", "halogen:prompt_tokens_cached_total", "Prompt tokens the prompt cache covered (not processed).", self.cache_tokens),
+            ("counter", "halogen:draft_tokens_total", "Tokens proposed by the draft head and prompt lookup.", self.draft_tokens),
+            ("counter", "halogen:draft_tokens_accepted_total", "Of those, accepted.", self.draft_accepted),
+            ("counter", "halogen:structured_requests_total", "Requests decoded under a JSON schema.", self.structured_requests),
+        ]
+        out = []
+        for kind, name, help_, value in rows:
+            out.append("# HELP %s %s" % (name, help_))
+            out.append("# TYPE %s %s" % (name, kind))
+            out.append("%s %s" % (name, ("%d" % value) if isinstance(value, int) else ("%.6g" % value)))
+        return "\n".join(out) + "\n"
+
+
 class EngineBusy(HTTPException):
     def __init__(self):
         super().__init__(status_code=503,
@@ -486,7 +627,20 @@ def engine_refusal(parts):
     second refused to guess at all. An older engine still sends the bare
     line, and gets the no-guess text.
     """
-    why = " ".join(parts[7:]).strip()
+    # 0.8.1 (issue #53): a request that ends mid-generation carries the D
+    # line's statistics between the fixed fields and the reason, so the
+    # reason starts at the first field that is not a number. Before this
+    # the statistics were the message: "the engine refused this request:
+    # 0 0 0 0 0 0 0 0".
+    tail = parts[7:]
+    i = 0
+    while i < len(tail):
+        try:
+            float(tail[i])
+        except ValueError:
+            break
+        i += 1
+    why = " ".join(tail[i:]).strip()
     if why:
         return "the engine refused this request: " + why
     return ("the engine rejected this request. Check /health for what this "
@@ -528,6 +682,9 @@ class Engine:
         self.reader = None   # background demux task (batched engines only)
         self.cstat = asyncio.Queue()  # CSTAT replies, via the demux
         self.info = {}       # engine capabilities, from INFO at connect
+        self.tokenizer = None   # 0.8.0: bound by build_app, for VOCAB
+        self.metrics = Metrics()   # 0.8.0: the /metrics totals
+        self.reserved = {}         # slot key -> positions the request holds (prompt + max_tokens)
         self._live = (True, 0.0, "")   # last probe_live result
         self._live_at = None           # when it was taken (monotonic)
 
@@ -559,6 +716,8 @@ class Engine:
             except Exception:
                 pass
         self.info = await self._probe()
+        if self.info.get("grammar"):
+            await self._send_vocab()
         n = max(1, int(self.info.get("kv_slots", 1)))
         # The semaphore is only rebuilt when its SIZE changes. Replacing it on
         # every reconnect discards the count of slots currently held, so a
@@ -572,6 +731,36 @@ class Engine:
             # else may read it: two coroutines reading one stream is how a
             # response ends up spliced into another request's tokens.
             self.reader = asyncio.create_task(self._demux(self.streams))
+
+    async def _send_vocab(self):
+        """0.8.0: give the engine the tokenizer's tokens as BYTES.
+
+        The engine is ids-only and owns no tokenizer; a grammar needs to know
+        which token ids spell which bytes, so it gets exactly this front end's
+        vocabulary, once per connection, and never a second tokenizer that
+        could drift. The blob is built once per process (~2.6 MB, base64 on
+        one line like an image). A failure leaves `grammar` off with the
+        reason, so /health and the 400 say why rather than the engine refusing
+        a GEN later.
+        """
+        try:
+            if self.tokenizer is None:
+                raise RuntimeError("no tokenizer bound to the engine client")
+            blob = vocab_blob(self.tokenizer)
+            self.w.write(b"VOCAB %d %s\n" % (blob[0], base64.b64encode(blob[1])))
+            await self.w.drain()
+            raw = await asyncio.wait_for(self.r.readline(), timeout=60)
+            p = raw.decode().split(None, 2)
+            if len(p) >= 2 and p[0] == "V" and p[1] == "ok":
+                return
+            self.info["grammar"] = False
+            self.info["grammar_error"] = (" ".join(p[2:]) or raw.decode().strip()
+                                          or "no reply to VOCAB")
+        except Exception as e:
+            self.info["grammar"] = False
+            self.info["grammar_error"] = f"VOCAB failed: {e}"
+        print(f"serve_api: structured output OFF: {self.info['grammar_error']}",
+              flush=True)
 
     async def probe_live(self, timeout=None):
         """Is the engine's loop TURNING? -> (ok, seconds, detail).
@@ -750,7 +939,18 @@ class Engine:
                         # chain length proposed; 0 = off. Absent (an older
                         # engine) = none.
                         "pld_n": int(p[18]) if len(p) >= 20 else 0,
-                        "pld_k": int(p[19]) if len(p) >= 20 else 0}
+                        "pld_k": int(p[19]) if len(p) >= 20 else 0,
+                        # Where the trunk came from: "hgn" (the engine's own
+                        # checkpoint), "gguf" (a llama.cpp file repacked at
+                        # this start) or "gguf-cache" (that repack read back
+                        # from its cache file). Absent (an older engine) =
+                        # hgn, which is all an older engine could load.
+                        "checkpoint_format": p[20] if len(p) >= 21 else "hgn",
+                        # 0.8.0: the engine accepts a SCHEMA on the GEN line
+                        # (constrained decoding) once this front
+                        # end has sent it the vocabulary. 0 = HALOGEN_GRAMMAR=0;
+                        # absent = an engine older than structured output.
+                        "grammar": len(p) >= 22 and p[21] == "1"}
         except Exception:
             pass
         return {"mtp": False, "draft_head": False, "default": 0,
@@ -790,6 +990,8 @@ class Engine:
         if len(parts) >= 14:            # prompt-lookup rounds (among
             d["pld_rounds"] = int(parts[12])   # rounds) and the drafts they
             d["pld_accepted"] = int(parts[13])  # accepted (inside commit)
+        if len(parts) >= 15:            # 0.7.0, #45: the chain tokens those
+            d["pld_drafted"] = int(parts[14])   # rounds proposed (1..K each)
         return d
 
     async def _gen_batched(self, req, line):
@@ -852,7 +1054,8 @@ class Engine:
                     pass
 
     async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
-                       penalty="", snap=0, snap2=0, images=None):   # noqa: E301
+                       penalty="", snap=0, snap2=0, images=None, schema=None,
+                       after=None, escape=(), think=None):   # noqa: E301
         """Yields (token_id, None) per token, then (None, done_dict).
 
         `drafter` is the trailing wire field (0 serial / 1 MTP); None omits
@@ -905,6 +1108,22 @@ class Engine:
                 + ((" IMG %d " % len(images)) +
                    " ".join("%d %d %d" % (f, h, w) for f, h, w, _ in images)
                    if images else "")
+                # 0.8.0: SCHEMA <b64 of the JSON schema | json>, AFTER
+                # <id> (constrain only after this id: the </think> token when
+                # the request thinks), ESCAPE <n> <ids> (ids legal at the very
+                # start beside the grammar; choosing one ends the constraint:
+                # the <tool_call> token on a request with tools, because the
+                # schema binds the final text and a call is not text).
+                + ((" SCHEMA json" if schema == "json" else
+                    " SCHEMA " + base64.b64encode(schema.encode()).decode())
+                   if schema else "")
+                + (f" AFTER {after}" if schema and after is not None else "")
+                + ((" ESCAPE %d " % len(escape)) + " ".join(str(e) for e in escape)
+                   if schema and escape else "")
+                # 0.8.1, #56: THINK <budget> <end id> <k> <close ids>: the
+                # engine closes the think block itself at the budget.
+                + ((" THINK %d %d %d " % (think[0], think[1], len(think[2])))
+                   + " ".join(str(t) for t in think[2]) if think else "")
                 + "\n")
         if self.n_slots > 1:
             async for item in self._gen_batched(req, line):
@@ -1010,6 +1229,12 @@ class Engine:
             # miss. Only readable at shutdown before this.
             d["rows_copied"] = int(p[15])
             d["rows_copied_ms"] = float(p[16])
+        if len(p) >= 18:
+            # 0.8.1 (issue #54): a region keeps its anchor and its newest
+            # leaf; a store that extends the leaf replaces it. Counted here,
+            # not under `evicted`, because nothing a later request could
+            # have hit was lost.
+            d["superseded"] = int(p[17])
         return d
 
     async def abort(self):
@@ -1067,6 +1292,30 @@ class Engine:
 # OpenAI effort vocabulary -> what this template actually accepts.
 EFFORT_MAP = {"minimal": "low", "low": "low", "medium": "medium",
               "high": "xhigh", "xhigh": "xhigh"}
+# PUBLIC ISSUE #50: `reasoning_effort: "none"` is the OpenAI-compatible
+# spelling for thinking OFF, and agent clients send it on a real path (Hermes
+# turns thinking off for the continuation after a turn that spent its whole
+# budget thinking, and for title generation). It is not an effort the template
+# knows; it is `enable_thinking: false`, and it is treated as exactly that
+# wherever a request's thinking state is read (chat_kwargs, thinking_on).
+EFFORT_NONE = "none"
+EFFORT_VALUES = list(EFFORT_MAP) + [EFFORT_NONE]
+
+
+def effort_is_none(req):
+    e = getattr(req, "reasoning_effort", None)
+    return isinstance(e, str) and e.strip().lower() == EFFORT_NONE
+
+
+def thinking_on(req):
+    """Whether this request's prompt opens a think block: false when the
+    request (or the server default) says enable_thinking false, or when the
+    request says reasoning_effort "none" (#50). The ThinkSplit must be told
+    the same thing chat_kwargs tells the template, or a no-marker reply
+    misfiles as reasoning."""
+    if effort_is_none(req):
+        return False
+    return server_default(req, "enable_thinking") is not False
 
 
 # PUBLIC ISSUE #30: SERVER-SIDE DEFAULTS FOR WHAT A CLIENT MAY OMIT.
@@ -1118,6 +1367,10 @@ def _env_effort(name):
         return None
     e = EFFORT_MAP.get(raw.strip().lower())
     if e is None:
+        if raw.strip().lower() == EFFORT_NONE:
+            raise SystemExit(f"serve_api: {name}=none: the default for "
+                             f"thinking OFF is HALOGEN_ENABLE_THINKING=0; "
+                             f"{name} takes {'|'.join(EFFORT_MAP)}")
         raise SystemExit(f"serve_api: {name}={raw!r} unsupported; use "
                          f"{'|'.join(EFFORT_MAP)}")
     return e
@@ -1137,7 +1390,6 @@ def _env_bool(name):
 
 DEFAULTS = {
     "max_tokens": _env_number("HALOGEN_MAX_TOKENS_DEFAULT", 1, 1 << 30, int),
-    "max_thinking_tokens": _env_number("HALOGEN_MAX_THINKING_TOKENS", 1, 1 << 30, int),
     "temperature": _env_number("HALOGEN_TEMPERATURE", 0.0, 2.0, float),
     "top_p": _env_number("HALOGEN_TOP_P", 0.0, 1.0, float),
     "top_k": _env_number("HALOGEN_TOP_K", 0, 1 << 30, int),
@@ -1152,6 +1404,8 @@ DEFAULTS = {
     # such field) had no way to run this server in instruct mode. Same rule
     # as the other eight: a request that names it wins.
     "enable_thinking": _env_bool("HALOGEN_ENABLE_THINKING"),
+    # 0.8.1 (issue #56): the thinking budget's default, see ChatReq.
+    "max_thinking_tokens": _env_number("HALOGEN_MAX_THINKING_TOKENS", 1, 1 << 30, int),
 }
 # The built-in budgets when HALOGEN_MAX_TOKENS_DEFAULT is unset. Chat and
 # Responses share one (the model reasons before it answers, and a budget too
@@ -1161,6 +1415,27 @@ DEFAULTS = {
 # every route they use.
 CHAT_MAX_TOKENS = DEFAULTS["max_tokens"] or 8192
 COMPLETION_MAX_TOKENS = DEFAULTS["max_tokens"] or 128
+# The fit-to-room gate, read once at import. Default OFF: the "does not fit"
+# case stays a refusal that names the numbers (see the clamp note in serve()).
+#
+# Set on the interactive Claude Code unit only. There, a 400 one token under
+# the window strands a session that could otherwise run, and to that client a
+# refusal reads the same as any other API hiccup, so the operator cannot tell
+# "the model stopped" from "the request did not fit". The gate clamps the
+# request to the room the prompt actually left instead of refusing, so a
+# session reaches the true edge of the context — and the operator owns that
+# boundary, which is what they asked for.
+#
+# It is deliberately NOT in the shared llm-stack.env template and NOT set on
+# any bench side server: a budget quietly shrunk under a benchmark is exactly
+# the failure this file already documents (the old clamp that lost a run's
+# results). Only a unit whose operator wants thin tail output sets it.
+FIT_TO_ROOM = bool(_env_bool("HALOGEN_FIT_TO_ROOM"))
+# Below this remaining room the clamp gives up and the hard refusal stays:
+# a budget of a few dozen tokens is the silent-truncation case this file
+# argues against, not a useful answer. The floor makes "the prompt has eaten
+# the window" an honest error rather than a request that emits one token.
+FIT_TO_ROOM_FLOOR = int(os.environ.get("HALOGEN_FIT_TO_ROOM_FLOOR", "1024"))
 SAMPLING_DEFAULT_FIELDS = ("temperature", "top_p", "top_k", "min_p",
                            "presence_penalty", "frequency_penalty")
 
@@ -1179,13 +1454,13 @@ def server_default(req, field):
 def defaults_summary():
     """The defaults an operator set, for the startup line and /health."""
     names = {"max_tokens": "HALOGEN_MAX_TOKENS_DEFAULT",
-             "max_thinking_tokens": "HALOGEN_MAX_THINKING_TOKENS",
              "temperature": "HALOGEN_TEMPERATURE", "top_p": "HALOGEN_TOP_P",
              "top_k": "HALOGEN_TOP_K", "min_p": "HALOGEN_MIN_P",
              "presence_penalty": "HALOGEN_PRESENCE_PENALTY",
              "frequency_penalty": "HALOGEN_FREQUENCY_PENALTY",
              "reasoning_effort": "HALOGEN_REASONING_EFFORT",
-             "enable_thinking": "HALOGEN_ENABLE_THINKING"}
+             "enable_thinking": "HALOGEN_ENABLE_THINKING",
+             "max_thinking_tokens": "HALOGEN_MAX_THINKING_TOKENS"}
     return {names[k]: v for k, v in DEFAULTS.items() if v is not None}
 
 
@@ -1246,8 +1521,7 @@ class CompletionReq(BaseModel):
 # The template controls this server honours, in either spelling. Module
 # scope rather than a class attribute because pydantic reads an unannotated
 # class attribute as a field default.
-TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking",
-                   "max_thinking_tokens", "budget_tokens")
+TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking")
 
 
 class ChatReq(BaseModel):
@@ -1272,8 +1546,6 @@ class ChatReq(BaseModel):
     # the current spelling is honored instead of quietly getting the default.
     max_completion_tokens: int | None = None
     max_output_tokens: int | None = None
-    max_thinking_tokens: int | None = None
-    budget_tokens: int | None = None
     stream: bool = False
     stop: list[str] | str | None = None
     stream_options: dict | None = None
@@ -1282,6 +1554,15 @@ class ChatReq(BaseModel):
     # The template accepts low | medium | xhigh and raises on anything else,
     # so OpenAI's vocabulary is mapped onto it in chat_kwargs().
     reasoning_effort: str | None = None
+    # 0.8.1 (issue #56): the THINKING BUDGET. At most this many generated
+    # tokens inside the think block; if `</think>` has not come by then the
+    # engine closes the block itself (Qwen's own budget sentence, then
+    # `</think>`) and the answer follows, in the same stream, on the same
+    # state. Greedy at 100k+ can loop inside the block and spend the whole
+    # max_tokens there; the card's sampling is the cure, this bounds the
+    # damage. None = no budget (the shipped behaviour). Also
+    # HALOGEN_MAX_THINKING_TOKENS as the server default; request wins.
+    max_thinking_tokens: int | None = None
     enable_thinking: bool | None = None
     preserve_thinking: bool | None = None
     tools: list[dict] | None = None
@@ -1342,8 +1623,6 @@ class ChatReq(BaseModel):
         error instead of from a 200 that did not do what was asked.
         """
         if self.chat_template_kwargs is None:
-            if self.budget_tokens is not None and self.max_thinking_tokens is None:
-                self.max_thinking_tokens = self.budget_tokens
             return self
         if not isinstance(self.chat_template_kwargs, dict):
             raise ValueError("chat_template_kwargs must be an object")
@@ -1368,8 +1647,6 @@ class ChatReq(BaseModel):
                         f"{nested!r} in chat_template_kwargs; they are the "
                         f"same control under two names, send one")
             setattr(self, k, nested)
-        if self.budget_tokens is not None and self.max_thinking_tokens is None:
-            self.max_thinking_tokens = self.budget_tokens
         return self
     # an earlier change: IMPLEMENTED. temperature 0 (the default) is greedy and keeps
     # the speculative fast path; anything above 0 samples and is routed to
@@ -1428,7 +1705,6 @@ class ResponsesReq(BaseModel):
     tool_choice: str | dict | None = None
     parallel_tool_calls: bool | None = None
     max_output_tokens: int | None = None
-    max_thinking_tokens: int | None = None
     stream: bool = False
     temperature: float | None = None
     top_p: float | None = None
@@ -1437,7 +1713,8 @@ class ResponsesReq(BaseModel):
     #   store              nothing is persisted here, so there is no id to GET
     #   previous_response_id  same, and the client resends the full history
     #   include            asks for encrypted reasoning we do not produce
-    #   reasoning          effort/summary; effort is mapped, summary is not
+    #   reasoning          effort is mapped; summary (any value but none) asks
+    #                      for the reasoning text as the item's summary too (#44)
     #   prompt_cache_key   the prefix cache keys on the PREFIX already
     #   metadata / client_metadata / service_tier / user  telemetry
     store: bool | None = None
@@ -1792,17 +2069,23 @@ def chat_kwargs(req, mode="auto"):
     move the effort default (HALOGEN_REASONING_EFFORT); a request that names
     one still wins."""
     kw = {}
-    if req.reasoning_effort is not None:
+    if req.reasoning_effort is not None and not effort_is_none(req):
         e = EFFORT_MAP.get(req.reasoning_effort.lower())
         if e is None:
             raise HTTPException(400, f"reasoning_effort "
                                      f"'{req.reasoning_effort}' unsupported; "
-                                     f"use {'|'.join(EFFORT_MAP)}")
+                                     f"use {'|'.join(EFFORT_VALUES)}")
         kw["reasoning_effort"] = e
     elif DEFAULTS["reasoning_effort"] is not None:
         kw["reasoning_effort"] = DEFAULTS["reasoning_effort"]
     if server_default(req, "enable_thinking") is not None:
         kw["enable_thinking"] = server_default(req, "enable_thinking")
+    if effort_is_none(req):
+        # #50: after the server default, so "none" wins over
+        # HALOGEN_ENABLE_THINKING=1; the effort is meaningless without a
+        # think block and is not passed.
+        kw["enable_thinking"] = False
+        kw.pop("reasoning_effort", None)
     if req.preserve_thinking is not None:
         kw["preserve_thinking"] = req.preserve_thinking
     # tool_choice='none' means the model must not call one, and the cleanest
@@ -1872,60 +2155,8 @@ class ThinkSplit:
                 self.full[i + len(self.MARK):].lstrip("\n"))
 
 
-DEFAULT_THINKING_BUDGET_LOW = 26000    # Variant C - 8 min
-DEFAULT_THINKING_BUDGET_HIGH = 49152   # 75% of 64k (~15 min)
-
-
-def resolve_thinking_budget(req, thinking: bool, max_tokens: int) -> int | None:
-    """Determine maximum thinking tokens allowed before forcing </think>.
-
-    Returns None if thinking is disabled or context is too small.
-    """
-    if not thinking or max_tokens <= 1:
-        return None
-    # 1. Explicit request field
-    req_budget = getattr(req, "max_thinking_tokens", None) or getattr(req, "budget_tokens", None)
-    if req_budget is not None:
-        return max(1, min(int(req_budget), max_tokens - 1))
-    # 2. Nested chat_template_kwargs (vLLM / Anthropic bridge spelling)
-    ctk = getattr(req, "chat_template_kwargs", None)
-    if isinstance(ctk, dict):
-        bt = ctk.get("max_thinking_tokens") or ctk.get("budget_tokens")
-        if bt is not None:
-            return max(1, min(int(bt), max_tokens - 1))
-    # 3. Request-specified reasoning_effort
-    effort = getattr(req, "reasoning_effort", None)
-    if effort is None and isinstance(ctk, dict):
-        effort = ctk.get("reasoning_effort")
-    if effort is not None:
-        effort = EFFORT_MAP.get(str(effort).lower(), effort)
-
-    # 4. Server environment default override for max_thinking_tokens
-    # If explicitly set in environment AND no request effort or budget was given:
-    if effort is None and DEFAULTS.get("max_thinking_tokens") is not None:
-        return max(1, min(DEFAULTS["max_thinking_tokens"], max_tokens - 1))
-
-    # 5. Default effort if still None: check server default reasoning_effort, else "low"
-    if effort is None:
-        effort = DEFAULTS.get("reasoning_effort") or "low"
-
-    # Sizing per effort tier:
-    # low: cap 26,000 (~8 min), 50% of max_tokens
-    # medium / high / xhigh: cap 49,152 (~15 min), 75% of max_tokens
-    if effort == "low":
-        cap = (DEFAULTS.get("max_thinking_tokens")
-               if DEFAULTS.get("max_thinking_tokens") is not None
-               else DEFAULT_THINKING_BUDGET_LOW)
-        ratio = 0.5
-    else:
-        cap = DEFAULT_THINKING_BUDGET_HIGH
-        ratio = 0.75
-
-    budget = min(cap, max(1, int(max_tokens * ratio)))
-    return max(1, min(budget, max_tokens - 1))
-
-
 def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
+    engine.tokenizer = tok   # 0.8.0: the VOCAB line is built from it
     app = FastAPI(title="halogen")
 
     # Incremental detokenization is sound only if
@@ -2001,6 +2232,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             return []
         return [stop] if isinstance(stop, str) else list(stop)
 
+    def schema_for(req):
+        """The schema text serve() sends, or None. check_sampling() has
+        already refused what cannot be enforced."""
+        rf = getattr(req, "response_format", None)
+        if isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object"):
+            return schema_text(rf)
+        return None
+
     def check_sampling(req):
         """Reject what cannot be honoured, rather than accepting and dropping.
 
@@ -2025,16 +2264,31 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # break the client this endpoint is FOR. Refusing a silent drop is
         # the fix; refusing the unrecognised is a guess, and this line faces
         # a real client.
+        # 0.8.0: structured output. The schema is taken here, once,
+        # in either spelling, and checked against what this connection's
+        # engine can enforce; the engine compiles it at admission and a
+        # keyword it refuses comes back as the same 400 shape.
         rf = getattr(req, "response_format", None)
         if isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object"):
-            raise HTTPException(
-                400,
-                f"response_format (`text.format` on /v1/responses) "
-                f"{rf.get('type')!r} is not implemented by "
-                "this build: it has no constrained decoding, so a schema "
-                "could not be enforced and the reply would be prose. "
-                "/health lists this under `not_implemented`. Omit the field "
-                "and parse the reply, or prompt for JSON and validate it.")
+            if not engine.info.get("grammar"):
+                why = engine.info.get("grammar_error")
+                raise HTTPException(
+                    400,
+                    f"response_format (`text.format` on /v1/responses) "
+                    f"{rf.get('type')!r} cannot be enforced here: "
+                    + (f"the engine's vocabulary handshake failed ({why})"
+                       if why else
+                       f"the engine (version {engine.info.get('version', 'unknown')}) "
+                       "has no constrained decoding; 0.8.0 and later do")
+                    + ". /health reports `structured_output`. Omit the field "
+                    "and parse the reply, or prompt for JSON and validate it.")
+            if sample_spec(req) is not None:
+                raise HTTPException(
+                    400,
+                    "response_format json_schema / json_object decodes greedy "
+                    "in this release: send temperature 0 (or omit it). "
+                    "Sampling under a schema is not implemented yet.")
+            schema_text(rf)   # the shape check; the routes take the text via schema_for()
         if sample_spec(req) is not None and not engine.info.get("sampling"):
             raise HTTPException(
                 400,
@@ -2122,9 +2376,36 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                      f"loaded checkpoint cannot serve it")
         return v
 
+    # 0.7.0, #44: `</think>` is ONE token here (id 248069; checked against
+    # the tokenizer at startup below), so the number of reasoning tokens a
+    # reply spent is its position in the generated ids plus one, exactly,
+    # on both the streamed and the collected path. 0 means the marker never
+    # came: every token was reasoning if thinking was on, none if it was off,
+    # and the caller (which knows the template's state) decides which.
+    THINK_END_ID = tok.convert_tokens_to_ids(ThinkSplit.MARK) \
+        if hasattr(tok, "convert_tokens_to_ids") else None
+    if not isinstance(THINK_END_ID, int) or THINK_END_ID < 0:
+        THINK_END_ID = None
+    # 0.8.1 (issue #56): Qwen's thinking-budget close, as ids. The sentence
+    # is the one Qwen's own budget mechanism appends when a think block runs
+    # out of room; the marker and the two newlines are what the template
+    # writes after a block. Tokenized once, with the marker as its own token
+    # (a plain encode may merge it with its neighbours).
+    THINK_CLOSE_IDS = (
+        tok("\n\nConsidering the limited time by the user, I have to give the "
+            "solution based on the thinking directly now.\n",
+            add_special_tokens=False)["input_ids"]
+        + ([THINK_END_ID] if THINK_END_ID is not None else [])
+        + tok("\n\n", add_special_tokens=False)["input_ids"])
+    # 0.8.0: the <tool_call> token, the one escape from a schema.
+    TOOL_CALL_ID = tok.convert_tokens_to_ids("<tool_call>") \
+        if hasattr(tok, "convert_tokens_to_ids") else None
+    if not isinstance(TOOL_CALL_ID, int) or TOOL_CALL_ID < 0:
+        TOOL_CALL_ID = None
+
     async def run(ids, max_tokens, stops, drafter=None, sample=None,
-                  penalty="", snap=0, snap2=0, images=None,
-                  thinking=True, max_thinking_tokens=None):
+                  penalty="", snap=0, snap2=0, images=None, schema=None,
+                  after=None, escape=(), think=None):
         """Drives the engine and incrementally detokenizes.
 
         Public issue #13, reported with measurements and a patch by
@@ -2161,6 +2442,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                      f"context {limit}")
         out, text, done = [], "", None
         lps = []
+
+        def think_end(dd):
+            # the marker's position + 1 = the reasoning tokens (THINK_END_ID)
+            if THINK_END_ID is not None and THINK_END_ID in out:
+                dd["think_end"] = out.index(THINK_END_ID) + 1
+            else:
+                dd["think_end"] = 0
+            return dd
         # The carry window. `tail_ids` are tokens whose rendering is not
         # yet complete (a byte-fallback token holding part of a character) and
         # `tail_text` is what has already been emitted for them. Both empty in
@@ -2172,93 +2461,177 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # tokens carrying it are not recoverable from a whole-list decode, so
         # reopening empty would drop bytes. Unreachable on this tokenizer.
         use_window = INCREMENTAL_DETOK
+        # an earlier change step 9. an earlier change step 8 measured 32.5 ms/step of front-end cost
+        # at c=8 and named a SUSPECT (O(n^2) detok) without measuring it.
+        # METHOD 45: measure before fixing. These three sum to the wall of
+        # this loop, so they apportion it rather than sampling it.
         prof = {"detok": 0.0, "wait": 0.0, "n": 0}
         _t_last = time.perf_counter()
-        req_eos = set(get_eos_ids(stops))
-        interrupted_for_thinking = False
-        close_ids = []
-        out_cont = []
-
-        def _log_ledger(d, label=""):
-            dt = d["decode_ms"] / 1000
-            name = {1: "mtp", 2: "dflash2"}.get(d.get("drafter"),
-                                                "spec" if d.get("rounds")
-                                                else "batch")
-            spec = ""
-            shared = d.get("shared", 0)
-            if d.get("rounds"):
-                spec = (f"{d['rounds']} rounds, commit "
-                        f"{(d['commit'] - shared) / d['rounds']:.2f}"
-                        f"/round | ")
-            pld = ""
-            if d.get("pld_rounds"):
-                pld = (f" | pld {d['pld_rounds']} rounds, "
-                       f"{d['pld_accepted'] / d['pld_rounds']:.2f}"
-                       f" acc/round")
-            rate = (f"{d['n_gen'] / dt:.2f} t/s"
-                    if dt > 0 and d["n_gen"] > 1 else "n/a")
-            tag = f" [{label}]" if label else ""
-            print(f"serve_api: {name}{tag} {d['n_gen']} tok in {dt:.2f}s = "
-                  f"{rate} | {spec}"
-                  f"prompt {d['n_prompt']}"
-                  f"{f' ({c} cached)' if (c := d.get('n_cached')) else ''}"
-                  f", prefill {d['prefill_ms'] / 1000:.2f}s"
-                  f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
-                  + (f" | {shared} tok beside other streams" if shared
-                     else "")
-                  + pld,
-                  flush=True)
-
-        def _detok_step(tid, token_list, cur_text, t_ids, t_text, u_win):
-            _t0 = time.perf_counter()
-            token_list.append(tid)
-            windowed = u_win
-            if windowed:
-                win_ids = t_ids + [tid]
-                new, base = tok.decode(win_ids, skip_special_tokens=True), t_text
-            else:
-                new, base = tok.decode(token_list, skip_special_tokens=True), cur_text
-            prof["detok"] += time.perf_counter() - _t0
-            prof["n"] += 1
-            holding = new.endswith("�")
-            while new.endswith("�"):
-                new = new[:-1]
-            if windowed and not new.startswith(base):
-                new = tok.decode(token_list, skip_special_tokens=True)
-                while new.endswith("�"):
-                    new = new[:-1]
-                base, t_ids, t_text = cur_text, [], ""
-                holding, windowed, u_win = False, False, False
-            if not new.startswith(base):
-                n = 0
-                while n < len(base) and n < len(new) and base[n] == new[n]:
-                    n += 1
-                delta = new[n:]
-                updated_text = cur_text + delta if windowed else new
-            else:
-                delta = new[len(base):]
-                updated_text = cur_text + delta if windowed else new
-            if windowed:
-                if holding and len(win_ids) < CARRY_MAX:
-                    t_ids, t_text = win_ids, new
-                else:
-                    t_ids, t_text = [], ""
-            return delta, updated_text, t_ids, t_text, u_win
-
-        async for tid, d, lp in engine.generate(ids, max_tokens, list(req_eos),
+        req_eos = get_eos_ids(stops)
+        async for tid, d, lp in engine.generate(ids, max_tokens, req_eos,
                                                 drafter, sample, penalty,
                                                 snap=snap, snap2=snap2,
-                                                images=images):
+                                                images=images, schema=schema,
+                                                after=after, escape=escape,
+                                                think=think):
             if lp is not None:
                 lps.append(lp)
             if d is not None:
                 done = d
-                _log_ledger(d)
+                if d.get("reason") != "error":
+                    engine.metrics.record(timings(d), structured=bool(schema))
+                # The serving ledger an earlier change asked for: what real traffic
+                # actually commits per round, not what a fixture does.
+                # an earlier change: this WAS guarded by `if d.get("rounds")`, i.e. it
+                # only logged when a DRAFTER ran. The batched scheduler emits a
+                # plain 6-field D line, so batched requests logged NOTHING --
+                # and tools/bench-serving.py, the benchmark of record, parses
+                # exactly this line, so the whole batched path was invisible to
+                # it. The throughput half is now unconditional and keeps that
+                # regex's shape; the spec detail stays conditional because only
+                # a drafter has rounds to report.
+                # A 1-token response has NO decode rate to report: its only
+                # token is the one prefill already produced, so decode_ms
+                # rounds to 0. This used to floor dt at 1e-9 and print
+                # "1000000000.00 t/s" -- a fabricated number sitting in the
+                # exact field a real rate goes. `sweep`'s prefill probes
+                # (max_tokens=1) hit it on every single call, so the first
+                # thing a user benchmarking this image saw in the log was a
+                # 1e9 t/s line.
+                dt = d["decode_ms"] / 1000
+                name = {1: "mtp", 2: "dflash2"}.get(d.get("drafter"),
+                                                    "spec" if d.get("rounds")
+                                                    else "batch")
+                spec = ""
+                shared = d.get("shared", 0)
+                if d.get("rounds"):
+                    # PUBLIC ISSUE #22: `commit` counts EVERY token the
+                    # request produced, and `rounds` only the speculative
+                    # rounds it ran while alone. A request that got one round
+                    # alone and then shared the engine for 189 tokens printed
+                    # `1 rounds, commit 190.00/round`, and two reporters on
+                    # two machines read that as a decode defect. The ratio is
+                    # now over the speculative tokens only, and the shared
+                    # tokens are named at the end of the line. Healthy is
+                    # 1.6 to 1.8. The `N rounds, commit X/round | prompt`
+                    # shape is what bench-serving.py's LEDGER regex parses,
+                    # so the new count goes after it, not inside it.
+                    spec = (f"{d['rounds']} rounds, commit "
+                            f"{(d['commit'] - shared) / d['rounds']:.2f}"
+                            f"/round | ")
+                pld = ""
+                if d.get("pld_rounds"):
+                    # how many of those rounds drafted from the request's
+                    # own context (prompt lookup), and what they accepted
+                    # per round. A TRAILING clause, after detok: the
+                    # `rounds, commit X/round | prompt N` shape is what
+                    # bench-serving.py's LEDGER regex parses, and the first
+                    # cut put this inside it and silently dropped every
+                    # prompt-lookup case from the bench's mean.
+                    pld = (f" | pld {d['pld_rounds']} rounds, "
+                           f"{d['pld_accepted'] / d['pld_rounds']:.2f}"
+                           f" acc/round")
+                # LEDGER in tools/bench-serving.py requires `([\d.]+) t/s`
+                # AND a `rounds, commit` clause. These degenerate lines never
+                # carry rounds, so "n/a" cannot break that parser -- but the
+                # rate keeps its numeric shape in every case that does.
+                rate = (f"{d['n_gen'] / dt:.2f} t/s"
+                        if dt > 0 and d["n_gen"] > 1 else "n/a")
+                print(f"serve_api: {name} {d['n_gen']} tok in {dt:.2f}s = "
+                      f"{rate} | {spec}"
+                      f"prompt {d['n_prompt']}"
+                      f"{f' ({c} cached)' if (c := d.get('n_cached')) else ''}"
+                      f", prefill {d['prefill_ms'] / 1000:.2f}s"
+                      # detok us/token is a CANARY, not a stat: this loop
+                      # decodes the WHOLE token list every step, so its cost
+                      # is O(n^2) and this figure climbs with output length
+                      # -- 17 us/tok at 128 tokens, a projected 2000 us/tok at
+                      # the 16,384 cap (~6% of the request). It is the only
+                      # thing that would show that, and the measurement that
+                      # "refuted" the O(n^2) suspect was taken at n=128, where
+                      # O(n^2) is invisible by construction. `wait` and `sse`
+                      # were dropped: wait duplicates the t/s field and
+                      # changes meaning with concurrency, sse is a constant.
+                      f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
+                      # Issue #22, the other half: how many of this request's
+                      # tokens were produced beside other streams (one row of
+                      # a batched step, or a serial rest stretch), where the
+                      # per-stream rate is the README's concurrency table and
+                      # not the single-stream figure.
+                      + (f" | {shared} tok beside other streams" if shared
+                         else "")
+                      + pld,
+                      flush=True)
                 break
+            # time spent WAITING on the engine == everything since we last
+            # finished a token; it is the term the other two are competing
+            # against and it must be in the ledger or the shares are wrong.
             _t0 = time.perf_counter()
             prof["wait"] += _t0 - _t_last
-            delta, text, tail_ids, tail_text, use_window = _detok_step(
-                tid, out, text, tail_ids, tail_text, use_window)
+            out.append(tid)
+            # Decode the carry window, not the transcript. `base` is
+            # whatever `new` is expected to start with, so the diff below is
+            # the same diff as before on a bounded string.
+            windowed = use_window
+            if windowed:
+                win_ids = tail_ids + [tid]
+                new, base = tok.decode(win_ids, skip_special_tokens=True), tail_text
+            else:
+                new, base = tok.decode(out, skip_special_tokens=True), text
+            prof["detok"] += time.perf_counter() - _t0
+            prof["n"] += 1
+            # HOLD BACK an incomplete multi-byte character. A byte-fallback
+            # token can carry the first byte(s) of a UTF-8 sequence, and
+            # tok.decode renders that as U+FFFD until the next token completes
+            # it. Emitting the U+FFFD means the NEXT decode no longer starts
+            # with what we already sent.
+            #
+            # This was a live bug, found by hitting the endpoint with a real
+            # prompt: the old code answered a mismatch by resetting text to ""
+            # — which makes the next delta the ENTIRE accumulated string, so
+            # the client receives the whole reasoning block a second time,
+            # spliced into the middle of the answer. `5 ÷ 2 = 2.5` came back as
+            # 167 characters instead of 12. Its comment called the case a
+            # "rare retokenization shuffle"; it is neither rare nor a shuffle,
+            # it fires on any character the tokenizer byte-splits (÷ does;
+            # café, 😊 and 日本語 are single tokens here and do not).
+            holding = new.endswith("�")
+            while new.endswith("�"):
+                new = new[:-1]
+            if windowed and not new.startswith(base):
+                # The window did not behave. Rather than guess, re-decode
+                # the whole list and run the ORIGINAL logic for this step, so
+                # the bytes are exactly the older path's. Then close the
+                # window and carry on incrementally.
+                new = tok.decode(out, skip_special_tokens=True)
+                while new.endswith("�"):
+                    new = new[:-1]
+                base, tail_ids, tail_text = text, [], ""
+                holding, windowed, use_window = False, False, False
+            if not new.startswith(base):
+                # Genuine retokenization: emit only what actually differs
+                # rather than re-sending everything. Never reset to "".
+                n = 0
+                while n < len(base) and n < len(new) and base[n] == new[n]:
+                    n += 1
+                delta = new[n:]
+                text = text + delta if windowed else new
+            else:
+                delta = new[len(base):]
+                text = text + delta if windowed else new
+            if windowed:
+                # Hold the window open only while a character is unfinished,
+                # and only as long as one can be: past CARRY_MAX this is not a
+                # split character any more, so stop trusting the window.
+                if holding and len(win_ids) < CARRY_MAX:
+                    tail_ids, tail_text = win_ids, new
+                else:
+                    tail_ids, tail_text = [], ""
+            # A stop string can only become newly complete inside `delta`
+            # plus the longest stop minus one character of what preceded it.
+            # Scanning the whole transcript every step was this loop's second
+            # O(n^2) term, invisible beside the decode. The span is derived,
+            # not guessed, so this finds exactly what the full scan found.
             if stops and delta:
                 span = max(len(t) for t in stops if t) - 1 + len(delta)
                 win = text[-span:] if 0 < span < len(text) else text
@@ -2270,83 +2643,28 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 tail = delta[:max(0, cut - (len(text) - len(delta)))]
                 if tail:
                     yield tail, None
-                await engine.abort()
-                yield None, {"reason": "stop", "n_gen": len(out),
-                             "n_prompt": len(ids), "prefill_ms": 0.0,
-                             "decode_ms": 0.0, "logprobs": lps}
+                await engine.abort()   # drains through D — never bare cancel
+                yield None, think_end({"reason": "stop", "n_gen": len(out),
+                                       "n_prompt": len(ids), "prefill_ms": 0.0,
+                                       "decode_ms": 0.0, "logprobs": lps})
                 return
             if delta:
                 _t_last = time.perf_counter()
             yield delta, None
-
-            if (thinking and max_thinking_tokens is not None
-                    and len(out) >= max_thinking_tokens
-                    and "</think>" not in text):
-                interrupted_for_thinking = True
-                await engine.abort()
-                break
-
-        if interrupted_for_thinking:
-            close_text = "</think>\n\n"
-            text += close_text
-            close_ids = tok(close_text, add_special_tokens=False)["input_ids"]
-            yield close_text, None
-
-            cont_ids = ids + out + close_ids
-            rem_tokens = min(max_tokens - len(out) - len(close_ids), limit - len(cont_ids))
-            if rem_tokens > 0:
-                print(f"serve_api: thinking budget {max_thinking_tokens} reached ({len(out)} tokens); "
-                      f"closing </think> and continuing with {rem_tokens} remaining tokens", flush=True)
-                tail_ids, tail_text = [], ""
-                use_window = INCREMENTAL_DETOK
-                _t_last = time.perf_counter()
-                async for tid, d, lp in engine.generate(cont_ids, rem_tokens, list(req_eos),
-                                                        drafter, sample, penalty,
-                                                        snap=snap, snap2=snap2,
-                                                        images=images):
-                    if lp is not None:
-                        lps.append(lp)
-                    if d is not None:
-                        done = d
-                        _log_ledger(d, label="cont")
-                        break
-                    _t0 = time.perf_counter()
-                    prof["wait"] += _t0 - _t_last
-                    delta, text, tail_ids, tail_text, use_window = _detok_step(
-                        tid, out_cont, text, tail_ids, tail_text, use_window)
-                    if stops and delta:
-                        span = max(len(t) for t in stops if t) - 1 + len(delta)
-                        win = text[-span:] if 0 < span < len(text) else text
-                        hit = next((s for s in stops if s and s in win), None)
-                    else:
-                        win, hit = "", None
-                    if hit:
-                        cut = len(text) - len(win) + win.index(hit)
-                        tail = delta[:max(0, cut - (len(text) - len(delta)))]
-                        if tail:
-                            yield tail, None
-                        await engine.abort()
-                        total_n = len(out) + len(close_ids) + len(out_cont)
-                        yield None, {"reason": "stop", "n_gen": total_n,
-                                     "n_prompt": len(ids), "prefill_ms": 0.0,
-                                     "decode_ms": 0.0, "logprobs": lps}
-                        return
-                    if delta:
-                        _t_last = time.perf_counter()
-                    yield delta, None
-            else:
-                done = {"reason": "length", "n_gen": len(out) + len(close_ids),
-                        "n_prompt": len(ids), "prefill_ms": 0.0,
-                        "decode_ms": 0.0, "logprobs": lps}
-
-        total_gen = len(out) + (len(close_ids) + len(out_cont) if interrupted_for_thinking else 0)
         if done is not None:
             done["logprobs"] = lps
-            done["n_gen"] = total_gen
-            done["n_prompt"] = len(ids)
-        yield None, done or {"reason": "length", "n_gen": total_gen,
-                             "n_prompt": len(ids), "prefill_ms": 0.0,
-                             "decode_ms": 0.0, "logprobs": lps}
+        yield None, think_end(done or {"reason": "length", "n_gen": len(out),
+                                       "n_prompt": len(ids), "prefill_ms": 0.0,
+                                       "decode_ms": 0.0, "logprobs": lps})
+
+    def reasoning_tokens(d, thinking):
+        """0.7.0, #44: how many generated tokens were reasoning. The
+        collector records the `</think>` token's position (`think_end`);
+        with thinking on and no marker, the whole reply was reasoning (it
+        hit the budget inside the think block); with thinking off, none."""
+        if d.get("think_end"):
+            return min(int(d["think_end"]), int(d.get("n_gen", 0)))
+        return int(d.get("n_gen", 0)) if thinking else 0
 
     def usage(d, n_prompt):
         u = {"prompt_tokens": n_prompt, "completion_tokens": d["n_gen"],
@@ -2357,7 +2675,69 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # billed as prompt_tokens because they are still context.
         if d.get("n_cached"):
             u["prompt_tokens_details"] = {"cached_tokens": d["n_cached"]}
+        # 0.7.0, #44: OpenAI's own field for the reasoning share of the
+        # output, set by the route once it knows the template's state.
+        if "n_reasoning" in d:
+            u["completion_tokens_details"] = {"reasoning_tokens": d["n_reasoning"]}
         return u
+
+    def responses_usage(d, n_prompt):
+        """The Responses wire's usage block from the chat one: OpenAI's
+        names, with the cached prompt tokens and (#44) the reasoning share."""
+        u = usage(d, n_prompt)
+        r = {"input_tokens": u.get("prompt_tokens", 0),
+             "output_tokens": u.get("completion_tokens", 0),
+             "total_tokens": u.get("total_tokens", 0)}
+        if "prompt_tokens_details" in u:
+            r["input_tokens_details"] = dict(u["prompt_tokens_details"])
+        if "completion_tokens_details" in u:
+            r["output_tokens_details"] = dict(u["completion_tokens_details"])
+        return r
+
+    def timings(d):
+        """0.7.0, public issue #45: llama-server's `timings` object, the one
+        llama-swap reads from a body or a stream frame to show prefill and
+        decode rates and the draft count (`prompt_n`, `predicted_n`,
+        `prompt_ms`, `predicted_ms`, `prompt_per_second`,
+        `predicted_per_second`, `cache_n`, `draft_n`, `draft_n_accepted`).
+        Every field is the engine's own D line, copied, not measured here:
+        `predicted_ms` is the decode wall from the first generated token, so
+        `predicted_per_second` is the same figure the engine log prints.
+        `prompt_n` is the count the engine PROCESSED, the prompt minus the
+        prefix the cache covered, because `prompt_ms` is the engine's time
+        on exactly those pieces and nothing else (`work_ms` in flash_serve):
+        public issue #48 read a warm 97,052-token turn as 53,000 tok/s
+        because the first cut divided the whole prompt by the tail's time.
+        That is llama-server's meaning too ("number of prompt tokens being
+        processed"; the context is `prompt_n + cache_n + predicted_n`), and
+        it is what llama-swap's Input column then shows. `usage` is
+        unchanged: `prompt_tokens` stays the whole prompt with
+        `prompt_tokens_details.cached_tokens` beside it. `draft_n` counts
+        the draft head's proposals (one a round) and the prompt-lookup
+        chains' proposed tokens together, since both are speculative rounds
+        against the same verify; a serial request reads 0 / 0."""
+        pn = int(d.get("n_prompt", 0))
+        gn = int(d.get("n_gen", 0))
+        cached = int(d.get("n_cached", 0))
+        processed = max(0, pn - cached)
+        pms = float(d.get("prefill_ms", 0.0))
+        dms = float(d.get("decode_ms", 0.0))
+        t = {"prompt_n": processed, "predicted_n": gn,
+             "prompt_ms": round(pms, 3), "predicted_ms": round(dms, 3),
+             "prompt_per_second": (round(processed / (pms / 1000.0), 3)
+                                   if pms > 0 and processed > 0 else 0.0),
+             "predicted_per_second": round(gn / (dms / 1000.0), 3) if dms > 0 else 0.0}
+        if "n_cached" in d:
+            t["cache_n"] = cached
+        if "rounds" in d:
+            pld_r = int(d.get("pld_rounds", 0))
+            pld_a = int(d.get("pld_accepted", 0))
+            head_r = int(d["rounds"]) - pld_r
+            head_a = int(d["commit"]) - int(d["rounds"]) - int(d.get("shared", 0)) - pld_a
+            if pld_r == 0 or "pld_drafted" in d:
+                t["draft_n"] = max(0, head_r) + int(d.get("pld_drafted", 0))
+                t["draft_n_accepted"] = max(0, head_a) + pld_a
+        return t
 
     async def keepalive(frames, every):
         """Yield `frames` through, and a `: keepalive` SSE comment whenever
@@ -2490,15 +2870,20 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 if tstream is not None and tstream.any_calls() \
                         and fin != "length":
                     fin = "tool_calls"
-                yield (f"data: "
-                       f"{json.dumps(frame({'delta': {}} if chat else {'text': ''}, fin))}"
-                       f"\n\n")
+                d["n_reasoning"] = reasoning_tokens(d, chat and split.thinking)
+                # #45: `timings` rides the finish chunk whether or not usage
+                # was asked for (llama-swap reads the last frame carrying it;
+                # an OpenAI client ignores an extra top-level key).
+                last = frame({'delta': {}} if chat else {'text': ''}, fin)
+                last["timings"] = timings(d)
+                yield f"data: {json.dumps(last)}\n\n"
                 if include_usage:
                     # Per OpenAI: choices is ALWAYS empty on this chunk, and
                     # it is the last thing before [DONE].
                     u = envelope()
                     u["choices"] = []
                     u["usage"] = usage(d, d.get("n_prompt", 0))
+                    u["timings"] = timings(d)
                     yield f"data: {json.dumps(u)}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -2555,7 +2940,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
 
     async def sse_responses(gen, rid, created, model, split,
                             tstream=None, pre="", parallel=True,
-                            max_out=0):
+                            max_out=0, want_summary=False):
         """Serialize one generation as a Responses API event stream.
 
         THE EVENT ORDER WAS VERIFIED AGAINST THE CODEX CLI, not inferred. Text
@@ -2634,6 +3019,76 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     + ev("response.output_item.done", output_index=msg_index,
                          item=item))
 
+        # 0.7.0, public issue #44: THE REASONING IS FORWARDED. It goes out as
+        # a `reasoning` output item AHEAD of the message, in the open-model
+        # convention (a `reasoning_text` content part, `response.reasoning_
+        # text.delta` events, no `encrypted_content`), and, when the request
+        # asked for a reasoning summary, the SAME text again as the item's
+        # `summary_text` with `response.reasoning_summary_*` events. There is
+        # no separate summarizer; the summary is the reasoning. Both are
+        # sent because they reach different readers: Codex renders summaries
+        # by default and raw content only with `show_raw_agent_reasoning`
+        # (its source, codex-rs/protocol legacy_events.rs), and the request
+        # recorded from the real CLI asks for `{"summary": "auto"}`; an SDK
+        # client reads `content`. The text is trimmed the way the chat route trims
+        # `reasoning_content`, so the item's final text equals what the
+        # non-streamed body carries.
+        rs_id = "rs_" + rid.split("_", 1)[-1]
+        rs_open = False
+        rs_index = None
+        rs_text = ""
+        rs_pending = ""
+        rs_started = False
+
+        def open_reasoning():
+            nonlocal rs_open, rs_index
+            rs_index = next(nxt)
+            rs_open = True
+            item = {"id": rs_id, "type": "reasoning", "status": "in_progress",
+                    "summary": [], "content": [], "encrypted_content": None}
+            out = ev("response.output_item.added", output_index=rs_index,
+                     item=item)
+            if want_summary:
+                out += ev("response.reasoning_summary_part.added",
+                          item_id=rs_id, output_index=rs_index,
+                          summary_index=0,
+                          part={"type": "summary_text", "text": ""})
+            return out
+
+        def reasoning_delta(rd):
+            nonlocal rs_text
+            rs_text += rd
+            out = ev("response.reasoning_text.delta", item_id=rs_id,
+                     output_index=rs_index, content_index=0, delta=rd)
+            if want_summary:
+                out += ev("response.reasoning_summary_text.delta",
+                          item_id=rs_id, output_index=rs_index,
+                          summary_index=0, delta=rd)
+            return out
+
+        def close_reasoning():
+            nonlocal rs_open
+            rs_open = False
+            item = {"id": rs_id, "type": "reasoning", "status": "completed",
+                    "summary": ([{"type": "summary_text", "text": rs_text}]
+                                if want_summary else []),
+                    "content": [{"type": "reasoning_text", "text": rs_text}],
+                    "encrypted_content": None}
+            done_items.append((rs_index, item))
+            out = ev("response.reasoning_text.done", item_id=rs_id,
+                     output_index=rs_index, content_index=0, text=rs_text)
+            if want_summary:
+                out += ev("response.reasoning_summary_text.done",
+                          item_id=rs_id, output_index=rs_index,
+                          summary_index=0, text=rs_text)
+                out += ev("response.reasoning_summary_part.done",
+                          item_id=rs_id, output_index=rs_index,
+                          summary_index=0,
+                          part={"type": "summary_text", "text": rs_text})
+            out += ev("response.output_item.done", output_index=rs_index,
+                      item=item)
+            return out
+
         async for delta, d in gen:
             if d is not None and d.get("reason") == "error":
                 # The Responses wire's own error event; the SDK raises on
@@ -2641,6 +3096,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 yield ev("error", **error_body(d))
                 return
             if d is not None:
+                if rs_open:
+                    yield close_reasoning()
                 if msg_open:
                     yield close_message()
                 for st in calls.values():
@@ -2659,27 +3116,38 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 status = "incomplete" if d.get("reason") == "length" \
                     else "completed"
                 out = [i for _, i in sorted(done_items, key=lambda x: x[0])]
-                u = usage(d, d.get("n_prompt", 0))
-                final = envelope(status, out, {
-                    "input_tokens": u.get("prompt_tokens", 0),
-                    "output_tokens": u.get("completion_tokens", 0),
-                    "total_tokens": u.get("total_tokens", 0)})
+                d["n_reasoning"] = reasoning_tokens(d, split.thinking)
+                final = envelope(status, out, responses_usage(d, d.get("n_prompt", 0)))
                 if status == "incomplete":
                     final["incomplete_details"] = {"reason": "max_output_tokens"}
-                    yield ev("response.incomplete", response=final)
+                    # #45: `timings` at the frame's top level, where llama-swap
+                    # reads it; not a field of the Responses object
+                    yield ev("response.incomplete", response=final, timings=timings(d))
                 else:
-                    yield ev("response.completed", response=final)
+                    yield ev("response.completed", response=final, timings=timings(d))
                 return
 
             rd, cd = split.push(delta)
-            # Reasoning is NOT forwarded. The model's thinking is real text and
-            # the Responses API has a place for it, but that place is a
-            # reasoning item with an encrypted payload the client echoes back,
-            # and inventing one that cannot survive a round trip would be
-            # worse than the client simply not seeing it. The answer is
-            # unaffected; only the thinking display is.
+            if rd:
+                # the chat route's trim: no leading whitespace, trailing
+                # whitespace held until more text follows it
+                if not rs_started:
+                    rd = rd.lstrip()
+                    if rd:
+                        rs_started = True
+                if rs_started and rd:
+                    rd = rs_pending + rd
+                    kept = rd.rstrip()
+                    rs_pending = rd[len(kept):]
+                    rd = kept
+                if rd:
+                    if not rs_open:
+                        yield open_reasoning()
+                    yield reasoning_delta(rd)
             if not cd:
                 continue
+            if rs_open:
+                yield close_reasoning()
             if not started:
                 cd = cd.lstrip("\n")
                 if not cd:
@@ -2760,6 +3228,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # reading it takes the engine lock and this route
                 # deliberately stays cheap.
                 "cache_counters": "/cache",
+                # 0.8.0: Prometheus, llama-server's metric names, not under
+                # /v1 so named here the way /cache is.
+                "metrics": "/metrics",
                 "context": engine.info.get("ctx") or ctx,
                 # Contexts past the native 262,144 run Qwen's static YaRN
                 # (HALOGEN_ROPE_YARN); null means the native RoPE.
@@ -2777,6 +3248,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # releases behind its engine answered image questions from
                 # nothing, and no surface said which version either one was).
                 "version": version_status(),
+                # Where the loaded trunk came from, from the engine's INFO:
+                # "hgn" is the engine's own checkpoint; "gguf" a llama.cpp
+                # file repacked at startup; "gguf-cache" that repack read back
+                # from the file HALOGEN_GGUF_CACHE wrote. The MTP head is the
+                # engine's own on every one of them.
+                "checkpoint_format": engine.info.get("checkpoint_format", "hgn"),
                 # Whether the engine's loop is TURNING, asked rather than
                 # assumed: PONG on a queued connection is the one signal a
                 # listen backlog cannot fake.
@@ -2920,8 +3397,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # for. These three fields say it.
                 "reasoning_effort_default": DEFAULTS["reasoning_effort"]
                                             or "xhigh",
-                "reasoning_effort_values": list(EFFORT_MAP),
+                "reasoning_effort_values": list(EFFORT_VALUES),
                 "token_budget_covers_reasoning": True,
+                # 0.8.1 (#56): the thinking budget's server default, None =
+                # no budget; a request's max_thinking_tokens wins.
+                "max_thinking_tokens_default": DEFAULTS["max_thinking_tokens"],
                 # PUBLIC ISSUE #30: what the operator set as the default for
                 # a field a request leaves out, keyed by the variable, so a
                 # client can see the server's policy rather than infer it
@@ -2947,7 +3427,45 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # Refused with a 400, not ignored. Listed so a client
                 # can check before sending rather than discovering it from a
                 # 200 that did not do what was asked.
-                "not_implemented": ["response_format", "text.format"],
+                "not_implemented": (
+                    [] if engine.info.get("grammar")
+                    else ["response_format", "text.format"]),
+                # 0.8.0: STRUCTURED OUTPUT, keyed on the engine's INFO
+                # field and on the vocabulary handshake, never assumed. The
+                # keyword lists are the engine's contract (src/grammar.h):
+                # enforced, accepted-but-not-enforced, refused-by-name.
+                "structured_output": {
+                    "enabled": bool(engine.info.get("grammar")),
+                    "reason": engine.info.get("grammar_error") if not engine.info.get("grammar") else None,
+                    "response_format": ["json_schema", "json_object"],
+                    "text.format": ["json_schema", "json_object"],
+                    "routes": ["/v1/chat/completions", "/v1/completions", "/v1/responses"],
+                    "sampling": "greedy only (temperature 0); sampled + schema is a 400",
+                    "images": "a schema with images is a 400",
+                    "thinking": "the reasoning block is unconstrained; the "
+                                "final text is constrained after </think>",
+                    "tools": "a request with tools may open a <tool_call> "
+                             "instead of the JSON (the schema binds the "
+                             "final text, not a call)",
+                    "keys": "object keys are emitted in schema order",
+                    "enforced": ["type", "properties", "required",
+                                 "additionalProperties", "items", "minItems",
+                                 "maxItems", "minLength", "maxLength", "enum",
+                                 "const", "anyOf", "oneOf (as anyOf)",
+                                 "type: [..., \"null\"]", "$ref", "$defs"],
+                    "accepted_not_enforced": ["minimum", "maximum",
+                                              "exclusiveMinimum",
+                                              "exclusiveMaximum", "multipleOf",
+                                              "title", "description",
+                                              "default", "examples"],
+                    "refused": ["pattern", "format", "allOf", "not", "if",
+                                "then", "else", "patternProperties",
+                                "dependentRequired", "dependentSchemas",
+                                "uniqueItems", "contains", "propertyNames",
+                                "unevaluatedProperties", "unevaluatedItems",
+                                "minProperties", "maxProperties",
+                                "prefixItems"],
+                },
                 # an earlier change. Stated explicitly because "temperature works now"
                 # and "temperature works at the same speed" are different
                 # claims, and a client cannot tell them apart from a response.
@@ -2996,13 +3514,28 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # one that silently truncates by looking at a response — both
                 # end with finish_reason "length". Say which this is.
                 "max_tokens_over_cap": "400",
-                "reasoning_effort_values": sorted(set(EFFORT_MAP))}
+                "reasoning_effort_values": sorted(set(EFFORT_VALUES))}
         if live:
             return body
         # A STATUS CODE, because that is what a container healthcheck reads.
         # A field saying the engine is gone inside a 200 is a field nobody
         # acts on, which is how a wedged server stayed green for hours.
         return JSONResponse(status_code=503, content=body)
+
+    @app.get("/metrics")
+    async def metrics():
+        """0.8.0: Prometheus text exposition in llama-server's names (its
+        `--metrics` endpoint), so a llama.cpp dashboard reads this server
+        unchanged, plus `halogen:` counters for what llama-server has no
+        name for (the cache's share, the drafters' accept count, structured
+        requests). Cheap: no engine round trip; the totals are the D lines
+        already summed and the gauges are this process's own counters."""
+        from fastapi.responses import PlainTextResponse
+        kv_pool = int(engine.info.get("kv_pool") or 0) or (
+            int(engine.info.get("kv_slots", 1)) * int(engine.info.get("slot_ctx") or 0))
+        body = engine.metrics.render(len(engine.inflight), engine.waiting,
+                                     sum(engine.reserved.values()), kv_pool)
+        return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/cache")
     async def cache():
@@ -3174,8 +3707,27 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     thinking=True, drafter=None, tools=None, parallel=True,
                     sample=None, penalty="",
                     pre="", forced=False, include_usage=False, snap=0,
-                    snap2=0, wire="chat", images=None,
-                    max_thinking_tokens=None):
+                    snap2=0, wire="chat", images=None, want_summary=False,
+                    schema=None, think_budget=None):
+        # 0.8.0: the schema rides the GEN line; the engine constrains
+        # only after the thinking block (the </think> token, when the request
+        # thinks) and lets a request with tools open a tool call instead of
+        # the JSON (the <tool_call> token at the very start), because the
+        # schema binds the final text output and a call is not text.
+        # (/v1/completions is a raw prompt: nothing says whether it opened a
+        # think block, so a schema there constrains from the first token.)
+        after = THINK_END_ID if (schema and thinking and chat) else None
+        escape = [TOOL_CALL_ID] if (schema and tools and TOOL_CALL_ID is not None) else ()
+        # 0.8.1 (issue #56): the thinking budget rides the GEN line only when
+        # the prompt opened a think block (the template's state, which the
+        # engine cannot see) and the marker is one token. The close is
+        # Qwen's own budget sentence: the model is told why the block ends
+        # rather than cut mid-word, and `</think>\n\n` is what the template
+        # itself writes after the block, so the answer starts where it
+        # always does.
+        think = None
+        if think_budget and thinking and chat and THINK_END_ID is not None:
+            think = (int(think_budget), THINK_END_ID, THINK_CLOSE_IDS)
         # batch-1: QUEUE rather than reject. Reasoning defaults to xhigh, so
         # one request routinely runs minutes at ~10 t/s; failing every other
         # caller instantly for that whole window made the endpoint look dead
@@ -3213,10 +3765,29 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         limit = engine.info.get("ctx") or ctx
         room = limit - len(ids)
         if want > room:
-            raise HTTPException(
-                400, f"max_tokens {want} does not fit: prompt is {len(ids)} "
-                     f"tokens and the context is {limit}, leaving room for "
-                     f"{room}.")
+            # Default: a refusal that names the numbers — the error the
+            # client CAN read. With HALOGEN_FIT_TO_ROOM=1 (the interactive
+            # unit only; see FIT_TO_ROOM) the budget is instead clamped to
+            # the room the prompt actually left, so a long session runs to
+            # the true edge of the window. The clamped value reaches the
+            # response as max_tokens / max_output_tokens, and is echoed on
+            # stderr so the operator can watch the tail run thin. Below the
+            # floor the prompt has taken the window and there is no honest
+            # answer left to clamp to, so the refusal stays even when gated on.
+            if FIT_TO_ROOM and room >= FIT_TO_ROOM_FLOOR:
+                print(f"serve_api: fit-to-room clamped max_tokens {want} -> "
+                      f"{room} (prompt={len(ids)} ctx={limit})",
+                      file=sys.stderr, flush=True)
+                want = room
+            else:
+                raise HTTPException(
+                    400, f"max_tokens {want} does not fit: prompt is {len(ids)} "
+                         f"tokens and the context is {limit}, leaving room for "
+                         f"{room}."
+                         + ("" if not FIT_TO_ROOM else
+                            f" (fit-to-room is on, but {room} is below the "
+                            f"floor of {FIT_TO_ROOM_FLOOR}: the prompt has "
+                            f"taken the window)"))
         max_tokens = max(1, want)
 
         # an earlier change: a SEMAPHORE of engine slots, not a single lock. At one slot
@@ -3238,6 +3809,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # checked. With N slots a single scalar could not express it at all.
         slot_key = uuid.uuid4().hex
         engine.inflight[slot_key] = time.monotonic()
+        engine.reserved[slot_key] = len(ids) + int(max_tokens)   # what the engine's pool holds for it
         engine.busy_since = min(engine.inflight.values())
         # Chat ids are `chatcmpl-<hex>` and Responses ids are `resp_<hex>`:
         # the separator differs between the two APIs and clients do match on
@@ -3262,9 +3834,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 nonlocal n_ev, n_ka, finished, t_last, gap_max
                 try:
                     gen = guarded(run(ids, max_tokens, stops, drafter, sample,
-                                      penalty, snap, snap2, images,
-                                      thinking=thinking,
-                                      max_thinking_tokens=max_thinking_tokens))
+                                      penalty, snap, snap2, images, schema,
+                                      after, escape, think))
                     # The Responses wire is a different SERIALIZATION of the
                     # same generation. Everything that matters for safety --
                     # the slot semaphore, the abort on hangup, the inflight
@@ -3273,7 +3844,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     # a parallel endpoint of its own.
                     stream_iter = (
                         sse_responses(gen, cid, created, MODEL_ID, split,
-                                      tstream, pre, parallel, max_tokens)
+                                      tstream, pre, parallel, max_tokens,
+                                      want_summary)
                         if wire == "responses" else
                         sse(gen, cid, created, chat, split, tstream, pre,
                             parallel, include_usage))
@@ -3335,7 +3907,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     except Exception:
                         await engine.close()
                     finally:
-                        engine.inflight.pop(slot_key, None)
+                        engine.inflight.pop(slot_key, None); engine.reserved.pop(slot_key, None)
                         engine.busy_since = (min(engine.inflight.values())
                                              if engine.inflight else None)
                         engine.slots.release()
@@ -3344,8 +3916,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             text, done = "", None
             async for delta, d in run(ids, max_tokens, stops, drafter,
                                       sample, penalty, snap, snap2, images,
-                                      thinking=thinking,
-                                      max_thinking_tokens=max_thinking_tokens):
+                                      schema, after, escape, think):
                 if d is not None:
                     done = d
                     break
@@ -3358,7 +3929,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             except Exception:
                 await engine.close()
             finally:
-                engine.inflight.pop(slot_key, None)
+                engine.inflight.pop(slot_key, None); engine.reserved.pop(slot_key, None)
                 engine.busy_since = (min(engine.inflight.values())
                                      if engine.inflight else None)
                 engine.slots.release()
@@ -3366,13 +3937,24 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                "length": "length"}.get(done["reason"], "stop")
         if wire == "responses":
             split.full = text
-            _, content = split.parts()
+            reasoning, content = split.parts()
             tool_calls = []
             if tools:
                 content, tool_calls, _ = split_tool_calls(pre + content, tools)
                 if not parallel:
                     tool_calls = tool_calls[:1]
             out = []
+            if reasoning:
+                # #44: the reasoning item first, the same shape the stream
+                # closes with (see sse_responses)
+                out.append({"id": "rs_" + cid.split("_", 1)[-1],
+                            "type": "reasoning", "status": "completed",
+                            "summary": ([{"type": "summary_text",
+                                          "text": reasoning}]
+                                        if want_summary else []),
+                            "content": [{"type": "reasoning_text",
+                                         "text": reasoning}],
+                            "encrypted_content": None})
             if content:
                 out.append({"id": "msg_" + cid.split("_", 1)[-1],
                             "type": "message", "role": "assistant",
@@ -3386,15 +3968,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                             "name": tc["function"]["name"],
                             "arguments": tc["function"]["arguments"],
                             "call_id": tc["id"]})
-            u = usage(done, len(ids))
+            done["n_reasoning"] = reasoning_tokens(done, split.thinking)
             body = {"id": cid, "object": "response", "created_at": created,
                     "status": "incomplete" if fin == "length" else "completed",
                     "model": MODEL_ID, "output": out,
                     "parallel_tool_calls": parallel,
                     "max_output_tokens": max_tokens,
-                    "usage": {"input_tokens": u.get("prompt_tokens", 0),
-                              "output_tokens": u.get("completion_tokens", 0),
-                              "total_tokens": u.get("total_tokens", 0)}}
+                    "usage": responses_usage(done, len(ids)),
+                    "timings": timings(done)}
             if fin == "length":
                 body["incomplete_details"] = {"reason": "max_output_tokens"}
             return body
@@ -3433,9 +4014,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             choice["logprobs"] = {"content": [
                 {"token": None, "logprob": v, "bytes": None,
                  "top_logprobs": []} for v in done["logprobs"]]}
+        done["n_reasoning"] = reasoning_tokens(done, chat and split.thinking)
         return {"id": cid, "created": created, "model": MODEL_ID,
                 "object": "chat.completion" if chat else "text_completion",
-                "choices": [choice], "usage": usage(done, len(ids))}
+                "choices": [choice], "usage": usage(done, len(ids)),
+                "timings": timings(done)}
 
     @app.post("/v1/completions")
     async def completions(req: CompletionReq):
@@ -3448,7 +4031,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            drafter=drafter_for(req),
                            sample=sample_spec(req),
                            penalty=penalty_spec(req),
-                           include_usage=wants_usage(req))
+                           include_usage=wants_usage(req),
+                           schema=schema_for(req))
 
     @app.post("/v1/chat/completions")
     async def chat_completions(req: ChatReq):
@@ -3469,7 +4053,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                       f"by this endpoint", flush=True)
         mode, forced = tool_choice_mode(req)
         pre = force_prefill(mode, forced, req.tools)
-        thinking = server_default(req, "enable_thinking") is not False
+        thinking = thinking_on(req)
         kw = chat_kwargs(req, mode)
         if pre:
             # The prefill lands where the reasoning block would start, so the
@@ -3492,6 +4076,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         return await serve(ids, req.max_tokens, stop_list(req.stop),
                            req.stream, True, "chatcmpl",
                            thinking=thinking,
+                           think_budget=server_default(req, "max_thinking_tokens"),
                            drafter=drafter_for(req),
                            sample=sample_spec(req),
                            penalty=penalty_spec(req),
@@ -3500,8 +4085,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            pre=pre, forced=bool(pre),
                            include_usage=wants_usage(req), snap=snap,
                            snap2=snap2, images=wire_imgs,
-                           max_thinking_tokens=resolve_thinking_budget(
-                               req, thinking, req.max_tokens))
+                           schema=schema_for(req))
 
     @app.post("/v1/responses")
     async def responses(req: ResponsesReq):
@@ -3536,8 +4120,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                        stream=req.stream, tools=chat_tools, tool_choice=tc,
                        parallel_tool_calls=req.parallel_tool_calls,
                        reasoning_effort=effort, drafter=req.drafter,
+                       # 0.8.1 (#56): the Responses wire has no field for a
+                       # thinking budget; a top-level `max_thinking_tokens`
+                       # is accepted (the model allows extra fields) and the
+                       # server default applies otherwise.
+                       max_thinking_tokens=getattr(req, "max_thinking_tokens", None),
                        temperature=req.temperature, top_p=req.top_p,
-                       max_thinking_tokens=req.max_thinking_tokens,
                        # Issue #14: the Responses spelling of
                        # response_format is `text.format`. Carried onto the
                        # shim so ONE check refuses both wires: a second inline
@@ -3547,9 +4135,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         check_sampling(shim)
         mode, forced = tool_choice_mode(shim)
         pre = force_prefill(mode, forced, chat_tools)
-        # The Responses wire has no enable_thinking field, so only the
-        # server default (HALOGEN_ENABLE_THINKING) can turn thinking off.
-        thinking = server_default(shim, "enable_thinking") is not False
+        # The Responses wire has no enable_thinking field, so the server
+        # default (HALOGEN_ENABLE_THINKING) or `reasoning: {effort: "none"}`
+        # (#50, mapped onto the shim's reasoning_effort) turns thinking off.
+        thinking = thinking_on(shim)
         kw = chat_kwargs(shim, mode)
         if pre:
             kw["enable_thinking"] = False
@@ -3569,6 +4158,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         return await serve(ids, shim.max_tokens, stop_list(None),
                            req.stream, True, "resp",
                            thinking=thinking,
+                           think_budget=server_default(shim, "max_thinking_tokens"),
                            drafter=drafter_for(shim),
                            sample=sample_spec(shim),
                            penalty=penalty_spec(shim),
@@ -3577,8 +4167,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            pre=pre, forced=bool(pre),
                            snap=snap, snap2=snap2, wire="responses",
                            images=wire_imgs,
-                           max_thinking_tokens=resolve_thinking_budget(
-                               shim, thinking, shim.max_tokens))
+                           # #44: a client that asks for a reasoning summary
+                           # (Codex sends {"summary": "auto"}, recorded from the
+                           # real CLI) gets the reasoning text as the summary too
+                           want_summary=bool((req.reasoning or {}).get("summary")
+                                             not in (None, "", "none")),
+                           schema=schema_for(shim))
 
     app.state.run = run
     app.state.serve = serve

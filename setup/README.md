@@ -725,21 +725,21 @@ Halogen supports multimodal input through an optional vision projector/encoder:
   The vision tower allocates 0.84 GiB weights plus up to 1.14 GiB of worst-case
   scratch buffer. While 1M positions (28.8 GiB KV cache) caused severe Linux kernel
   memory compaction stalls on 128 GiB UMA (>98,000 `compact_stall` events), dropping
-  to 262k positions caused deep concurrent sessions (e.g. 112k coding context + 71k
-  background inspector) to mutually evict each other's KV cache, triggering 2–5 minute
-  cold re-prefills. `setup/halogenexec` defaults to `HALOGEN_KV_POOL_POSITIONS=524288`
-  (14.4 GiB KV cache across 4 slots), comfortably caching multiple deep sessions
-  concurrently. In addition, `setup/halogenexec` defaults `HALOGEN_MAX_TOK=16384`
+  too low causes deep concurrent sessions (e.g. 228k + 187k + 65k output reservations)
+  to mutually evict each other's KV cache, triggering 2–5 minute cold re-prefills ("ping pong").
+  `setup/halogenexec` defaults to `HALOGEN_KV_POOL_POSITIONS=786432`
+  (21.6 GiB KV cache across 4 slots), comfortably caching multiple deep sessions
+  concurrently with >240,000 tokens reserve. In addition, `setup/halogenexec` defaults `HALOGEN_MAX_TOK=16384`
   (8.4 GiB prefill arena vs 20.6 GiB at 32k), saving 12.2 GiB of contiguous 2 MiB hugepages.
-  This allows working memory (26.6 GiB) to fit cleanly into free physical memory (34.4 GiB)
-  with >6.5 GiB headroom, starting up in 16 seconds flat with 0 compaction stalls while
-  leaving >14 GiB of free headroom for the OS and page cache.
+  This allows working memory (67.7 GiB weights + 21.6 GiB KV pool + 8.4 GiB scratch arena = ~97.7 GiB)
+  to fit cleanly into physical memory with >27 GiB free headroom for OS and page cache,
+  starting up with 0 compaction stalls.
 * **N-gram / PLE lookup table caching**:
   Qwen 3.8 Flash-Next holds core model weights locked in GTT, while its massive
   **47.7 GiB Predictive Language Embedding (PLE) N-gram table** is mapped via page cache
   from `/mnt/shared/halogen-models/qwen38-flash-next-w4b.hgn`.
-  With 512k KV cache and the vision tower active, ~62.4 GiB of RAM remains for the Linux
-  page cache, allowing the full 47.7 GiB PLE table to be held in memory.
+  With 768k KV cache and the vision tower active, ample RAM remains for the Linux
+  page cache and PLE table.
   Once sessions are warm in the KV pool, turns prefill in ~0.07s without NVMe re-reads,
   and decode runs at ~45–50 tokens/s.
 * **Watchdog probe timer**:
@@ -820,9 +820,12 @@ generation emitting `<|endoftext|>` ran to `max_tokens`
 stop strings are also passed as EOS IDs to the C++ engine. A second file,
 `setup/halogen/tool_parse.py`, originally introduced incremental parameter streaming;
 this was adopted upstream in 0.6.1 (`_scan_params`, `_stream_safe`, and `ToolStream`)
-and is pinned to the identical 0.6.3 upstream copy.
+and is pinned to the identical 0.8.1 upstream copy.
 
-In addition, Halogen 0.6.3 introduces:
+In addition, Halogen 0.8.1 introduces:
+* **Native Thinking Budget Protocol**: Wire command `THINK <budget> <end_id> <len> <close_ids>` (issue #56)
+  bounds reasoning in the C++ engine, inlining Qwen's official closing sentence and continuing answer decoding in a single stream.
+* **2-Entry Prompt Cache (Anchor + Leaf)**: Resolves multi-session cache eviction (issue #54); intermediate turns supersede the leaf entry in place without evicting the session root.
 * **Parallel N-gram lookup (64 threads)**: The 47.7 GiB disk table is read with
   64 concurrent threads (`HALOGEN_NGRAM_GATHER_THREADS`), reducing cold-start NVMe
   overhead on long prompts (>30k–150k tokens) from minutes down to a few seconds.

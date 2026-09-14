@@ -2,8 +2,8 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.6.3
-#             image digest sha256:23008b9580b8bdba59c491939d3a7212f728384ddfdb4655b4a580b5b1914645
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.8.1
+#             image digest sha256:d444524bffb6f487650cb1c29e3dae67fcebf0c6a22abe5a6342f0e4315567e0
 #   base file /halogen/tools/tool_parse.py
 #   BASE_SHA256 = 8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4
 #
@@ -17,7 +17,7 @@
 # WHAT IS CHANGED:
 #   Upstream 0.6.1 officially adopted the incremental tool-call parameter
 #   streaming mechanism (_scan_params, _stream_safe, and ToolStream JSON chunking)
-#   addressing public issue #36. This copy is re-cut from 0.6.3.
+#   addressing public issue #36. This copy is re-cut from 0.8.1.
 # ===========================================================================
 """tools/tool_parse.py — Qwen3.8 tool-call parsing.
 

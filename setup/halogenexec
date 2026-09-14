@@ -58,7 +58,7 @@ IMAGE="$(halogen_image "$FLAVOR")"
 # The sha256 of /halogen/tools/serve_api.py and tool_parse.py in the image
 # the vendored copies were cut from. Written in their headers too; compared
 # by tests/test_halogen.py so they cannot drift apart.
-BASE_SHA256="ada3bee2da0baf5efe6cd2be82e9899e909f558bbe36c17452878affc4dd4f2d"
+BASE_SHA256="018c899b43e496bb27c082a7ffe2f1da17d898144e1f5832607d797478d55cb6"
 TOOL_PARSE_BASE_SHA256="8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4"
 
 EXTRA_MOUNTS=()
@@ -147,7 +147,7 @@ if [ -n "$VISION_WANT" ]; then
 fi
 
 POOL_WANT="${HALOGEN_KV_POOL_POSITIONS:-$(local_var HALOGEN_KV_POOL_POSITIONS 2>/dev/null || true)}"
-POOL_WANT="${POOL_WANT:-524288}"
+POOL_WANT="${POOL_WANT:-786432}"
 
 MAX_TOK_WANT="${HALOGEN_MAX_TOK:-$(local_var HALOGEN_MAX_TOK 2>/dev/null || true)}"
 MAX_TOK_WANT="${MAX_TOK_WANT:-16384}"
@@ -155,7 +155,8 @@ MAX_TOK_WANT="${MAX_TOK_WANT:-16384}"
 EXTRA_ENV=()
 for var in HALOGEN_TEMPERATURE HALOGEN_TOP_P HALOGEN_TOP_K HALOGEN_MIN_P \
            HALOGEN_MAX_THINKING_TOKENS HALOGEN_MAX_TOKENS_DEFAULT \
-           HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES; do
+           HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES \
+           HALOGEN_FIT_TO_ROOM HALOGEN_FIT_TO_ROOM_FLOOR; do
   val="${!var:-$(local_var "$var" 2>/dev/null || true)}"
   if [ -n "$val" ]; then
     EXTRA_ENV+=(-e "$var=$val")

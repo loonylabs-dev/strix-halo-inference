@@ -14,7 +14,9 @@
 # change to this one file — the shape of defect this repository keeps
 # finding, and the reason setup/patches/ exists for llama.cpp.
 #
-# WHAT IS CHANGED — three hunks against the base above:
+# WHAT IS CHANGED — four hunks against the base above. Hunks 1-3 are the
+# vendored end-token fix this file has carried since 0.6.x; hunk 4 is
+# repository policy, added 14.09.2026 and NOT an upstream behaviour.
 #
 #   1. get_eos_ids()  The model has TWO end tokens, <|im_end|> (248046) and
 #      <|endoftext|> (248044), and the base registered only tok.eos_token_id.
@@ -25,9 +27,18 @@
 #      ones that are single tokens as EOS ids, so a client's stop list is
 #      honoured by the engine rather than only by the text matcher.
 #   3. app.state bindings: exposes app.state.run and app.state.serve for tests.
+#   4. the fit-to-room gate (FIT_TO_ROOM / FIT_TO_ROOM_FLOOR, and the clamp in
+#      serve()): a max_tokens that does not fit the window the prompt left is
+#      clamped to that room when HALOGEN_FIT_TO_ROOM=1, and refused with the
+#      numbers as before when the gate is off or the room is below
+#      HALOGEN_FIT_TO_ROOM_FLOOR=1024. Enabled PER UNIT — the interactive
+#      Claude Code unit carries `HALOGEN_FIT_TO_ROOM=1` as a systemd drop-in,
+#      and the shared template and the bench side servers deliberately do not.
 #
-# RETIREMENT: all hunks go when an image ships them — check the upstream
-# changelog on every bump; the mount check refuses the start and says so.
+# RETIREMENT: hunks 1-3 go when an image ships them — check the upstream
+# changelog on every bump. Hunk 4 goes only if upstream ships an equivalent
+# clamp; until then it stays even on an image whose other hunks have landed.
+# The mount check refuses the start when the base hash moves, and says so.
 # ===========================================================================
 """serve_api.py — the OpenAI-compatible front-end.
 

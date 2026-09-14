@@ -731,15 +731,16 @@ Halogen supports multimodal input through an optional vision projector/encoder:
   (21.6 GiB KV cache across 4 slots), comfortably caching multiple deep sessions
   concurrently with >240,000 tokens reserve. In addition, `setup/halogenexec` defaults `HALOGEN_MAX_TOK=16384`
   (8.4 GiB prefill arena vs 20.6 GiB at 32k), saving 12.2 GiB of contiguous 2 MiB hugepages.
-  This allows working memory (67.7 GiB weights + 21.6 GiB KV pool + 8.4 GiB scratch arena = ~97.7 GiB)
-  to fit cleanly into physical memory with >27 GiB free headroom for OS and page cache,
-  starting up with 0 compaction stalls.
+  This allows working memory (32.5 GiB weights + 2.0 GiB vision tower + 21.6 GiB KV pool
+  = 56.1 GiB GTT, plus 4.6 GiB for the CPU vision sidecar and ~9 GiB desktop = ~69.7 GiB used)
+  to fit cleanly into the 124.9 GiB UMA with ~55 GiB left for the Linux page cache —
+  enough for the full 47.7 GiB PLE table — starting up with 0 compaction stalls.
 * **N-gram / PLE lookup table caching**:
   Qwen 3.8 Flash-Next holds core model weights locked in GTT, while its massive
   **47.7 GiB Predictive Language Embedding (PLE) N-gram table** is mapped via page cache
   from `/mnt/shared/halogen-models/qwen38-flash-next-w4b.hgn`.
-  With 768k KV cache and the vision tower active, ample RAM remains for the Linux
-  page cache and PLE table.
+  With 768k KV cache and the vision tower active, ~55 GiB remains for the Linux
+  page cache, enough to hold the full 47.7 GiB PLE table.
   Once sessions are warm in the KV pool, turns prefill in ~0.07s without NVMe re-reads,
   and decode runs at ~45–50 tokens/s.
 * **Watchdog probe timer**:
@@ -776,9 +777,10 @@ knowing:
 
 ### Thinking modes
 
-The same vocabulary as every profile — `none`, `low`, `medium`, `high`,
-`xhigh`, `max` — declared in `gateway.py` as `HALOGEN_MODES` rather than in a
-profile, and run through the same `check_modes()` guard. What the template
+The mode vocabulary — `low`, `medium`, `high`, `xhigh`, `max` — is declared in
+`gateway.py` as `HALOGEN_MODES` rather than in a profile, and run through the
+same `check_modes()` guard (`none` is absent on purpose; see the closing
+paragraph). What the template
 does with each was measured on 12.09.2026 by rendering
 `/models/tokenizer/chat_template.jinja` inside the running container:
 
@@ -813,11 +815,14 @@ a cap that cut it off.
 ### The patched front-end, and the check that keeps it honest
 
 `setup/halogen/serve_api.py` is a VENDORED copy of one file out of the image,
-mounted over the original. Two hunks, and the one that matters registers
+mounted over the original. **Four hunks**, listed in the file's own header and
+pinned by `tests/test_halogen.py`. The one that matters registers
 both of the model's end tokens — the base registered only one, so a
 generation emitting `<|endoftext|>` ran to `max_tokens`
-(`setup/defects.json`, `halogen-second-eos-token-unregistered`), while single-token
-stop strings are also passed as EOS IDs to the C++ engine. A second file,
+(`setup/defects.json`, `halogen-second-eos-token-unregistered`) — while single-token
+stop strings are also passed as EOS IDs to the C++ engine. A third exposes
+`app.state.run` and `app.state.serve` for the tests, and the fourth is the
+fit-to-room gate described below. A second file,
 `setup/halogen/tool_parse.py`, originally introduced incremental parameter streaming;
 this was adopted upstream in 0.6.1 (`_scan_params`, `_stream_safe`, and `ToolStream`)
 and is pinned to the identical 0.8.1 upstream copy.
@@ -831,6 +836,21 @@ In addition, Halogen 0.8.1 introduces:
   overhead on long prompts (>30k–150k tokens) from minutes down to a few seconds.
 * **Prompt Lookup Decoding (PLD)**: Speculative 3-token chain proposals from earlier
   context run alongside the MTP drafter, yielding +13–15% faster decode on coding tasks.
+
+**Fit-to-room** (hunk 4, `HALOGEN_FIT_TO_ROOM`). Claude Code sends
+`max_tokens=32000` by default, and a session past ~230k tokens leaves less than
+that in the 262,144-token window; the hard 400 then names numbers the operator
+never sees, and to that client a refusal reads like any other stall. With the
+gate on, the budget is clamped to the room the prompt actually left and the clamp
+is logged to stderr, so a session reaches the true edge of the window. Below
+`HALOGEN_FIT_TO_ROOM_FLOOR=1024` the refusal stays: a near-empty budget removes
+the answer rather than shortening it. The gate is **off by default** and is set
+**per unit** — here by the drop-in
+`~/.config/systemd/user/halogen-qwen38flash.service.d/fit-to-room.conf`. That
+drop-in lives outside this checkout, so a rebuild has to recreate it by hand; it
+is deliberately NOT in the shared `llm-stack.env` template and NOT on any bench
+side server, where a budget quietly shrunk under a measurement is the failure
+this file already documents.
 
 A whole-file copy over a pinned image invites a silent failure: bump the tag
 and `podman ps` reports the new version while the old copy reverts every

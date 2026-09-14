@@ -66,7 +66,17 @@ models_known() {        # rc 0 if $1 is a model in the repo
 
 model_repo_env()  { printf '%s/%s.env\n' "$MODELS_ENV_DIR" "$1"; }
 model_user_env()  { printf '%s/%s.env\n' "$MODELS_USER_ENV_DIR" "$1"; }
-model_unit()      { printf 'llama-user@%s.service\n' "$1"; }
+# The unit that serves a name. Every llama profile is an instance of the
+# template; halogen is a container with a unit of its own, and the name a
+# caller gets by building `llama-user@%s` out of it — `llama-user@halogen.
+# service` — does not exist. Callers used to build that string themselves,
+# which is why the mapping lives here now: one place, asked by everyone.
+model_unit() {
+  case "$1" in
+    halogen) printf 'halogen.service\n' ;;
+    *)       printf 'llama-user@%s.service\n' "$1" ;;
+  esac
+}
 
 # --- foreign workloads ----------------------------------------------------
 #
@@ -97,6 +107,55 @@ workload_meta() {       # $1 = workload, $2 = variable, $3 = default
   printf '%s\n' "${v:-${3-}}"
 }
 
+# --- the container backend -------------------------------------------------
+#
+# Halogen Flash Server is not a llama profile: it has no LLAMA_ARGS and no
+# .gguf, so it is not in setup/env/. What it DOES have — an image tag and a
+# model directory — is written down here rather than in each of the three
+# files that need it. halogenexec, switch-model.sh and bench/run_halogen.py
+# each carried their own copy on 12.09.2026, and two of them spelled the tag
+# out: bump one and the others serve or MEASURE a different version while
+# reporting the new one. That is the six-places failure at the top of this
+# file, one backend later.
+HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.5.6"
+
+halogen_image() {
+  if [ -n "${HALOGEN_IMAGE:-}" ]; then printf '%s\n' "$HALOGEN_IMAGE"; return 0; fi
+  printf '%s\n' "$(local_var HALOGEN_IMAGE "$HALOGEN_IMAGE_DEFAULT")"
+}
+
+# Where the .hgn bundle lives — the one that EXISTS, or where it SHOULD go.
+#
+# Both answers have to come from here, and the reason is 124 GiB:
+# fetch-halogen.sh worked its destination out separately as
+# `$(models_dir)/halogen-models`, INSIDE the .gguf directory, while
+# halogenexec looked BESIDE it. On a machine without the bundle already in
+# place the download landed where nothing serves from, and the service then
+# refused to start with "no halogen-models directory found". Neither script
+# was wrong on its own; they simply never agreed. 12.09.2026.
+#
+# Never empty, so a caller always has a path to name in its error message.
+# `-d` is still the caller's question to ask.
+halogen_models_dir() {
+  local d intended
+  if [ -n "${HALOGEN_MODELS:-}" ]; then
+    printf '%s\n' "${HALOGEN_MODELS/#\~/$HOME}"; return 0
+  fi
+  d="$(local_var HALOGEN_MODELS)"
+  if [ -n "$d" ]; then printf '%s\n' "${d/#\~/$HOME}"; return 0; fi
+  # BESIDE the .gguf directory, not inside it: the bundle is not a .gguf and
+  # models_dir() finds its directory by looking for one. models_dir() may
+  # fail on a machine with no models at all, which is not a reason to fail
+  # here.
+  d="$(models_dir 2>/dev/null || true)"
+  intended="${d:+$(dirname "$d")/halogen-models}"
+  intended="${intended:-$HOME/models/halogen-models}"
+  for d in "$intended" "$HOME/halogen-models" "$HOME/models/halogen-models"; do
+    [ -n "$d" ] && [ -d "$d" ] && { printf '%s\n' "$d"; return 0; }
+  done
+  printf '%s\n' "$intended"
+}
+
 # --- what is running ------------------------------------------------------
 
 models_active() {       # instances of llama-user@ that are ACTIVE right now
@@ -124,6 +183,55 @@ models_serving() {
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null \
       | awk '$0=="--alias"{getline; print; exit}'
   done | sort -u
+  # The container backend has no --alias to read and no llama-server process
+  # to find, so the question is asked of ITS process instead.
+  #
+  # NOT `systemctl is-active halogen.service`, which was the first answer
+  # here: that is true from the moment podman starts, some twelve seconds
+  # before anything listens, and a caller that stops production on it stops
+  # production for a backend that is not serving yet. CLAUDE.md carries the
+  # rule this function exists for — ask what is running, never what systemd
+  # intends.
+  #
+  # Anchored on the interpreter rather than written as a bare `pgrep -f
+  # serve_api.py`: an unanchored pattern also matches the caller's own
+  # `bash -c` line whenever that line happens to contain it, and then this
+  # function reports a backend because somebody grepped for one.
+  #
+  # What it proves: the front-end process is up. Not that the engine behind
+  # it has finished loading — /health is the only thing that answers that,
+  # and it is a network call this function deliberately does not make.
+  if pgrep -f '^python3 .*serve_api\.py' >/dev/null 2>&1; then
+    echo "halogen"
+  fi
+}
+
+# Does this backend read and write the gateway's prefix store? llama-server
+# does — it is handed `--slot-save-path` and the gateway saves, restores and
+# parks for it. The container backend has its own radix cache instead, and
+# the gateway's AUTO_SAVE and session store are both switched off for it
+# (`backend_is_openai_only()` in gateway.py).
+#
+# The difference decides whether a store owned by ANOTHER model is a hazard
+# or merely parked, and setup/check.sh was calling it a hazard either way.
+backend_uses_slot_store() {
+  case "$1" in
+    halogen) return 1 ;;
+    *)       return 0 ;;
+  esac
+}
+
+# The same answer as `serving`, spelled as units. Exists so that no caller
+# builds `llama-user@$name` by hand: with a container in the picture that
+# produces a unit name nothing can start, and the caller's own dead man's
+# switch then arms the wrong one. bench/suites/speed-ab.py held that string
+# and it fired on 04.09.2026.
+models_serving_unit() {
+  local m
+  while IFS= read -r m; do
+    [ -n "$m" ] && model_unit "$m"
+  done < <(models_serving)
+  return 0
 }
 
 # --- reading a profile ----------------------------------------------------
@@ -160,6 +268,26 @@ local_var() {           # $1 = variable, $2 = default
   v="$(sed -n "s/^$1=//p" "$f" | head -1)"
   v="${v%\"}"; v="${v#\"}"
   printf '%s\n' "${v:-${2-}}"
+}
+
+# Where the saved prefixes live. The shell mirror of
+# systemdfile.slots_dir(), and tests/test_models.py pins that the two give
+# the same answer — gateway.py reads the Python one, switch-model.sh reads
+# this one, and until 12.09.2026 the second did not exist: the switch had
+# `$HOME/.cache/llama-slots` written out by hand while the gateway had been
+# moved to whatever LLAMA_SLOTS names. Measured that day, the gateway held
+# 89 GiB under /mnt/shared/llm-cache/llama-slots and every switch parked and
+# relabelled a near-empty directory beside it. Nothing failed; the switch
+# simply stopped meaning anything.
+#
+# Never gives up, unlike models_dir(): the default always resolves, so the
+# worst case is a store in the wrong place rather than no answer at all.
+slots_dir() {
+  local d
+  if [ -n "${LLAMA_SLOTS:-}" ]; then printf '%s\n' "${LLAMA_SLOTS/#\~/$HOME}"; return 0; fi
+  d="$(local_var LLAMA_SLOTS)"
+  if [ -n "$d" ]; then printf '%s\n' "${d/#\~/$HOME}"; return 0; fi
+  printf '%s\n' "$HOME/.cache/llama-slots"
 }
 
 # Where the .gguf live. $LLAMA_MODELS, then the local config, then the
@@ -246,6 +374,10 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     active)   models_active ;;
     enabled)  models_enabled ;;
     serving)  models_serving ;;
+    serving-unit) models_serving_unit ;;
+    slots)    slots_dir ;;
+    halogen-image)  halogen_image ;;
+    halogen-models) halogen_models_dir ;;
     known)    models_known "${2:-}" ;;
     args)     model_args "${2:?model name}" ;;
     meta)     model_meta "${2:?model name}" "${3:?variable}" "${4-}" ;;
@@ -261,7 +393,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
           "${state:-inactive}" "$(model_title "$m")"
       done < <(models_all)
       ;;
-    *) echo "usage: bash setup/lib/models.sh {list|workloads|active|enabled|serving|table|known N|args N|meta N VAR|bin N|gguf N}" >&2
+    *) echo "usage: bash setup/lib/models.sh {list|workloads|active|enabled|serving|serving-unit|slots|halogen-image|halogen-models|table|known N|args N|meta N VAR|bin N|gguf N}" >&2
        exit 2 ;;
   esac
 fi

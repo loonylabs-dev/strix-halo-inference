@@ -393,7 +393,96 @@ def reuse_from_object(obj):
                 got = _pair(cached, u["prompt_tokens"] - cached)
                 if got:
                     return got
+        # NO CACHE FIELD AT ALL. For the container backend that is an
+        # answer: serve_api.py adds prompt_tokens_details exactly when
+        # n_cached is non-zero, so its absence means nothing was reused, and
+        # without this the trace's cache column stayed empty for every
+        # request that missed.
+        #
+        # Scoped to a COMPLETE usage block. prompt_tokens on its own also
+        # appears on a partial frame, and reading that as "zero reused" would
+        # report a cache miss in the middle of a warm request — a number that
+        # reaches restore_verdict() and can quarantine a good file. The pair
+        # of counters only exists on a finished answer.
+        if isinstance(u.get("prompt_tokens"), int) \
+                and isinstance(u.get("completion_tokens"), int):
+            return _pair(0, u["prompt_tokens"])
     return None
+
+
+def _stop_reason_from_object(obj):
+    if not isinstance(obj, dict):
+        return None
+    # Anthropic: message_delta carries it under `delta`, a non-streaming
+    # answer at the top level.
+    d = obj.get("delta")
+    if isinstance(d, dict) and d.get("stop_reason"):
+        return d["stop_reason"]
+    if obj.get("stop_reason"):
+        return obj["stop_reason"]
+    for c in (obj.get("choices") or []):
+        if isinstance(c, dict) and c.get("finish_reason"):
+            return c["finish_reason"]
+    return None
+
+
+def stop_reason_from_text(text):
+    """WHY a turn ended, from a response body or an SSE fragment, or None.
+
+    "stop" / "end_turn" — the model finished. "length" / "max_tokens" — a cap
+    cut it off. "tool_calls" / "tool_use" — it wants a tool. Three different
+    diagnoses for one long request, and without this field the trace could
+    not tell them apart: on 12.09.2026 a 466 s request producing 15429 tokens
+    could only be explained by a text-level record that happened to be armed.
+
+    The LAST non-null answer wins. Every content chunk of an OpenAI stream
+    carries `finish_reason: null`, so taking the last value seen rather than
+    the last real one would report nothing for every stream.
+    """
+    if not text:
+        return None
+    best = None
+    for chunk in text.split("\n"):
+        line = chunk.strip()
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        got = _stop_reason_from_object(obj)
+        if got:
+            best = got
+    if best is None:
+        try:
+            best = _stop_reason_from_object(json.loads(text))
+        except Exception:
+            pass
+    return best
+
+
+def tool_names(body):
+    """The declared tool names, sorted, in either dialect.
+
+    Anthropic puts the name at the top of each entry, OpenAI one level down
+    under `function`. Reading only the first shape recorded `tool_names: []`
+    beside `tools: 25` for every OpenAI request — an instrument answering
+    nothing for the clients that use tools most.
+    """
+    out = []
+    for t in (body or {}).get("tools") or []:
+        if not isinstance(t, dict):
+            continue
+        name = t.get("name")
+        if not name:
+            fn = t.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+        if name:
+            out.append(name)
+    return sorted(out)
 
 
 def reuse_from_text(text):

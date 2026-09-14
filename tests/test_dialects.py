@@ -480,6 +480,123 @@ class TestTheShapesRealAnswersContain(unittest.TestCase):
         self.assertTrue(D.looks_degenerate("The answer is " + "/" * 300)[0])
 
 
+class TestAMissingCacheFieldIsNotAZero(unittest.TestCase):
+    """"Nothing reused" and "nobody said" are different answers.
+
+    A fallback added for Halogen turned every usage block without cache
+    information into (0, prompt_tokens). It is right for that backend —
+    serve_api.py omits prompt_tokens_details exactly when n_cached is zero —
+    and it is a claim about every other backend that has never been checked.
+    The number feeds restore_verdict(), which decides whether a saved prefix
+    file is quarantined, so a wrong zero is not cosmetic.
+
+    Scoped to a COMPLETE usage block: prompt_tokens and completion_tokens
+    together only appear on a final answer, never on a partial frame.
+    """
+
+    def test_a_complete_openai_usage_without_cache_means_nothing_reused(self):
+        self.assertEqual(
+            D.reuse_from_object({"usage": {"prompt_tokens": 120,
+                                           "completion_tokens": 4}}),
+            (0, 120))
+
+    def test_an_explicit_cache_figure_still_wins(self):
+        self.assertEqual(
+            D.reuse_from_object({"usage": {
+                "prompt_tokens": 120, "completion_tokens": 4,
+                "prompt_tokens_details": {"cached_tokens": 100}}}),
+            (100, 20))
+
+    def test_llama_timings_still_win(self):
+        self.assertEqual(
+            D.reuse_from_object({"timings": {"cache_n": 7, "prompt_n": 3},
+                                 "usage": {"prompt_tokens": 99,
+                                           "completion_tokens": 1}}),
+            (7, 3))
+
+    def test_a_half_usage_block_is_not_an_answer(self):
+        """A streaming frame may carry prompt_tokens alone. Reading it as
+        "zero reused" would report a cache miss for a chunk in the middle of
+        a warm request."""
+        self.assertIsNone(
+            D.reuse_from_object({"usage": {"prompt_tokens": 120}}))
+
+
+class TestWhyATurnEnded(unittest.TestCase):
+    """The one field that separates "the model finished" from "the cap cut it
+    off", and the trace did not record it.
+
+    12.09.2026: a harness run held the single slot for 466 s and produced
+    15429 tokens. Whether that was a runaway that hit max_tokens or a long
+    answer that ended by itself could not be read off the trace at all — it
+    took a text-level record that happened to be armed, and the answer
+    (finish_reason "tool_calls", so an EOS stop) changes what to do about it
+    completely. One field, and it decides the diagnosis.
+    """
+
+    def test_an_openai_stream_says_why(self):
+        text = ('data: {"choices": [{"index": 0, "delta": {"content": "x"}, '
+                '"finish_reason": null}]}\n\n'
+                'data: {"choices": [{"index": 0, "delta": {}, '
+                '"finish_reason": "length"}]}\n\n'
+                'data: [DONE]\n')
+        self.assertEqual(D.stop_reason_from_text(text), "length")
+
+    def test_a_tool_call_is_not_a_cap(self):
+        text = ('data: {"choices": [{"index": 0, "delta": {}, '
+                '"finish_reason": "tool_calls"}]}\n')
+        self.assertEqual(D.stop_reason_from_text(text), "tool_calls")
+
+    def test_an_anthropic_stream_says_why(self):
+        text = ('event: message_delta\n'
+                'data: {"type": "message_delta", "delta": '
+                '{"stop_reason": "max_tokens"}}\n')
+        self.assertEqual(D.stop_reason_from_text(text), "max_tokens")
+
+    def test_a_plain_body_says_why(self):
+        self.assertEqual(
+            D.stop_reason_from_text('{"stop_reason": "end_turn"}'),
+            "end_turn")
+        self.assertEqual(
+            D.stop_reason_from_text(
+                '{"choices": [{"finish_reason": "stop"}]}'), "stop")
+
+    def test_a_null_reason_is_not_an_answer(self):
+        """Every content chunk carries finish_reason null. Taking the last
+        value seen rather than the last NON-NULL one would report null for
+        every stream."""
+        text = ('data: {"choices": [{"finish_reason": "stop"}]}\n'
+                'data: {"choices": [{"finish_reason": null}]}\n')
+        self.assertEqual(D.stop_reason_from_text(text), "stop")
+
+    def test_nothing_readable_is_none_rather_than_a_guess(self):
+        self.assertIsNone(D.stop_reason_from_text(""))
+        self.assertIsNone(D.stop_reason_from_text(": keep-alive\n\n"))
+
+
+class TestToolNamesInEitherDialect(unittest.TestCase):
+    """Names only, at `detail` level — the instrument for "an MCP server
+    connected or dropped mid-session". It read the Anthropic shape only, so
+    every OpenAI request recorded `tools: 25` beside `tool_names: []` and the
+    instrument answered nothing for exactly the clients that use it most."""
+
+    def test_the_anthropic_shape(self):
+        self.assertEqual(
+            D.tool_names({"tools": [{"name": "Bash"}, {"name": "Read"}]}),
+            ["Bash", "Read"])
+
+    def test_the_openai_shape(self):
+        self.assertEqual(
+            D.tool_names({"tools": [
+                {"type": "function", "function": {"name": "pwsh"}},
+                {"type": "function", "function": {"name": "Read"}}]}),
+            ["Read", "pwsh"])
+
+    def test_no_tools_is_an_empty_list(self):
+        self.assertEqual(D.tool_names({}), [])
+        self.assertEqual(D.tool_names({"tools": None}), [])
+
+
 class TestSessionId(unittest.TestCase):
     """The identity of a CONVERSATION, which is not the identity of a prefix.
 

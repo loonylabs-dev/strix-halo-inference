@@ -21,6 +21,22 @@ import json, os, subprocess, sys, threading, time, urllib.request, urllib.error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
+
+def _slots_dir():
+    """Where the saved prefixes live — asked, never written down.
+
+    setup/lib/systemdfile.py owns the answer. A second spelling of the
+    default is how a suite ends up measuring a directory the gateway does not
+    use; found twice on 12.09.2026, in switch-model.sh and in check.sh.
+    """
+    import sys as _sys, os as _os
+    lib = _os.path.join(REPO, "setup", "lib")
+    if lib not in _sys.path:
+        _sys.path.insert(0, lib)
+    import systemdfile as _sdf
+    return _sdf.slots_dir()
+
+
 sys.path.insert(0, os.path.join(REPO, "tools"))
 from synthetic import body                                # noqa: E402
 
@@ -94,7 +110,7 @@ def _cleanup():
         ident = gw.prefix_id(p)[0]
     except Exception:
         return
-    for f in glob.glob(os.path.expanduser("~/.cache/llama-slots/%s.*" % ident)):
+    for f in glob.glob(os.path.join(_slots_dir(), "%s.*" % ident)):
         try:
             os.remove(f)
             print("cleaned up %s" % os.path.basename(f))

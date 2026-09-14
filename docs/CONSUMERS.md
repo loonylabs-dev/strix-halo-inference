@@ -42,6 +42,38 @@ Which names are live right now is what `/v1/models` answers, and what
 `bash setup/consumer-info.sh` prints — a list in a document is a list from the
 day it was written. This one has named an already-replaced model twice.)
 
+Since 11.09.2026 the backend behind the endpoint need not be `llama-server` at
+all: a container backend can be serving instead, and then the names above are
+its own — `halogen-qwen3.8-flash-next`, plus `-low`, `-medium`, `-high`.
+
+### The name that does not go stale
+
+A name belonging to a model that is NOT being served does not resolve; it is
+answered by the bare alias, and the thinking level you asked for is silently
+gone. So there is a second set of names beside the model's own, resolving
+against **whatever is serving**:
+
+| Name | Means |
+|---|---|
+| `local` | the served model as it comes — its bare alias |
+| `local-low` | that model's `low`, whichever model it is |
+| `local-medium`, `local-high`, … | the same, for every level it declares |
+
+`local-low` is `flashnext-low` while flashnext serves and
+`halogen-qwen3.8-flash-next-low` while the container serves. Put that in your
+client once and a model switch on the operator's side stops being your
+problem. It costs nothing: both names render the identical prompt, so they
+share one prompt-cache entry (measured — the second of the two comes back
+warm).
+
+Two limits worth knowing. A level the served model does not declare still
+falls through to the bare alias — `laguna` declares no levels at all, so
+`local-low` means "laguna, as it comes" there. And `/v1/models` lists both
+sets, so a client that validates names can use either.
+
+(Not to be confused with the `local/` PREFIX further down — that one has a
+slash, runs on your machine and is about routing, not about which model.)
+
 **Context window:** configure your client a little BELOW the slot size, so a
 long turn cannot overrun it. The server reports the real number as `n_ctx` in
 `/props`, which is reachable locally but NOT through the tunnel — it is not on
@@ -183,7 +215,17 @@ No router needed, Claude Code points straight at the foreign server.
 > ### Important if you use `claude -p`
 >
 > **In non-interactive mode `--settings` does not carry.** Measured: the run
-> aborts during title generation. Interactively the profile is fine; for `-p`
+> aborts during title generation.
+>
+> **The abort is the good case.** Re-measured 12.09.2026 on claude 2.1.268:
+> with a model name the client recognises as first-party the run does NOT
+> abort — it answers from api.anthropic.com, because `ANTHROPIC_BASE_URL` from
+> the settings file never reaches the request. Set the base URL to a port
+> nothing listens on and ask for one word: if a word comes back, the call left
+> the machine. An unknown model name fails loudly; a known one leaves quietly,
+> billed, with the conversation going to a third party.
+>
+> Interactively the profile is fine; for `-p`
 > set the same values as environment variables and it runs:
 >
 >     ANTHROPIC_BASE_URL=$ENDPOINT \

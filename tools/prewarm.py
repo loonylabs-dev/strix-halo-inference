@@ -143,10 +143,14 @@ def wait_until_ready(t=900):
     is still loading, and /slots then returns 503. So ask for exactly what is
     needed afterwards — /slots itself.
     """
-    for _ in range(t // 3):
+    for _ in range(max(1, t // 3)):
         try:
             req("/slots", t=5)
             return True
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return False
+            time.sleep(3)
         except Exception:
             time.sleep(3)
     return False
@@ -158,10 +162,10 @@ def wait_until_ready(t=900):
 # answer of /completion itself.
 
 def save(a):
-    if not wait_until_ready():
-        raise SystemExit("server did not become ready in time")
     with open(a.body, encoding="utf-8") as f:
         body = json.load(f)
+    if not wait_until_ready():
+        raise SystemExit("server did not become ready in time")
     dialect = getattr(a, "dialect", DIA.ANTHROPIC)
     told = getattr(a, "hoist", None)
     prefix = build_prefix(body, dialect,

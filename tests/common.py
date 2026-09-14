@@ -32,6 +32,23 @@ if not os.environ.get("LLAMA_MODELS"):
     os.environ["LLAMA_MODELS"] = (_sf.models_dir(required=False)
                                   or str(REPO / "tests" / "no-such-model-dir"))
 
+# --- the tests must not write into the operator's trace ----------------------
+#
+# tracelog.Tracer reads TRACE_DIR at construction and falls back to
+# ~/.cache/llm-gateway-trace, which is the LIVE store the trace UI reads. A
+# gateway loaded in-process by a test is a real gateway: on 12.09.2026 a test
+# run put rows for `claude-3-5-sonnet-20241022` into that day's live file,
+# beside the machine's own traffic, where they read as requests somebody made.
+# An instrument that carries fiction is worse than one that is switched off.
+#
+# setdefault, so a deliberate TRACE_DIR still wins.
+if not os.environ.get("TRACE_DIR"):
+    import atexit, shutil, tempfile
+    _TRACE_TMP = tempfile.mkdtemp(prefix="llm-gateway-trace-tests-")
+    os.environ["TRACE_DIR"] = _TRACE_TMP
+    atexit.register(shutil.rmtree, _TRACE_TMP, True)
+
+
 def load(path, name, env_=None):
     """Load a script file as a module.
 

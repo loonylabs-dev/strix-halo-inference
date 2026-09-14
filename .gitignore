@@ -27,6 +27,7 @@ llm-stack.env
 # Runtime
 *.log
 bench/reports/*/server.log
+bench/env/
 __pycache__/
 *.pyc
 

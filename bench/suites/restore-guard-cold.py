@@ -26,11 +26,18 @@ IT RESTARTS llama-server. That is roughly 90 seconds of downtime and it empties
 the prompt cache for everybody. Do not run it while somebody is working. The
 prefix file it creates is printed at the end so it can be removed.
 """
-import argparse, json, subprocess, sys, time, urllib.request
+import argparse, json, os, subprocess, sys, time, urllib.request
 
 GATEWAY = "http://127.0.0.1:8090/v1/messages"
 LLAMA = "http://127.0.0.1:8080"
-SERVER_UNIT = "llama-user@qwen38"
+# Asked, not written down: this suite RESTARTS the unit, and a constant here
+# restarts whichever model the constant happens to name rather than the one
+# that is serving. See bench/run.py serving_unit() for the two occasions that
+# rule was paid for.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import run as runlib                                        # noqa: E402
+SERVER_UNIT = runlib.serving_unit()
 GATEWAY_UNIT = "llm-gateway.service"
 
 

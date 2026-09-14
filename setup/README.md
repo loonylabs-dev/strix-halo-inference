@@ -670,6 +670,17 @@ Every profile declares two things about itself beside its arguments:
 systemd passes both to `llama-server`, which ignores them. A comment would be
 invisible to the tooling; a variable is not.
 
+**One name survives a switch.** Every name above is derived from the served
+model, which is the point — and its cost lands on the consumer, whose config
+means nothing after a switch and fails quietly rather than loudly. So
+`setup/gateway/modes.py` offers a second scheme beside the first: `local`,
+`local-low`, `local-medium`, … resolving against whatever serves. Same modes,
+same values, same prompt, same cache entry (measured 12.09.2026: the two names
+share a prefix id and the second call comes back warm). `setup/claude/
+local.json` uses it, and `tests/test_models.py::TestLocalJsonMatchesAModel`
+checks the configured name resolves on every profile — naming the exceptions
+rather than discovering them after a switch.
+
 **The one list that cannot be derived** is `Conflicts=` in
 `llama-user@.service`, and the system unit derives its copy from it: systemd has no wildcard for
 template instances, so every model has to be named there by hand. A model
@@ -678,6 +689,101 @@ loses the race for port 8080, systemd still says `active`, and the gateway
 answers from whichever won. `tests/test_models.py::TestConflicts` compares the
 line against the registry, and `switch-model.sh` checks it again before it
 switches.
+
+---
+
+## The second backend: Halogen Flash Server
+
+Everything above is about `llama-server`. Since 11.09.2026 there is one
+backend that is not: **Halogen Flash Server**, a rootless podman container
+serving Qwen3.8-Flash-Next, reached at the same port and through the same
+gateway.
+
+    bash setup/scripts/fetch-halogen.sh     the model bundle, resumable
+    bash setup/switch-model.sh halogen      switch to it
+    bash setup/switch-model.sh qwen36       switch back
+
+It is deliberately NOT a profile in `setup/env/`. A profile is a command line
+for `llama-server`, and this has none; `models.sh` knows the name, maps it to
+its own unit, and everything else — the store, the preflight, the one-backend
+check — runs the same code for both.
+
+### It speaks OpenAI, and the consumer speaks Anthropic
+
+`setup/gateway/anthropic_bridge.py` translates in the gateway itself, in
+process: no second daemon, one queue, one trace. Requests, tool declarations,
+tool results, images and the SSE stream all cross. Two asymmetries are worth
+knowing:
+
+* **Usage arrives last.** With `stream_options.include_usage` the upstream
+  server puts `usage: null` in every content chunk and the numbers in one
+  extra chunk at the end. Anthropic's `message_start` goes out first, so the
+  input accounting cannot be in it — the bridge repeats the complete figures
+  in `message_delta`, which is where the API says cumulative usage belongs.
+  Before 12.09.2026 it did not, and every streaming turn reached the consumer
+  as `input_tokens: 0` with no cache hit.
+* **`/v1/messages/count_tokens` is an ESTIMATE** (characters ÷ 4) and is
+  answered only for this backend, because it is the one that cannot answer it
+  at all. For `llama-server` the request is forwarded and comes back 404, so
+  the consumer keeps using its own count.
+
+### Thinking modes
+
+The same vocabulary as every profile — `none`, `low`, `medium`, `high`,
+`xhigh`, `max` — declared in `gateway.py` as `HALOGEN_MODES` rather than in a
+profile, and run through the same `check_modes()` guard. What the template
+does with each was measured on 12.09.2026 by rendering
+`/models/tokenizer/chat_template.jinja` inside the running container:
+
+| sent | the prompt gets |
+|---|---|
+| `xhigh` | a system block, "think carefully through the task…" |
+| `medium` | **nothing** — the neutral middle |
+| `low` | a system block, "keep your thinking brief and focused…" |
+| nothing at all | identical to `xhigh` — **xhigh is the default** |
+| `high`, `max`, `none`, `minimal` | the template RAISES |
+
+`/v1/models` also lists the stable `local` family (`local`, `local-low`,
+`local-medium`, `local-high`), which resolves against whatever is serving —
+see the model registry above. `local-low` and
+`halogen-qwen3.8-flash-next-low` render the identical prompt and share one
+prompt-cache entry.
+
+Two consequences are baked into the modes as a result. `high` sends `xhigh`,
+because `high` is not a level this template has. And the **bare alias sends
+`enable_thinking: false`** rather than staying silent: silence here means
+xhigh, the most expensive mode the model has, chosen by accident in a tool
+loop. That also means a `none` mode would be an exact synonym of the bare
+alias, so there is none — four names, four behaviours.
+
+Reasoning length is advisory, not a budget. Measured 12.09.2026: one turn at
+`reasoning_effort: low` produced 15,429 reasoning tokens in 447 s before
+calling a tool, where the same conversation had answered a neighbouring turn
+in 346 tokens. The trace records `stop_reason` and `max_tokens` so that a long
+request can be read: `tool_calls`/`stop` is a model that finished, `length` is
+a cap that cut it off.
+
+### The patched front-end, and the check that keeps it honest
+
+`setup/halogen/serve_api.py` is a VENDORED copy of one file out of the image,
+mounted over the original. Three hunks, and the one that matters registers
+both of the model's end tokens — the base registered only one, so a
+generation emitting `<|endoftext|>` ran to `max_tokens`
+(`setup/defects.json`, `halogen-second-eos-token-unregistered`).
+
+A whole-file copy over a pinned image invites a silent failure: bump the tag
+and `podman ps` reports the new version while the old copy reverts every
+upstream change to that file. So the copy's header names the image and the
+sha256 of the file it was cut from, and **`halogenexec` verifies that hash
+against the image and refuses to start when it differs**. That refusal is the
+retirement condition: the next bump stops the service and says what to do.
+
+### Mutual exclusion
+
+`halogen.service` carries `Conflicts=` naming every `llama-user@` instance —
+the same hand-written list as `llama-user@.service`, and the same hazard if it
+falls behind `setup/env/`. `tests/test_halogen.py` compares it against the
+registry for exact set equality.
 
 ---
 
@@ -762,6 +868,24 @@ Start it and point a profile at it:
 **Note:** `claude -p` against a local model only starts reliably with
 environment variables. With `--settings` it aborts with `unrecognized_model`
 during title generation.
+
+**And the abort is the GOOD case.** Measured 12.09.2026, claude 2.1.268: with
+`--settings` and a model name Claude Code recognises as first-party
+(`claude-sonnet-4-5`), `-p` does not abort — it answers, from
+api.anthropic.com. `ANTHROPIC_BASE_URL` from the settings file's `env` block
+never reaches the request. The check that settles it in one line is a base URL
+nothing listens on:
+
+    ANTHROPIC_BASE_URL=http://127.0.0.1:9 in the settings file
+    claude --settings <that file> -p "Reply with exactly: DEADPORT"
+    -> DEADPORT
+
+A dead port that answers is an answer from somewhere else. So the two failure
+modes are opposite and only one of them is visible: an unknown model name
+aborts loudly, and a known one silently leaves the machine — billed, and with
+the conversation going to a third party while the operator believes it is
+local. Exported environment variables carry; the same call with them reaches
+the gateway and appears in the trace.
 
 ---
 

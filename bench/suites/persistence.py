@@ -19,7 +19,9 @@ SRV = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
 # anywhere else — including from a second checkout on the same machine.
 W = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(W, "tools"))
+sys.path.insert(0, os.path.join(W, "bench"))
 from synthetic import body                       # noqa: E402
+import run as runlib                             # noqa: E402
 
 STATE_FILE = "project-prefix.bin"
 
@@ -104,7 +106,14 @@ measure_one("turn1 with a different question", P3)
 
 print("\nE · real service restart, then restore and append")
 print("   restarting the service …")
-subprocess.run(["systemctl", "--user", "restart", "llama-user@laguna"], check=False)
+# Whatever is serving — this restarts production, and a constant here
+# restarts a model nobody switched to. Conflicts= then stops the one that
+# was running, which is the outage rather than the measurement.
+_UNIT = runlib.serving_unit()
+if not _UNIT:
+    print("   nothing is serving (or two things are) — refusing to restart "
+          "a unit this suite would have to guess"); raise SystemExit(1)
+subprocess.run(["systemctl", "--user", "restart", _UNIT], check=False)
 time.sleep(5)
 if not wait_ready():
     print("   server did not come back"); raise SystemExit(1)

@@ -67,7 +67,10 @@ import systemdfile                                            # noqa: E402
 
 PORT = 8081
 URL = "http://127.0.0.1:%d" % PORT
-SLOT_DIR = os.path.expanduser("~/.cache/llama-slots")
+# Asked, not written down — systemdfile.slots_dir() is the one answer, and
+# a second spelling of the default is how a suite ends up measuring a
+# directory the gateway does not use (found 12.09.2026, twice).
+SLOT_DIR = systemdfile.slots_dir()
 STATE = "restore-reuse-A.bin"
 # The planted fact and its id. A six-digit value cannot be produced by
 # accident, which is what makes the answer comparison mean something.

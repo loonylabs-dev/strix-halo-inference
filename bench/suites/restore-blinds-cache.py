@@ -60,6 +60,25 @@ The A/B itself is honest either way; the bystander is what pays.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.request
 
+_REPO = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
+
+def _slots_dir():
+    """Where the saved prefixes live — asked, never written down.
+
+    setup/lib/systemdfile.py owns the answer. A second spelling of the
+    default is how a suite ends up measuring a directory the gateway does not
+    use; found twice on 12.09.2026, in switch-model.sh and in check.sh.
+    """
+    import sys as _sys, os as _os
+    lib = _os.path.join(_REPO, "setup", "lib")
+    if lib not in _sys.path:
+        _sys.path.insert(0, lib)
+    import systemdfile as _sdf
+    return _sdf.slots_dir()
+
+
+
 DEFAULT_URL = "http://127.0.0.1:8080"
 
 
@@ -214,7 +233,7 @@ def main():
                          "confounder: everything B does happens with more in "
                          "the cache than A had.")
     ap.add_argument("--slot-path",
-                    default=os.path.expanduser("~/.cache/llama-slots"),
+                    default=_slots_dir(),
                     help="only so the two files this writes can be removed again")
     a = ap.parse_args()
 

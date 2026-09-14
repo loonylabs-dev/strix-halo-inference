@@ -94,10 +94,13 @@ link_ "$SRC/gateway/tracelog.py"      "$LIB/tracelog.py"
 # The fourth, added 01.09.2026 — caught missing by the same test, before the
 # first restart could fail instead of after.
 link_ "$SRC/gateway/savepolicy.py"    "$LIB/savepolicy.py"
+# The fifth, added 11.09.2026 — Anthropic-to-OpenAI bridge for Halogen Flash Server.
+link_ "$SRC/gateway/anthropic_bridge.py" "$LIB/anthropic_bridge.py"
 link_ "$SRC/gateway/gateway.py"       "$LIB/gateway.py"
 link_ "$REPO/tools/prewarm.py"        "$LIB/prewarm.py"
 link_ "$SRC/waitformodel"             "$LIB/waitformodel"
 link_ "$SRC/llamaexec"                "$LIB/llamaexec"
+link_ "$SRC/halogenexec"              "$LIB/halogenexec"
 # The memory guard, and the two modules it is made of. budget.py imports
 # systemdfile.py from its OWN directory, so the pair travels together — the
 # same rule that keeps dialects.py next to gateway.py, and for the same
@@ -133,6 +136,8 @@ link_ "$SRC/systemd/llm-gateway.service" \
       "$HOME/.config/systemd/user/llm-gateway.service"
 link_ "$SRC/systemd/llama-user@.service" \
       "$HOME/.config/systemd/user/llama-user@.service"
+link_ "$SRC/systemd/halogen.service" \
+      "$HOME/.config/systemd/user/halogen.service"
 link_ "$SRC/systemd/prefix-cleanup.service" \
       "$HOME/.config/systemd/user/prefix-cleanup.service"
 link_ "$SRC/systemd/llama-probe.service" \

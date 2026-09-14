@@ -98,7 +98,8 @@ import systemdfile                                            # noqa: E402
 
 PORT = 8081
 URL = "http://127.0.0.1:%d" % PORT
-SLOT_DIR = os.path.expanduser("~/.cache/llama-slots")
+# Asked, not written down — see systemdfile.slots_dir().
+SLOT_DIR = systemdfile.slots_dir()
 # How long an answer may be. Set from --max-tokens in main(). It matters for
 # the parallel mode and almost not at all for the sequential one: with a short
 # answer the wall clock is nearly all prefill, and decode sharing — the thing

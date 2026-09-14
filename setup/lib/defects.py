@@ -83,7 +83,28 @@ def build_stamp(build_dir=DEFAULT_BUILD):
 
 # --- the evaluation, pure so it can be tested without a machine -----------
 
-def applies(defect, cmdline, gpu=None):
+def serving_backend():
+    """"halogen", "llama", or None when nothing is serving.
+
+    One reader for "what is up", and it is setup/lib/models.sh — the same
+    rule that keeps bench/ from hard-wiring a unit name. None means nobody
+    could tell, and applies() treats that as a reason to report an entry
+    rather than to filter it away.
+    """
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        r = subprocess.run(["bash", os.path.join(here, "models.sh"), "serving"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    names = [n for n in (r.stdout or "").split() if n]
+    if not names:
+        return None
+    return "halogen" if names == ["halogen"] else "llama"
+
+
+def applies(defect, cmdline, gpu=None, backend=None):
     """Is this defect about the thing that is running, ON THIS HARDWARE?
 
     An architecture-specific defect must not be reported against a model it
@@ -104,6 +125,14 @@ def applies(defect, cmdline, gpu=None):
     want = (defect.get("applies_to") or {}).get("gpu")
     if want and gpu is not None and gpu != want:
         return False
+    # The same rule one axis over. A second BACKEND arrived on 12.09.2026 —
+    # Halogen Flash Server, a container speaking OpenAI — and its defects are
+    # not llama-server's. `backend is None` means nobody looked, and then the
+    # entry is reported rather than filtered away, exactly as for an unknown
+    # GPU: not knowing what you are on is a reason for more caution.
+    want_backend = (defect.get("applies_to") or {}).get("backend")
+    if want_backend and backend is not None and backend != want_backend:
+        return False
     pat = defect.get("when_cmdline_matches")
     if not pat:
         return True
@@ -112,7 +141,7 @@ def applies(defect, cmdline, gpu=None):
     return bool(re.search(pat, " ".join(cmdline)))
 
 
-def evaluate(defect, cmdline=None, stamp=None, gpu=None):
+def evaluate(defect, cmdline=None, stamp=None, gpu=None, backend=None):
     """(verdict, detail) for one defect against one machine state."""
     # A withdrawn entry is not an open question, and `manual` would keep
     # sending the reader off to run a measurement that has already been run
@@ -127,10 +156,14 @@ def evaluate(defect, cmdline=None, stamp=None, gpu=None):
     if str(defect.get("status", "")).startswith("withdrawn"):
         return WITHDRAWN, "withdrawn — not a defect; see `measured`"
     want = (defect.get("applies_to") or {}).get("gpu")
-    scope = applies(defect, cmdline, gpu)
+    want_backend = (defect.get("applies_to") or {}).get("backend")
+    scope = applies(defect, cmdline, gpu, backend)
     if scope is False:
         if want and gpu is not None and gpu != want:
             return NA, "about %s; this machine is %s" % (want, gpu)
+        if want_backend and backend is not None and backend != want_backend:
+            return NA, "about the %s backend; %s is serving" % (want_backend,
+                                                                backend)
         return NA, "not the model that is running"
     if scope is None:
         return UNKNOWN, "no llama-server running — cannot tell if it applies"
@@ -180,9 +213,9 @@ def evaluate(defect, cmdline=None, stamp=None, gpu=None):
     return UNKNOWN, "unknown detect kind %r" % kind
 
 
-def report(defects, cmdline=None, stamp=None, gpu=None):
+def report(defects, cmdline=None, stamp=None, gpu=None, backend=None):
     """[(defect, verdict, detail)] sorted worst-shows-as first, exposed first."""
-    rows = [(d,) + evaluate(d, cmdline, stamp, gpu) for d in defects]
+    rows = [(d,) + evaluate(d, cmdline, stamp, gpu, backend) for d in defects]
 
     def key(row):
         d, verdict, _ = row
@@ -326,7 +359,12 @@ def main(argv=None):
         this_gpu = hardware.gpu()["gfx"]
     except Exception:
         this_gpu = None
-    rows = report(defects, cmdline, stamp, this_gpu)
+    # Which BACKEND is serving. Asked of setup/lib/models.sh, the one reader
+    # of that question in this repo, and read here rather than inside
+    # evaluate() for the same reason the GPU is: the decision stays pure and
+    # a test can hand it any machine.
+    this_backend = serving_backend()
+    rows = report(defects, cmdline, stamp, this_gpu, this_backend)
 
     if a.json:
         print(json.dumps([{"id": d["id"], "shows_as": d.get("shows_as"),

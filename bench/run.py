@@ -29,6 +29,48 @@ import budget                                    # noqa: E402  the one memory gu
 SRV = "http://127.0.0.1:8080"
 
 # ------------------------------------------------------------ Hilfsmittel ---
+_SERVING = None
+
+
+def serving_unit(refresh=False):
+    """The systemd unit of the backend that is ACTUALLY serving, or None.
+
+    ONE reader for this question, and it is setup/lib/models.sh: it takes
+    `--alias` off the command line of the process that holds the port, and it
+    knows that the container backend has a unit of its own rather than an
+    instance of the template. Deliberately not `systemctl is-active`, which
+    cannot say which of two started instances won the race for 8080.
+
+    CLAUDE.md carries the rule, and it has fired twice. 04.09.2026:
+    speed-ab.py held `UNIT = "llama-user@qwen38"` as a constant, a flag-ab
+    run stopped flashnext and started qwen38, the suite exited 0 and only the
+    process holding the port disagreed. 12.09.2026: run_halogen.py arrived
+    with the same shape under a different name, because the test written
+    after the first one was pinned to a single file.
+
+    None when nothing is serving, and None when TWO things are. Then there is
+    nothing to stop and nothing to put back — inventing a unit to start is
+    precisely how this did its damage.
+
+    Resolved once and cached: callers ask again in the `finally` that
+    restores production, and by then nothing is serving.
+    """
+    global _SERVING
+    if _SERVING is None or refresh:
+        try:
+            r = subprocess.run(
+                ["bash", os.path.join(ROOT, "setup", "lib", "models.sh"),
+                 "serving-unit"], capture_output=True, text=True, timeout=20)
+            units = [u for u in (r.stdout or "").split() if u]
+        except Exception:
+            units = []
+        if len(units) > 1:
+            print("  MORE THAN ONE backend is serving (%s) — refusing to "
+                  "guess which one to put back" % " ".join(units), flush=True)
+        _SERVING = units[0] if len(units) == 1 else False
+    return _SERVING or None
+
+
 def post(path, payload, t=1800):
     r = urllib.request.Request(SRV + path, data=json.dumps(payload).encode(),
                                headers={"content-type": "application/json",

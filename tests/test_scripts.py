@@ -261,6 +261,208 @@ class TestNoStdlibShadowing(unittest.TestCase):
                          "script beside them")
 
 
+class TestNothingHardWiresAProductionUnit(unittest.TestCase):
+    """CLAUDE.md: "no script hard-wires a production unit — derive it from
+    `models.sh serving`".
+
+    The rule was drawn in the determinism lane on 01.09.2026 and FIRED on
+    04.09.2026 anyway: bench/suites/speed-ab.py held
+    `UNIT = "llama-user@qwen38"` where the first fix had un-wired the
+    PROFILE. A flag-ab run stopped flashnext and started qwen38; the suite
+    exited 0 and `is-enabled` still said flashnext. The lesson written down
+    then was "a grep for one spelling does not find the other — that is the
+    argument for a test rather than another review", and tests/test_speedab.py
+    was that test.
+
+    It was pinned to ONE FILE. On 12.09.2026 bench/run_halogen.py arrived
+    with `stop_unit = "llama-user@qwen36"` and nothing noticed, because a
+    test for one file does not find the other file. So the guard reads every
+    script that can reach systemctl.
+
+    Two classes, and they are not the same offence:
+      * a script that STARTS, STOPS, RESTARTS, ENABLES or DISABLES a unit
+        changes production. It must ask.
+      * a script that only READS a journal gets the wrong DATA from a
+        hard-wired name. Bad, and older than this rule; named here so it is
+        visible rather than silently permitted.
+    """
+
+    # The only scripts allowed to write a unit name down, and why. Every one
+    # of them READS a journal and none of them changes a unit's state, so the
+    # damage is a measurement against the wrong model rather than a
+    # production switch. They predate this guard; listed instead of fixed so
+    # that they are visible, and so that adding a name here is a decision
+    # somebody has to write a reason for.
+    KNOWN = {
+        "bench/suites/probe-cost.py":
+            "journalctl read — measures llama-probe's cost against qwen38's "
+            "journal",
+        "bench/suites/save-policy-sim.py":
+            "journalctl read — replays a recorded window",
+        "bench/suites/restore-cost.py":
+            "journalctl read — reads restore timings out of the journal",
+        "bench/suites/slot-tail.py":
+            "argparse default for a journalctl read; --unit overrides it",
+    }
+
+    DIRS = ("bench/", "tools/", "setup/scripts/", "setup/gateway/",
+            "setup/lib/")
+
+    def files(self):
+        """TRACKED python files only.
+
+        Not a glob: this checkout also holds gitignored local scripts, and a
+        guard that sees them here and not in the published repository gives
+        two different answers to the same question. The rule is about what
+        this repository ships.
+
+        `--others --exclude-standard` alongside the cached list, so a file
+        that is written but not yet committed is covered too — which is the
+        state bench/run_halogen.py was in when it reintroduced the very
+        defect this guard exists for.
+        """
+        import subprocess as _sp
+        out = _sp.run(["git", "-C", str(REPO), "ls-files", "--cached",
+                       "--others", "--exclude-standard", "*.py"],
+                      capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return [str(REPO / f) for f in out.stdout.split()
+                if f.startswith(self.DIRS)]
+
+    @staticmethod
+    def literals(path):
+        """`llama-user@<something>` string constants in EXECUTABLE code.
+
+        Docstrings are usage examples and are meant to name a model; ast.walk
+        over Constant nodes reaches no comments at all, and the docstring
+        positions are skipped explicitly. What is left is a name the program
+        can act on.
+        """
+        import ast
+        text = open(path, encoding="utf-8").read()
+        tree = ast.parse(text, path)
+        docs = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None) or []
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and body \
+                    and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docs.add(id(body[0].value))
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docs:
+                for m in re.finditer(r"llama-user@([a-z0-9]+)", node.value):
+                    found.append((node.lineno, m.group(0)))
+        return found
+
+    def test_no_script_names_a_production_unit_it_could_act_on(self):
+        import os as _os
+        scanned, offenders = 0, []
+        for path in self.files():
+            rel = _os.path.relpath(path, REPO).replace(_os.sep, "/")
+            scanned += 1
+            hits = self.literals(path)
+            if not hits:
+                continue
+            if rel in self.KNOWN:
+                continue
+            offenders.append("%s:%d  %s" % (rel, hits[0][0], hits[0][1]))
+        # Positive control: the reader has to have looked at real files, and
+        # at the one file whose defect this guard was written from.
+        self.assertGreater(scanned, 20, scanned)
+        self.assertTrue(
+            any(_os.path.basename(f) == "speed-ab.py" for f in self.files()),
+            "the suite this rule was paid for is not in the scan")
+        self.assertFalse(
+            offenders,
+            "these scripts write a production unit name down instead of "
+            "asking `models.sh serving-unit`:\n    "
+            + "\n    ".join(offenders)
+            + "\n\n  Nothing serving, or two: do nothing. Inventing a unit "
+              "to start is how this did its damage on 04.09.2026. A read-only "
+              "caller may be added to KNOWN with a reason.")
+
+
+class TestNothingHardWiresTheSlotStore(unittest.TestCase):
+    """Where the saved prefixes live is ONE answer: systemdfile.slots_dir(),
+    mirrored by models.sh. Anything else is a second spelling of a default,
+    and gateway.py's own comment says what that costs — "how those two end up
+    on different directories, and the failure is silent in the worst
+    direction".
+
+    It had already happened, twice, and both were found on 12.09.2026:
+    switch-model.sh parked and relabelled a directory nothing served from,
+    and setup/check.sh reported a 4 KiB phantom as the prefix store while the
+    real one held 89 GiB under a different owner. Five bench suites were
+    reading the same wrong path and would have measured against it.
+    """
+
+    # The two places the default is allowed to be spelled out, and why.
+    KNOWN = {
+        "setup/lib/systemdfile.py":
+            "SLOTS_DEFAULT itself — this is where the answer is defined",
+        "setup/gateway/gateway.py":
+            "the documented fallback for when systemdfile is not importable, "
+            "i.e. outside the repo; commented as such at the assignment",
+    }
+
+    PATTERN = r"~/\.cache/llama-slots"
+
+    def test_the_store_path_is_asked_for_not_written_down(self):
+        import os as _os
+        guard = TestNothingHardWiresAProductionUnit()
+        scanned, offenders = 0, []
+        for path in guard.files():
+            rel = _os.path.relpath(path, REPO).replace(_os.sep, "/")
+            scanned += 1
+            if rel in self.KNOWN:
+                continue
+            for lineno, _ in self.literals(path):
+                offenders.append("%s:%d" % (rel, lineno))
+                break
+        self.assertGreater(scanned, 20, scanned)
+        self.assertFalse(
+            offenders,
+            "these write the prefix store's path out by hand instead of "
+            "asking systemdfile.slots_dir():\n    " + "\n    ".join(offenders))
+
+    @classmethod
+    def literals(cls, path):
+        """The pattern in EXECUTABLE code — docstrings are usage examples."""
+        import ast
+        text = open(path, encoding="utf-8").read()
+        tree = ast.parse(text, path)
+        docs = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None) or []
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and body \
+                    and isinstance(body[0], ast.Expr) \
+                    and isinstance(body[0].value, ast.Constant) \
+                    and isinstance(body[0].value.value, str):
+                docs.add(id(body[0].value))
+        out = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                    and id(node) not in docs \
+                    and re.search(cls.PATTERN, node.value):
+                out.append((node.lineno, node.value))
+        return out
+
+    def test_the_shell_side_asks_too(self):
+        """check.sh and switch-model.sh both held the literal."""
+        for rel in ("setup/check.sh", "setup/switch-model.sh"):
+            src = (REPO / rel).read_text(encoding="utf-8")
+            code = "\n".join(l for l in src.splitlines()
+                             if not l.lstrip().startswith("#"))
+            with self.subTest(rel=rel):
+                self.assertNotIn("$HOME/.cache/llama-slots", code)
+                self.assertIn("slots_dir", code)
+
+
 class TestUserUnit(unittest.TestCase):
     """The user service must not depend on root, and must not restore at
     boot. Both cost an incident on 25.08.: the root-owned profile under

@@ -819,6 +819,25 @@
       "status": "OPEN but mitigated and SERVING since 07.09.2026 11:19. Instruments: bench/ckptsidecar.py, the trace's `session` column, and LLAMA_ARG_LOG_VERBOSITY=4 as a temporary drop-in (level 4, not 5 - 5 writes whole prompts into the journal permanently; REMOVE IT). NOT MEASURED ON SERVED TRAFFIC: the claim that a displaced save beats the prefill it replaces is arithmetic from that morning (0.3 s against 31.3 s; ~2.7 s against 155.1 s), not a reading of the changed gateway. A working day's trace with `state lost` counted against that morning's SEVEN is what would settle it. A SEPARATE cause of the same symptom was found the same day and fixed independently - the chat template rewriting past turns, see the --chat-template-kwargs block in setup/env/qwen36.env; the two interlock rather than overlap, one acting within a conversation and one on switches between two.",
       "first_seen": "2026-09-07",
       "last_checked": "2026-09-07"
+    },
+    {
+      "id": "halogen-second-eos-token-unregistered",
+      "title": "The Halogen front-end registers one of the model's two end tokens",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "silent",
+      "symptom": "A generation that emits <|endoftext|> (248044) instead of <|im_end|> (248046) is not stopped. The engine decodes on to max_tokens and repeats itself; the client sees a very long answer and finish_reason 'length', never an error.",
+      "measured": "REPORTED, not reproduced here: the runaway that prompted the patch was described by the session that wrote it and no before/after recording of it survives, so the causal claim is carried at the confidence its author gave it. VERIFIED here, 12.09.2026, is only the state AFTER the patch: image 0.5.6 with setup/halogen/serve_api.py mounted (hash confirmed inside the running container), one deepseek-harness turn at 07:54:06 produced 15429 completion tokens in 466.6 s and ended with finish_reason 'tool_calls' — an EOS stop, not a cap. The same conversation's next turn on the same prefix had produced 346 tokens in 30.4 s a few hours earlier, so generation LENGTH on this model is not deterministic and a long answer is not by itself this defect. The 15429 tokens were reasoning_content end to end (the last delta before the tool call was a reasoning delta), at reasoning_effort=low.",
+      "mitigation": "setup/halogen/serve_api.py, mounted over /halogen/tools/serve_api.py by setup/halogenexec. get_eos_ids() registers both token ids and additionally converts the request's stop strings to EOS ids. The gateway injects <|im_end|> and <|endoftext|> as stop strings for this backend (inject_model_kwargs), which reaches the same registration through the supported path and therefore survives a lost mount.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "mitigated",
+      "first_seen": "2026-09-11",
+      "last_checked": "2026-09-12",
+      "note": "NO upstream_check: that probe reads llama.cpp's source on master, and this defect is in a third-party container image with no public source to read. The retirement condition is mechanical instead — halogenexec hashes the image's own copy of the file against BASE_SHA256 and REFUSES to start when they differ, so the next image bump stops the service and says so rather than silently reverting the patch. Re-read the upstream changelog then; if the fix has landed, drop hunks 1 and 2 and the mount with them."
     }
   ]
 }

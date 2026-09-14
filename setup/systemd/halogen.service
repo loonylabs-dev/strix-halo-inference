@@ -1,0 +1,26 @@
+[Unit]
+Description=Halogen Flash Server (vLLM-Flash on Strix Halo gfx1151)
+After=network-online.target
+Wants=network-online.target
+# Mutual exclusion: cannot run alongside any llama-user@ model in 128 GB UMA memory.
+Conflicts=llama-user@qwen38.service llama-user@gemma26.service \
+          llama-user@gemma31.service llama-user@laguna.service \
+          llama-user@gptoss.service llama-user@batch.service \
+          llama-user@flashnext.service llama-user@qwen36.service \
+          llama-user@glm47flash.service
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/llm-stack.env
+ExecStart=%h/.local/lib/llm-stack/halogenexec
+ExecStop=/usr/bin/podman stop -t 10 halogen
+ExecStopPost=-/usr/bin/podman rm -f -t 1 halogen
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

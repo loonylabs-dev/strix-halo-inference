@@ -87,7 +87,8 @@ BINARY = BINARIES["rocm-patched"]
 # The profile a run was given, or None. Reaches the memory guard through
 # start(); see there for what leaving it out costs.
 PROFILE = None
-SLOT_DIR = os.path.expanduser("~/.cache/llama-slots")
+# Asked, not written down — see systemdfile.slots_dir().
+SLOT_DIR = systemdfile.slots_dir()
 BASE = ["--alias", "qwen38-bench",
         "-m", os.path.join(MODELS, "Qwen3.8-27B-UD-Q4_K_XL.gguf"),
         "-ngl", "999", "-fa", "on", "-c", "65536", "-np", "2",

@@ -127,6 +127,48 @@ class TestThePageStandsAlone(unittest.TestCase):
         self.assertRegex(self.html, r"MAX_ROWS\s*=\s*\d+")
 
 
+class TestAStaleSlugIsMarkedAndAKnownOneIsNot(unittest.TestCase):
+    """The column that says "the name you asked for meant nothing".
+
+    It compared strings until 12.09.2026 — bare mode plus a slug that is not
+    the served alias — and a second naming scheme made that wrong: `local`
+    and `local-low` are neither the served alias nor stale. The gateway
+    records `slug_known` now; the string comparison survives only for records
+    written before it did."""
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_it_reads_the_recorded_answer(self):
+        self.assertIn("slug_known", self.html)
+
+    def test_the_old_records_still_get_an_answer(self):
+        """A trace file spans days. Dropping the fallback would silently stop
+        marking stale slugs in everything written before today."""
+        self.assertIn("slug_known === undefined", self.html)
+
+
+class TestTheTableSaysWhyATurnEnded(unittest.TestCase):
+    """A cap and a finished answer look identical in every other column: both
+    are one row with a token count and a duration. The distinction decides
+    whether anything is wrong at all."""
+
+    def setUp(self):
+        self.html = PAGE.read_text(encoding="utf-8")
+
+    def test_the_column_exists(self):
+        self.assertIn("<th>why</th>", self.html)
+        self.assertIn("whyEnded", self.html)
+
+    def test_a_cap_is_marked_and_a_finish_is_not(self):
+        self.assertRegex(self.html, r"CAPPED\s*=\s*new Set\(\[[^\]]*length")
+        self.assertRegex(self.html, r"CAPPED\s*=\s*new Set\(\[[^\]]*max_tokens")
+
+    def test_the_budget_is_shown_beside_it(self):
+        """"Cut off" without saying at what is half an answer."""
+        self.assertIn("max_tokens=", self.html)
+
+
 class TestTheChartsShowTheSameRowsAsTheTable(unittest.TestCase):
     """A picture that shows something other than the list beneath it is how a
     wrong conclusion gets drawn. All three read the filtered rows."""

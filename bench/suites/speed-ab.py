@@ -93,6 +93,11 @@ def unit():
     for 8080 — that distinction is the whole reason models.sh has a `serving`
     verb separate from `active`.
 
+    Since 12.09.2026 it asks for the UNIT rather than the alias. A second
+    backend arrived that is not an instance of the llama-user@ template, and
+    assembling its unit name here would have armed a dead man's switch on a
+    unit that does not exist.
+
     Resolved ONCE and cached, because it is asked again in the `finally` that
     restarts production, and by then nothing is serving.
 
@@ -102,14 +107,19 @@ def unit():
     """
     global _UNIT
     if _UNIT is None:
+        # `serving-unit`, not `serving`: the UNIT is asked for, rather than
+        # built out of the alias with "llama-user@%s". That string stopped
+        # being right on 12.09.2026, when a container backend joined — it has
+        # a unit of its own, and `llama-user@halogen` is a name nothing can
+        # start. The mapping belongs where the detection is.
         r = subprocess.run(
             ["bash", os.path.join(REPO, "setup", "lib", "models.sh"),
-             "serving"], capture_output=True, text=True)
-        names = [n for n in (r.stdout or "").split() if n]
-        _UNIT = "llama-user@%s" % names[0] if len(names) == 1 else False
-        if len(names) > 1:
-            say("  MORE THAN ONE llama-server is serving (%s) — refusing to "
-                "guess which one to put back" % " ".join(names))
+             "serving-unit"], capture_output=True, text=True)
+        units = [n for n in (r.stdout or "").split() if n]
+        _UNIT = units[0] if len(units) == 1 else False
+        if len(units) > 1:
+            say("  MORE THAN ONE backend is serving (%s) — refusing to "
+                "guess which one to put back" % " ".join(units))
     return _UNIT or None
 
 

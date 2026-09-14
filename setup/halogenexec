@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# halogenexec — launch Halogen Flash Server container via rootless podman.
+#
+# Executed by setup/systemd/halogen.service.
+# Halogen Flash Server (vLLM-Flash) provides high-performance inference on
+# AMD Strix Halo (gfx1151) with radix KV caching and OpenAI API compatible endpoints.
+set -euo pipefail
+
+# The repo, resolved through the symlink install.sh puts in ~/.local/lib.
+REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=lib/models.sh
+. "$REPO/setup/lib/models.sh"
+
+# 1. Model directory and image — ASKED, not resolved here. Three files used to
+#    carry a copy of this fallback chain and two spelled the image tag out;
+#    see setup/lib/models.sh for what that costs on a version bump.
+MODELS_DIR="$(halogen_models_dir)"
+
+if [ -z "$MODELS_DIR" ] || [ ! -d "$MODELS_DIR" ]; then
+  echo "halogenexec: no halogen-models directory found." >&2
+  echo "  Run bash setup/scripts/fetch-halogen.sh or set HALOGEN_MODELS in ~/.config/llm-stack.env" >&2
+  exit 1
+fi
+
+CHECKPOINT_FILE="${HALOGEN_CHECKPOINT_FILE:-$MODELS_DIR/qwen38-flash-next-w4b.hgn}"
+if [ ! -f "$CHECKPOINT_FILE" ]; then
+  echo "halogenexec: checkpoint file not found at $CHECKPOINT_FILE" >&2
+  echo "  Run bash setup/scripts/fetch-halogen.sh" >&2
+  exit 1
+fi
+
+# Clean up any previously dead or lingering container
+podman rm -f halogen >/dev/null 2>&1 || true
+
+HOST_PORT="${HALOGEN_HOST_PORT:-8080}"
+CONTAINER_PORT=8731
+IMAGE="$(halogen_image)"
+
+# The sha256 of /halogen/tools/serve_api.py in the image the vendored copy was
+# cut from. Written in that file's header too; the two are compared by
+# tests/test_halogen.py so they cannot drift apart.
+BASE_SHA256="d6fe7165e884817f41790bf1db865c78bb19679672a7d9d8a9c36de80e6dd598"
+
+EXTRA_MOUNTS=()
+PATCHED="$REPO/setup/halogen/serve_api.py"
+if [ -f "$PATCHED" ]; then
+  # VERIFY BEFORE OVERRIDING. The mount replaces a file inside a pinned
+  # image, and the failure it invites is silent in the worst direction: bump
+  # the tag and `podman ps` reports the new version while this old copy
+  # reverts every upstream change to that one file. So the base is hashed and
+  # compared, and a mismatch REFUSES rather than warns — a start that quietly
+  # served a half-reverted front-end is the outcome being prevented.
+  #
+  # Costs one podman create + cp of a 150 KB file against an already-present
+  # image: measured well under a second, against an engine that needs twelve.
+  vc="halogen-verify-$$"
+  tmp="$(mktemp -t halogen-base-XXXXXX.py)"
+  base_sha=""
+  if podman create --name "$vc" "$IMAGE" true >/dev/null 2>&1; then
+    podman cp "$vc:/halogen/tools/serve_api.py" "$tmp" >/dev/null 2>&1 \
+      && base_sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    podman rm -f "$vc" >/dev/null 2>&1 || true
+  fi
+  rm -f "$tmp"
+
+  if [ -z "$base_sha" ]; then
+    echo "halogenexec: could not read /halogen/tools/serve_api.py out of $IMAGE." >&2
+    echo "  The patched copy in setup/halogen/ cannot be verified, and mounting" >&2
+    echo "  an unverified override is the thing this check exists to prevent." >&2
+    exit 1
+  fi
+  if [ "$base_sha" != "$BASE_SHA256" ]; then
+    echo "halogenexec: $IMAGE no longer carries the file the patched copy was cut from." >&2
+    echo "  expected $BASE_SHA256" >&2
+    echo "  found    $base_sha" >&2
+    echo "  Re-cut the copy and re-apply the hunks its header describes:" >&2
+    echo "    podman create --name halogen-cut $IMAGE true" >&2
+    echo "    podman cp halogen-cut:/halogen/tools/serve_api.py /tmp/serve_api.new.py" >&2
+    echo "    podman rm -f halogen-cut" >&2
+    echo "    diff -u /tmp/serve_api.new.py setup/halogen/serve_api.py" >&2
+    exit 1
+  fi
+  EXTRA_MOUNTS+=(-v "$PATCHED:/halogen/tools/serve_api.py:ro")
+fi
+
+echo "halogenexec: starting Halogen Flash Server from $MODELS_DIR on port $HOST_PORT..."
+exec podman run --rm \
+  --name halogen \
+  --device /dev/kfd \
+  --device /dev/dri \
+  --security-opt label=disable \
+  -v "$MODELS_DIR":/models:ro \
+  "${EXTRA_MOUNTS[@]}" \
+  --net=host \
+  -e HALOGEN_API_PORT="$HOST_PORT" \
+  -e HALOGEN_KV_SLOTS="${HALOGEN_KV_SLOTS:-1}" \
+  -e HALOGEN_KV_POOL_POSITIONS="${HALOGEN_KV_POOL_POSITIONS:-262144}" \
+  -e HALOGEN_CHECKPOINT=/models/qwen38-flash-next-w4b.hgn \
+  "$IMAGE" all

@@ -19,6 +19,21 @@ import common
 TR = common.load("setup/gateway/tracelog.py", "tracelog")
 
 
+class TestTheSuiteDoesNotWriteIntoTheLiveTrace(unittest.TestCase):
+    """A gateway loaded in-process by a test is a real gateway, and its
+    Tracer defaults to the store the trace UI reads. Test traffic landed
+    there on 12.09.2026 and was indistinguishable from the machine's own."""
+
+    def test_trace_dir_is_redirected(self):
+        import os
+        got = os.environ.get("TRACE_DIR")
+        self.assertTrue(got, "TRACE_DIR is unset — a test gateway would "
+                             "write into ~/.cache/llm-gateway-trace")
+        self.assertNotEqual(
+            os.path.realpath(got),
+            os.path.realpath(os.path.expanduser("~/.cache/llm-gateway-trace")))
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="trace-")
@@ -237,6 +252,32 @@ class TestBothNamesAreRecorded(unittest.TestCase):
         pretending otherwise would put a name in the column that nothing
         honours."""
         self.assertEqual(self.GW._mode_of("gemma26-low", "qwen38"), "bare")
+
+    def test_the_stable_family_reads_as_its_mode(self):
+        """`local-low` IS a mode — the stable name resolves against whatever
+        serves, so the column has to say `low` and not `bare`.
+
+        Found in the trace UI on 12.09.2026, minutes after the family
+        shipped: every `local-*` request was labelled `bare` and painted as a
+        stale name, because this function only knew the served alias as a
+        prefix. Nothing was injected wrongly — the request really did carry
+        `reasoning_effort: low` — but the instrument said the opposite of what
+        happened, which is the one thing it exists not to do."""
+        self.assertEqual(
+            self.GW._mode_of("local-low", "halogen-qwen3.8-flash-next"), "low")
+        self.assertEqual(self.GW._mode_of("local-medium", "flashnext"),
+                         "medium")
+
+    def test_the_bare_stable_name_is_bare(self):
+        self.assertEqual(self.GW._mode_of("local", "flashnext"), "bare")
+
+    def test_a_stable_name_is_read_the_same_whatever_serves(self):
+        """That is the whole point of the family — and the column must not be
+        the place where it stops being true."""
+        for served in ("flashnext", "qwen36", "halogen-qwen3.8-flash-next"):
+            with self.subTest(served=served):
+                self.assertEqual(self.GW._mode_of("local-high", served),
+                                 "high")
 
     def test_nothing_known_still_answers(self):
         self.assertEqual(self.GW._mode_of(None, "qwen38"), "bare")

@@ -82,7 +82,7 @@ class TestEveryLinkedModuleFindsItsSiblings(unittest.TestCase):
     def test_the_gateway_and_its_siblings_are_all_installed(self):
         """The concrete case: gateway.py imports dialects AND modes."""
         self.assertIn("gateway", self.linked)
-        for sibling in ("dialects", "modes"):
+        for sibling in ("dialects", "modes", "anthropic_bridge"):
             self.assertIn(sibling, self.linked,
                           "%s is imported by gateway.py and not linked "
                           "beside it" % sibling)

@@ -74,6 +74,30 @@ ON = "on"
 # everywhere it makes sense; the value is measured per model.
 VOCABULARY = ("none", "low", "medium", "high", "xhigh", "max")
 
+# THE NAME THAT SURVIVES A SWITCH.
+#
+# Every name above is derived from the served model, which is the whole design
+# — and its cost lands on the consumer: a config written for `flashnext` means
+# nothing once another backend serves. It does not fail loudly either. The
+# name matches no mode, falls through to the bare alias, and the level is
+# simply gone, with one NOTE in the gateway log as the only signal.
+#
+# So there is a second naming scheme beside the first, resolving against
+# WHATEVER is served: `local`, `local-low`, `local-medium`, … Same modes, same
+# values, one name in the consumer's file forever.
+#
+# docs/CONSUMERS.md had been telling readers to set `ANTHROPIC_MODEL=local`
+# since before this existed; until 12.09.2026 that name resolved to nothing at
+# all and quietly gave them the bare alias. This is that promise, implemented.
+#
+# NOT cc-router.py's `local/` PREFIX, which is a slash, runs on the consumer's
+# machine and strips itself before forwarding. This is a model name. The two
+# compose (`local/local-low` works) and are otherwise unrelated.
+#
+# A profile may not be called this — tests/test_modes.py pins it — or the name
+# would shadow a real model and `switch-model.sh local` would be ambiguous.
+STABLE = "local"
+
 
 def _pairs(spec, what):
     """`a:1  b:2` -> [(a,1), (b,2)]. A half-written entry is refused.
@@ -232,6 +256,14 @@ def names(alias, modes):
     The representative of a group is its LOWEST vocabulary word. Deterministic,
     and it errs low: `qwen38-max` in a picker would promise something this
     template raises on, while `qwen38-high` promises what it delivers.
+
+    EVERY BEHAVIOUR APPEARS TWICE since 12.09.2026, once under the served
+    model's name and once under STABLE — and that is not the defect above.
+    That one was three names for one behaviour INSIDE one scheme, with nothing
+    to tell them apart. These are two schemes with different meanings:
+    `flashnext-low` names a model, `local-low` names whatever is serving. A
+    reader choosing between them is choosing between explicitness and a
+    config that does not go stale, which is a real choice.
     """
     out, seen = [alias], set()
     for name, value in modes.items():
@@ -239,6 +271,14 @@ def names(alias, modes):
             continue
         seen.add(value)
         out.append("%s-%s" % (alias, name))
+    if alias != STABLE:
+        out.append(STABLE)
+        seen = set()
+        for name, value in modes.items():
+            if value in seen:
+                continue
+            seen.add(value)
+            out.append("%s-%s" % (STABLE, name))
     return out
 
 
@@ -249,14 +289,30 @@ def resolve(model, alias, modes):
     model switch, or another provider's. The caller forwards it untouched;
     llama-server ignores the field anyway, and the log keeps showing what the
     consumer asked for.
+
+    TWO NAMES ARE OURS: the served alias, and STABLE. They resolve to exactly
+    the same thing, so nothing downstream can tell them apart — the prefix id
+    is built from the rendered prompt (dialects.prefix_text), not from the
+    model name, so `local-low` and `flashnext-low` land on ONE cache key.
     """
-    if model == alias:
+    if not isinstance(model, str):
+        return {}, False
+    if model == STABLE or (alias and model == alias):
         return {}, True
-    prefix = alias + "-"
-    if isinstance(model, str) and model.startswith(prefix):
-        level = modes.get(model[len(prefix):])
-        if level is not None:
-            return kwargs_for(level), True
+    # TOTAL, on purpose. `alias` is None until a fresh gateway has asked the
+    # server what it serves, and since 12.09.2026 this is called from the
+    # TRACE as well as from the injection — where `alias + "-"` raised
+    # TypeError inside the handler's `finally` and the request answered 500.
+    # The stable name does not depend on the alias, so it still resolves
+    # there, which is the one useful answer available that early.
+    prefixes = [STABLE + "-"]
+    if alias:
+        prefixes.insert(0, alias + "-")
+    for prefix in prefixes:
+        if model.startswith(prefix):
+            level = (modes or {}).get(model[len(prefix):])
+            if level is not None:
+                return kwargs_for(level), True
     return {}, False
 
 

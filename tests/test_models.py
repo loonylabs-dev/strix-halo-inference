@@ -288,6 +288,60 @@ class TestConflicts(unittest.TestCase):
                          sorted("llama@%s.service" % m for m in profiles()))
 
 
+class TestTheStoreHasOneAddress(unittest.TestCase):
+    """The gateway and the switch have to mean the same directory.
+
+    gateway.py's own comment says why: "Two spellings of one default is how
+    those two end up on different directories — and the failure is silent in
+    the worst direction." It was written about the SERVER and the gateway.
+    One file over it had already happened: cfcd8e4 gave the gateway
+    systemdfile.slots_dir() and left switch-model.sh on a hard-wired
+    `$HOME/.cache/llama-slots`.
+
+    Measured 12.09.2026 on the machine this was found on: the gateway held
+    89 GiB under the directory LLAMA_SLOTS names, marked `.owner=qwen36`,
+    while every switch had been parking, relabelling and restoring the
+    hard-wired default beside it — a directory holding one 8-byte marker
+    file. Nothing failed. A switch simply stopped meaning anything, and the
+    next one would have restored one model's prefixes into another with the
+    guard looking at the wrong directory.
+    """
+
+    def resolve(self, env=None):
+        import subprocess
+        e = dict(os.environ)
+        e.pop("LLAMA_SLOTS", None)
+        e.update(env or {})
+        sh = subprocess.run(
+            ["bash", "-c", '. "$1"/setup/lib/models.sh; slots_dir',
+             "_", str(REPO)], capture_output=True, text=True, env=e)
+        self.assertEqual(sh.returncode, 0, sh.stderr)
+        py = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, %r); import systemdfile; "
+             "print(systemdfile.slots_dir())" % str(REPO / "setup" / "lib")],
+            capture_output=True, text=True, env=e)
+        self.assertEqual(py.returncode, 0, py.stderr)
+        return sh.stdout.strip(), py.stdout.strip()
+
+    def test_shell_and_python_agree_on_this_machine(self):
+        sh, py = self.resolve()
+        self.assertEqual(sh, py)
+
+    def test_they_agree_when_the_variable_is_set(self):
+        sh, py = self.resolve({"LLAMA_SLOTS": "/tmp/somewhere-else"})
+        self.assertEqual(sh, py)
+        self.assertEqual(sh, "/tmp/somewhere-else")
+
+    def test_the_switch_asks_instead_of_spelling_it_out(self):
+        src = (REPO / "setup" / "switch-model.sh").read_text(encoding="utf-8")
+        line = [l for l in src.splitlines() if l.startswith("SLOTS=")]
+        self.assertEqual(len(line), 1, line)
+        self.assertIn("slots_dir", line[0],
+                      "switch-model.sh writes the store path out by hand — "
+                      "the gateway resolves it and the two will drift")
+
+
 class TestSlidingWindow(unittest.TestCase):
     """A model WITH a sliding window and WITHOUT --swa-full runs every Claude
     Code turn cold: measured 100.2 s against 10.4 s on the same body. The
@@ -911,7 +965,9 @@ class TestSwitchPreflight(unittest.TestCase):
             f.write("../../../etc\n")
         r = self.switch("ghost", "--dry-run")
         self.assertEqual(r.returncode, 2, r.stdout)
-        self.assertIn("not a model in this repo", r.stderr)
+        # "backend", not "model", since 12.09.2026: the marker may now name
+        # the container backend as well, and the refusal has to cover both.
+        self.assertIn("not a backend in this repo", r.stderr)
         self.assertTrue(os.path.exists(os.path.join(slots, "something.bin")),
                         "the prefix store was touched")
 
@@ -1055,46 +1111,107 @@ class TestLocalJsonMatchesAModel(unittest.TestCase):
     starts with a real profile and resolves to nothing, and the gateway then
     serves it as the bare alias. Since 28.08. that is at least a log line, but
     the user's only other signal is that thinking silently stopped.
+
+    Since 12.09.2026 the file uses the STABLE family (`local`, `local-low`),
+    which resolves against whatever is served rather than against one
+    profile — so the agreement to check is a different one: the name has to
+    mean something on EVERY backend this repo can switch to, and where it does
+    not, that has to be written down rather than discovered after a switch.
     """
 
     MODES = common.load("setup/gateway/modes.py", "modes")
 
-    def test_the_configured_model_names_resolve_to_a_profile(self):
-        env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]
-        known = set(profiles())
-        for key in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
-            value = env.get(key, "")
-            base = value.split("-")[0] if value else ""
-            with self.subTest(key=key, value=value):
-                self.assertIn(base, known,
-                              "%s=%r does not begin with any model in "
-                              "setup/env/" % (key, value))
+    # Profiles on which the configured stable name does NOT resolve, and why.
+    # A name that falls through here gets the bare alias — which is a real
+    # change in behaviour after a switch, and the reason this list exists
+    # instead of a silent gap.
+    STALE_ON = {
+        "laguna": "declares only `none:off` — no level words at all, so "
+                  "`local-low` falls through to the bare alias. laguna is the "
+                  "kept predecessor; giving it a `low` would be a claim about "
+                  "its template that nobody has measured.",
+    }
 
-    def test_the_suffix_is_a_mode_that_profile_declares(self):
-        """The stem is not the agreement. What has to hold is that the gateway
-        would RESOLVE this exact name against that profile's MODES."""
+    def configured(self):
+        env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]
+        return [(k, env[k]) for k in
+                ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL")
+                if env.get(k)]
+
+    def modes_of(self, alias):
         import sys
         sys.path.insert(0, str(REPO / "setup" / "lib"))
         import systemdfile as SDF
-        env = json.loads((REPO / "setup/claude/local.json").read_text())["env"]
+        path = REPO / "setup" / "env" / ("%s.env" % alias)
+        return self.MODES.parse_modes(SDF.variable(str(path), "MODES"))
+
+    def test_the_configured_names_are_ours(self):
+        """Either the stable family or a real profile — not a third thing."""
+        known = set(profiles())
         checked = 0
-        for key in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
-            value = env.get(key, "")
-            if not value:
-                continue
-            alias = value.split("-")[0]
-            path = REPO / "setup" / "env" / ("%s.env" % alias)
-            if not path.exists():
-                continue
-            modes = self.MODES.parse_modes(SDF.variable(str(path), "MODES"))
+        for key, value in self.configured():
             checked += 1
+            stem = value.split("-")[0]
             with self.subTest(key=key, value=value):
-                _, hit = self.MODES.resolve(value, alias, modes)
-                self.assertTrue(hit,
-                                "%s=%r is not a mode %s declares. It offers: %s"
-                                % (key, value, alias,
-                                   "  ".join(self.MODES.names(alias, modes))))
+                self.assertTrue(
+                    stem == self.MODES.STABLE or stem in known,
+                    "%s=%r begins with neither %r nor any model in setup/env/"
+                    % (key, value, self.MODES.STABLE))
         self.assertGreater(checked, 0, "nothing was checked")
+
+    def test_the_name_resolves_on_every_profile_it_should(self):
+        """The stem is not the agreement. What has to hold is that the gateway
+        would RESOLVE this exact name — and for a stable name that means on
+        every profile, because any of them can be the one serving."""
+        checked, gaps = 0, {}
+        for key, value in self.configured():
+            stem = value.split("-")[0]
+            targets = (sorted(profiles()) if stem == self.MODES.STABLE
+                       else [stem])
+            for alias in targets:
+                if not (REPO / "setup" / "env" / ("%s.env" % alias)).exists():
+                    continue
+                modes = self.modes_of(alias)
+                checked += 1
+                _, hit = self.MODES.resolve(value, alias, modes)
+                if hit:
+                    continue
+                if alias in self.STALE_ON:
+                    gaps.setdefault(alias, []).append(value)
+                    continue
+                self.fail("%s=%r does not resolve on %s. It offers: %s"
+                          % (key, value, alias,
+                             "  ".join(self.MODES.names(alias, modes))))
+        self.assertGreater(checked, 0, "nothing was checked")
+        for alias in gaps:
+            self.assertIn(alias, self.STALE_ON)
+
+    def test_every_listed_gap_is_still_a_gap(self):
+        """A name in STALE_ON that HAS started resolving is a stale excuse,
+        and a list of stale excuses is how a guard stops guarding. Checked per
+        PROFILE: at least one configured name must still fall through there,
+        or the entry has outlived its reason."""
+        outlived, looked_at = [], 0
+        for alias, why in sorted(self.STALE_ON.items()):
+            if not (REPO / "setup" / "env" / ("%s.env" % alias)).exists():
+                continue
+            looked_at += 1
+            modes = self.modes_of(alias)
+            falls_through = [v for _, v in self.configured()
+                             if v.split("-")[0] == self.MODES.STABLE
+                             and not self.MODES.resolve(v, alias, modes)[1]]
+            if not falls_through:
+                outlived.append("%s (%s)" % (alias, why))
+        # Outside the loop, so an EMPTY list is an answer rather than a test
+        # that quietly checked nothing. An empty STALE_ON is legitimate — it
+        # means every configured name resolves everywhere — and then
+        # looked_at is 0 and there is nothing to have outlived.
+        self.assertEqual(looked_at, len(self.STALE_ON),
+                         "a profile named in STALE_ON no longer exists")
+        self.assertFalse(
+            outlived,
+            "these are listed as gaps but every configured name resolves on "
+            "them now — remove the entries:\n    " + "\n    ".join(outlived))
 
 
 if __name__ == "__main__":

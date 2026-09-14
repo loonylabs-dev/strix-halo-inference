@@ -172,8 +172,12 @@ class TestOfferingAndAcceptingAreNotTheSameList(unittest.TestCase):
         self.modes = M.parse_modes(QWEN)
 
     def test_only_the_distinct_behaviours_are_offered(self):
+        """Per SCHEME. Since 12.09.2026 there are two — the model's own names
+        and the stable ones — and the rule holds inside each: four distinct
+        behaviours, four entries, twice."""
         self.assertEqual(M.names("qwen38", self.modes),
-                         ["qwen38", "qwen38-low", "qwen38-medium", "qwen38-high"])
+                         ["qwen38", "qwen38-low", "qwen38-medium", "qwen38-high",
+                          "local", "local-low", "local-medium", "local-high"])
 
     def test_the_synonyms_still_resolve(self):
         for name in ("qwen38-xhigh", "qwen38-max"):
@@ -185,7 +189,7 @@ class TestOfferingAndAcceptingAreNotTheSameList(unittest.TestCase):
         """The invariant. A listing must never advertise what injection
         refuses — that was the original defect."""
         offered = M.names("qwen38", self.modes)
-        self.assertEqual(len(offered), 4, "nothing was offered to check")
+        self.assertEqual(len(offered), 8, "nothing was offered to check")
         for name in offered:
             self.assertTrue(M.resolve(name, "qwen38", self.modes)[1], name)
 
@@ -202,7 +206,8 @@ class TestOfferingAndAcceptingAreNotTheSameList(unittest.TestCase):
         behaviour. Six names for two behaviours is exactly the noise this
         avoids."""
         modes = M.parse_modes(GEMMA)
-        self.assertEqual(M.names("gemma26", modes), ["gemma26", "gemma26-low"])
+        self.assertEqual(M.names("gemma26", modes),
+                         ["gemma26", "gemma26-low", "local", "local-low"])
         for word in ("medium", "high", "xhigh", "max"):
             self.assertTrue(M.resolve("gemma26-" + word, "gemma26", modes)[1], word)
 
@@ -218,7 +223,8 @@ class TestTheNamesAreDerivedFromWhatServes(unittest.TestCase):
         """Not one per declared word — see
         TestOfferingAndAcceptingAreNotTheSameList."""
         self.assertEqual(M.names("qwen38", self.modes),
-                         ["qwen38", "qwen38-low", "qwen38-medium", "qwen38-high"])
+                         ["qwen38", "qwen38-low", "qwen38-medium", "qwen38-high",
+                          "local", "local-low", "local-medium", "local-high"])
 
     def test_another_model_yields_other_names(self):
         names = M.names("flashnext", self.modes)
@@ -226,7 +232,123 @@ class TestTheNamesAreDerivedFromWhatServes(unittest.TestCase):
         self.assertIn("flashnext-low", names)
 
     def test_a_model_without_modes_offers_only_itself(self):
-        self.assertEqual(M.names("laguna", {}), ["laguna"])
+        """Itself and the stable name — which is the case the stable name is
+        most needed for: a consumer configured with `local` keeps working
+        after a switch to a model that declares no modes at all."""
+        self.assertEqual(M.names("laguna", {}), ["laguna", "local"])
+
+
+class TestTheStableFamily(unittest.TestCase):
+    """One name in the consumer's config that survives a model switch.
+
+    The model-specific names are derived from what serves, which is the whole
+    design — and the cost is that a consumer config written for `flashnext`
+    means nothing after switching to another backend. It does not fail
+    loudly: the name matches no mode, falls through to the bare alias, and
+    the level is silently gone. `docs/CONSUMERS.md` has been telling readers
+    to set `ANTHROPIC_MODEL=local` since before this existed, and until
+    12.09.2026 that name resolved to nothing at all.
+
+    NOT the same thing as cc-router.py's `local/` PREFIX, which is a slash and
+    lives on the consumer's machine: that one strips itself and forwards the
+    rest as a model name. This is a model name.
+    """
+
+    modes = {"low": "on+low", "medium": "on+medium", "high": "on+xhigh",
+             "xhigh": "on+xhigh", "max": "on+xhigh"}
+
+    def test_the_bare_stable_name_is_the_bare_alias(self):
+        self.assertEqual(M.resolve("local", "flashnext", self.modes),
+                         ({}, True))
+        self.assertEqual(M.resolve("flashnext", "flashnext", self.modes),
+                         ({}, True))
+
+    def test_a_level_resolves_to_the_served_models_level(self):
+        want = M.resolve("flashnext-low", "flashnext", self.modes)
+        self.assertEqual(M.resolve("local-low", "flashnext", self.modes), want)
+        self.assertEqual(want, ({"enable_thinking": True,
+                                 "reasoning_effort": "low"}, True))
+
+    def test_the_same_name_follows_a_switch(self):
+        """The point of the whole thing: one name, two backends, the level
+        that each one declares for it."""
+        halogen = {"low": "on+low", "medium": "on+medium", "high": "on+xhigh"}
+        gemma = {"low": "on", "high": "on"}
+        self.assertEqual(M.resolve("local-low", "halogen-qwen3.8-flash-next",
+                                   halogen)[0],
+                         {"enable_thinking": True, "reasoning_effort": "low"})
+        self.assertEqual(M.resolve("local-low", "gemma31", gemma)[0],
+                         {"enable_thinking": True})
+
+    def test_a_level_the_served_model_does_not_declare_does_not_resolve(self):
+        """Same rule as the model-specific names: everything OFFERED
+        resolves, not the reverse. It falls through to the bare alias and the
+        gateway logs it once."""
+        self.assertEqual(M.resolve("local-medium", "gemma31",
+                                   {"low": "on", "high": "on"}),
+                         ({}, False))
+
+    def test_it_is_offered_beside_the_model_specific_names(self):
+        names = M.names("flashnext", self.modes)
+        self.assertEqual(names,
+                         ["flashnext", "flashnext-low", "flashnext-medium",
+                          "flashnext-high",
+                          "local", "local-low", "local-medium", "local-high"])
+
+    def test_a_model_without_modes_still_offers_the_stable_name(self):
+        """A consumer configured with `local` must keep working after a
+        switch to a model that reads no levels at all."""
+        self.assertEqual(M.names("laguna", {}), ["laguna", "local"])
+        self.assertEqual(M.resolve("local", "laguna", {}), ({}, True))
+
+    def test_everything_offered_resolves(self):
+        """The invariant this module was written for, now across two naming
+        schemes."""
+        for alias, modes in (("flashnext", self.modes), ("laguna", {}),
+                             ("gemma31", {"low": "on", "high": "on"})):
+            offered = M.names(alias, modes)
+            self.assertTrue(offered)
+            for name in offered:
+                with self.subTest(alias=alias, name=name):
+                    self.assertTrue(M.resolve(name, alias, modes)[1],
+                                    "%s is offered and does not resolve" % name)
+
+    def test_it_answers_before_the_served_model_is_known(self):
+        """`SERVED` is None until the first `/v1/models` of a fresh gateway
+        succeeds, and the trace asks this function on every request. It used
+        to be called only from inside `if modes:`, where the alias was always
+        known, so `alias + "-"` was safe — reached from the trace it raised
+        TypeError inside the handler's `finally` and the request answered
+        500. Measured 12.09.2026, minutes after the stable family shipped.
+
+        The stable name does not depend on the alias at all, so it resolves
+        even here — which is the one useful answer available."""
+        self.assertEqual(M.resolve("local-low", None, self.modes),
+                         ({"enable_thinking": True,
+                           "reasoning_effort": "low"}, True))
+        self.assertEqual(M.resolve("local", None, self.modes), ({}, True))
+        self.assertEqual(M.resolve("flashnext-low", None, self.modes),
+                         ({}, False))
+
+    def test_it_answers_without_any_modes(self):
+        self.assertEqual(M.resolve("local-low", "flashnext", {}), ({}, False))
+        self.assertEqual(M.resolve("local-low", "flashnext", None),
+                         ({}, False))
+        self.assertEqual(M.resolve("local", "flashnext", None), ({}, True))
+
+    def test_a_model_that_is_not_a_string_is_not_ours(self):
+        for junk in (None, 7, {}, []):
+            with self.subTest(junk=junk):
+                self.assertEqual(M.resolve(junk, "flashnext", self.modes),
+                                 ({}, False))
+
+    def test_no_profile_may_be_called_local(self):
+        """The stable name would shadow it, and `switch-model.sh local` would
+        become ambiguous between a profile and the alias."""
+        names = sorted(p.stem for p in
+                       (common.REPO / "setup" / "env").glob("*.env"))
+        self.assertTrue(names)
+        self.assertNotIn(M.STABLE, names)
 
 
 class TestResolving(unittest.TestCase):

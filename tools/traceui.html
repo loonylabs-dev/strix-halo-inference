@@ -104,7 +104,7 @@
   <thead><tr>
     <th>time</th><th>kind</th><th>who</th><th>client</th><th>slug</th><th>served/mode</th>
     <th>prefix</th><th>session</th><th></th><th class=num>s</th>
-    <th class=num>in</th><th class=num>cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>history</th><th>share</th>
+    <th class=num>in</th><th class=num>cache</th><th class=num>out</th><th class=num>t/s r·w</th><th>why</th><th>history</th><th>share</th>
   </tr></thead>
   <tbody id=rows></tbody>
 </table>
@@ -176,6 +176,9 @@ function rates(r) {
   const f = v => v == null ? "–" : Math.round(v);
   if (r.read_tps != null || r.write_tps != null)
     return `${f(r.read_tps)}·${f(r.write_tps)}`;
+  if (r.read_tps_derived != null && r.write_tps_derived != null)
+    return `~${f(r.read_tps_derived)}·~${f(r.write_tps_derived)}`;
+  if (r.read_tps_derived != null) return `~${f(r.read_tps_derived)}·–`;
   if (r.write_tps_derived != null) return `–·~${f(r.write_tps_derived)}`;
   return saveRate(r);
 }
@@ -285,13 +288,38 @@ function sessionCell(r) {
   return {label: r.session, why: "", bad: false};
 }
 
+// WHY the turn ended. "stop"/"end_turn"/"tool_calls" is a model that
+// finished; "length"/"max_tokens" is a cap that cut the answer off, and the
+// two call for opposite reactions. On 12.09.2026 a 466 s request producing
+// 15429 tokens could not be told apart from a runaway without reading a
+// text-level record by hand — this column is that reading, at a glance.
+const CAPPED = new Set(["length", "max_tokens"]);
+function whyEnded(r) {
+  if (r.kind !== "request" || !r.stop_reason) return "";
+  const short = {tool_calls: "tool", tool_use: "tool", end_turn: "stop",
+                 max_tokens: "CAP", length: "CAP"}[r.stop_reason] || r.stop_reason;
+  const cap = CAPPED.has(r.stop_reason);
+  const hint = cap && r.max_tokens ? `cut off at max_tokens=${r.max_tokens}`
+                                   : r.stop_reason;
+  return `<span class="${cap ? "bad" : "dim"}" title="${esc(hint)}">${esc(short)}</span>`;
+}
+
 function row(r, i) {
   const req = r.kind === "request";
   const cold = r.kind !== "request" ? "" :
         (r.cold ? `<span class=cold>COLD</span>` : `<span class=warm>warm</span>`);
   const mode = r.mode ? `${esc(r.served || "")}/<b>${esc(r.mode)}</b>` : "";
-  const slugBad = r.kind === "request" && r.mode === "bare" && r.slug &&
-                  r.slug !== r.served;
+  // A slug painted red means "you asked for a name nobody knows and got the
+  // bare alias instead". Until 12.09.2026 that was GUESSED from strings —
+  // mode is bare and the slug is not the served alias — and the guess broke
+  // the moment a second naming scheme existed: every `local-*` request was
+  // painted as a stale name while it had resolved perfectly. The gateway
+  // answers the question now. Older records have no `slug_known`, so the old
+  // heuristic stays as the fallback for them.
+  const slugBad = r.kind === "request" && r.slug &&
+                  (r.slug_known === false ||
+                   (r.slug_known === undefined && r.mode === "bare" &&
+                    r.slug !== r.served));
   return `<tr data-i="${i}">
     <td>${clock(r.t)}</td>
     <td class=kind>${esc(r.kind)}</td>
@@ -307,9 +335,10 @@ function row(r, i) {
     <td class=num>${share(r)}</td>
     <td class=num>${req ? (r.output ?? "") : ""}</td>
     <td class=num title="read·write. Without ~ measured by the server; with ~ derived by the gateway from the time to the first token">${rates(r)}</td>
+    <td>${whyEnded(r)}</td>
     <td class="${history(r).bad ? "bad" : "dim"}" title="${esc(history(r).why)}">${history(r).label}</td>
     <td>${bar(r)}</td></tr>` +
-    (openAt === r._at ? `<tr><td colspan=16><pre id=detail>loading …</pre></td></tr>` : "");
+    (openAt === r._at ? `<tr><td colspan=17><pre id=detail>loading …</pre></td></tr>` : "");
 }
 
 // ---- charts -------------------------------------------------------------

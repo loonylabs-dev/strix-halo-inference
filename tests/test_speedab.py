@@ -304,16 +304,37 @@ class TestTheProductionUnitIsAskedAndNotAssumed(unittest.TestCase):
         self.addCleanup(setattr, speed_ab.subprocess, "run", real)
 
     def test_it_reports_whatever_is_serving_and_not_a_constant(self):
-        self.stub_serving("flashnext\n")
-        self.assertEqual(speed_ab.unit(), "llama-user@flashnext")
-        self.assertTrue(self.calls, "models.sh serving was never asked")
-        self.assertEqual(self.calls[0][2], "serving",
+        self.stub_serving("llama-user@flashnext.service\n")
+        self.assertEqual(speed_ab.unit(), "llama-user@flashnext.service")
+        self.assertTrue(self.calls, "models.sh was never asked")
+        self.assertEqual(self.calls[0][2], "serving-unit",
                          "asked models.sh the wrong question — `active` cannot "
-                         "say which instance won the race for port 8080")
+                         "say which instance won the race for port 8080, and "
+                         "`serving` returns an alias this suite would have to "
+                         "turn into a unit itself")
 
     def test_a_different_model_gives_a_different_unit(self):
-        self.stub_serving("qwen36\n")
-        self.assertEqual(speed_ab.unit(), "llama-user@qwen36")
+        self.stub_serving("llama-user@qwen36.service\n")
+        self.assertEqual(speed_ab.unit(), "llama-user@qwen36.service")
+
+    def test_a_container_backend_is_not_turned_into_a_template_instance(self):
+        """`"llama-user@%s" % alias` was right until a backend arrived that
+        is not an instance of that template. It would have produced
+        llama-user@halogen — a unit nothing can start, armed into a dead
+        man's switch."""
+        self.stub_serving("halogen.service\n")
+        self.assertEqual(speed_ab.unit(), "halogen.service")
+
+    def test_the_unit_is_never_assembled_from_a_name(self):
+        src = (common.REPO / "bench" / "suites" / "speed-ab.py").read_text(
+            encoding="utf-8")
+        fn = src[src.index("def unit("):src.index("def default_model(")]
+        # Docstring and comments dropped: both RECOUNT the defect and must
+        # keep naming the units it involved. What is checked is the code.
+        body = fn.split('"""')[2]
+        code = "\n".join(l for l in body.splitlines()
+                         if not l.lstrip().startswith("#"))
+        self.assertNotIn("llama-user@", code)
 
     def test_nothing_serving_gives_None_rather_than_a_guess(self):
         """Inventing a unit to start is how the 04.09. defect did its damage:
@@ -323,7 +344,7 @@ class TestTheProductionUnitIsAskedAndNotAssumed(unittest.TestCase):
         self.assertIsNone(speed_ab.unit())
 
     def test_two_servers_refuse_rather_than_pick_one(self):
-        self.stub_serving("flashnext\nqwen36\n")
+        self.stub_serving("llama-user@flashnext.service\nllama-user@qwen36.service\n")
         self.assertIsNone(speed_ab.unit())
 
     def test_the_answer_is_cached_because_it_is_asked_again_after_the_stop(self):

@@ -45,7 +45,10 @@ MODELS_REPO="$REPO"
 # shellcheck source=lib/models.sh
 . "$REPO/setup/lib/models.sh"
 
-SLOTS="${SLOTS:-$HOME/.cache/llama-slots}"
+# Resolved, not spelled out: the gateway asks systemdfile.slots_dir() and
+# these two must name one directory. See models.sh for what happened
+# while they did not.
+SLOTS="${SLOTS:-$(slots_dir)}"
 GATEWAY="${GATEWAY:-http://127.0.0.1:8090}"
 # SERVER is NOT a constant — it comes from the profile, below. It used to be
 # hard-wired to 8080, and profiles in the repo do not all serve there
@@ -135,12 +138,71 @@ run_write() {   # $1 = content, $2 = file. Separate from run(): a redirect is
     bash setup/switch-model.sh --list      what exists
     bash setup/switch-model.sh <model>     switch"
 
-models_known "$NEW" || die "unknown model '$NEW'. The repo knows:
+# A name that may own a prefix store. `models_known` alone answers no to the
+# container backend, and answering no is how a foreign store came to be
+# relabelled instead of parked.
+owner_known() { [ "$1" = "halogen" ] || models_known "$1"; }
+
+if [ "$NEW" = "halogen" ]; then
+  IS_HALOGEN=1
+elif models_known "$NEW"; then
+  IS_HALOGEN=0
+else
+  die "unknown model '$NEW'. The repo knows:
 $(models_all | sed 's/^/      /')
 
     A model IS its profile: create setup/env/$NEW.env, then
     bash setup/install.sh --user-only"
+fi
 
+HALOGEN_RUNNING=0
+if [ "$IS_HALOGEN" = 1 ]; then
+  step "0/7 preflight for 'halogen'  (Halogen Flash Server · Qwen3.8-Flash-Next)"
+
+  [ -f "$REPO/setup/systemd/halogen.service" ] || die "setup/systemd/halogen.service is missing"
+  [ -x "$REPO/setup/halogenexec" ] || die "setup/halogenexec is missing or not executable"
+
+  # Asked, not resolved here — models.sh owns the chain.
+  HALO_DIR="$(halogen_models_dir)"
+  CHECKPOINT="$(find -L "$HALO_DIR" -maxdepth 1 -name '*.hgn' ! -name '*overlay*' 2>/dev/null | head -1)"
+  [ -n "$CHECKPOINT" ] && [ -f "$CHECKPOINT" ] || die "Halogen checkpoint (*.hgn) not found in $HALO_DIR"
+  ok "model checkpoint readable ($CHECKPOINT)"
+
+  PORT=8080
+  SERVER="${SERVER:-http://127.0.0.1:$PORT}"
+  GW_URL=""
+  if [ -r "$GATEWAY_ENV" ]; then
+    GW_URL="$(sed -n 's/^LLAMA_URL=//p' "$GATEWAY_ENV" | head -1)"
+  fi
+  GW_URL="${GW_URL:-http://127.0.0.1:8080}"
+  GW_PORT="${GW_URL##*:}"; GW_PORT="${GW_PORT%%/*}"
+  if [ "$GW_PRESENT" = 0 ]; then
+    ok "serves on port $PORT — no gateway here, so no port to agree with"
+  elif [ "$PORT" = "$GW_PORT" ]; then
+    ok "serves on port $PORT — the port the gateway asks ($GW_URL)"
+  else
+    die "Halogen serves on port $PORT, but the gateway talks to $GW_URL"
+  fi
+
+  command -v podman >/dev/null 2>&1 || die "podman is not installed"
+  ok "podman container runtime available"
+
+  OLD="$(models_active || true)"
+  SERVING="$(models_serving | tr '\n' ' ')"
+  if [ -n "$OLD" ]; then
+    ok "running now: $(printf '%s' "$OLD" | tr '\n' ' ') — will be stopped"
+  else
+    ok "no other llama model is active"
+  fi
+  [ -n "${SERVING// /}" ] && ok "process command line says: $SERVING"
+
+  if systemctl --user is-active halogen.service >/dev/null 2>&1 && [ "$DRY" = 0 ]; then
+    say
+    say "halogen is already the active model. Nothing to do."
+    say "  restart it:  systemctl --user restart halogen.service"
+    exit 0
+  fi
+else
 step "0/7 preflight for '$NEW'  ($(model_title "$NEW"))"
 
 # The profile the SERVICE reads. Not the one in the repo — the symlink.
@@ -329,11 +391,16 @@ elif per_slot:
 PY
 fi
 
+HALOGEN_RUNNING=0
+if systemctl --user is-active halogen.service >/dev/null 2>&1; then
+  HALOGEN_RUNNING=1
+  ok "running now: halogen (Halogen Flash Server) — will be stopped"
+fi
 OLD="$(models_active | grep -vx "$NEW" || true)"
 SERVING="$(models_serving | tr '\n' ' ')"
 if [ -n "$OLD" ]; then
   ok "running now: $(printf '%s' "$OLD" | tr '\n' ' ') — will be stopped"
-else
+elif [ "$HALOGEN_RUNNING" = 0 ]; then
   ok "no other model is active"
 fi
 [ -n "${SERVING// /}" ] && ok "process command line says: $SERVING"
@@ -343,17 +410,40 @@ fi
 # must not be answered by guessing. The store therefore carries its owner in
 # a marker file that every switch writes; the derivation from the running
 # model is only the fallback for a store written before this existed.
+if [ "$(models_active | tr '\n' ' ')" = "$NEW " ] && [ "$DRY" = 0 ]; then
+  say
+  say "$NEW is already the active model. Nothing to do."
+  say "  restart it:  systemctl --user restart $(model_unit "$NEW")"
+  exit 0
+fi
+fi
+
+# --------------------------------------------------------------------------
+# THE PREFIX STORE — one block, for every backend.
+#
+# Every model keeps its own store: restoring one model's KV state into
+# another is silent garbage, so this question is answered BEFORE anything
+# moves, and it must not be answered by guessing. The store carries its owner
+# in a marker file that every switch writes; deriving from what is running is
+# only the fallback for a store written before that existed.
+#
+# It lives HERE, below both preflights, because it used to live in both. The
+# halogen copy dropped the refusal below and wrote `.owner=halogen` over a
+# store it had not parked — one model's prefixes relabelled as another's,
+# which is the exact outcome the refusal exists to prevent. A second copy of
+# a guard is a guard that will lose one of its clauses; 12.09.2026.
+# --------------------------------------------------------------------------
 PARK_AS=""; RESTORE=0
 if [ -d "$SLOTS" ] && [ -n "$(ls -A "$SLOTS" 2>/dev/null)" ]; then
   if [ -r "$SLOTS/.owner" ]; then
     SLOT_OWNER="$(tr -d '[:space:]' < "$SLOTS/.owner")"
     # The marker decides the target of an `rm -rf "$SLOTS.$SLOT_OWNER"` a few
-    # steps down. It is written by this script and should always be a model
+    # steps down. It is written by this script and should always be a backend
     # name — but a file that steers a recursive delete gets checked, not
     # trusted. A hand-edited or truncated .owner containing "../.." would
     # otherwise point that delete somewhere else entirely.
-    if ! models_known "$SLOT_OWNER"; then
-      die "$SLOTS/.owner says '$SLOT_OWNER', which is not a model in this repo.
+    if ! owner_known "$SLOT_OWNER"; then
+      die "$SLOTS/.owner says '$SLOT_OWNER', which is not a backend in this repo.
 
     That file decides where the current prefixes get parked, and parking is a
     move plus a recursive delete of the previous parking spot. Fix it by hand:
@@ -378,16 +468,12 @@ if [ -d "$SLOTS" ] && [ -n "$(ls -A "$SLOTS" 2>/dev/null)" ]; then
 else
   SLOT_OWNER=""
 fi
+# A container backend saves nothing (the gateway's AUTO_SAVE is off for it),
+# so `$SLOTS.halogen` will normally not exist — the branch costs nothing and
+# stays symmetrical rather than special-casing what is simply empty.
 if [ "$SLOT_OWNER" != "$NEW" ] && [ -d "$SLOTS.$NEW" ]; then
   RESTORE=1
   ok "$NEW has parked prefixes ($(du -sh "$SLOTS.$NEW" | cut -f1)) — they come back"
-fi
-
-if [ "$(models_active | tr '\n' ' ')" = "$NEW " ] && [ "$DRY" = 0 ]; then
-  say
-  say "$NEW is already the active model. Nothing to do."
-  say "  restart it:  systemctl --user restart $(model_unit "$NEW")"
-  exit 0
 fi
 
 [ "$DRY" = 1 ] && say "
@@ -397,32 +483,42 @@ fi
 # From here on the system is changed.
 # --------------------------------------------------------------------------
 step "1/7 /etc/llm-profile (read by llm-profile and by the opt-in system unit)"
-do_sync=0
-case "$SYNC_ETC" in
-  yes) do_sync=1 ;;
-  no)  say "  skipped (--no-sync-etc)" ;;
-  auto)
-    if [ "$DRY" = 1 ] || sudo -n true 2>/dev/null; then do_sync=1
+if [ "$IS_HALOGEN" = 1 ]; then
+  say "  skipped (Halogen runs via container, does not read /etc/llm-profile)"
+else
+  do_sync=0
+  case "$SYNC_ETC" in
+    yes) do_sync=1 ;;
+    no)  say "  skipped (--no-sync-etc)" ;;
+    auto)
+      if [ "$DRY" = 1 ] || sudo -n true 2>/dev/null; then do_sync=1
+      else
+        say "  skipped: no passwordless sudo, and nothing that runs reads /etc."
+        say "  To sync anyway:  bash setup/switch-model.sh $NEW --sync-etc"
+      fi ;;
+  esac
+  if [ "$do_sync" = 1 ]; then
+    if [ "$SYNC_ETC" = yes ]; then
+      run sudo install -m 644 -o root -g root "$REPO"/setup/env/*.env /etc/llm-profile/
     else
-      say "  skipped: no passwordless sudo, and nothing that runs reads /etc."
-      say "  To sync anyway:  bash setup/switch-model.sh $NEW --sync-etc"
-    fi ;;
-esac
-if [ "$do_sync" = 1 ]; then
-  if [ "$SYNC_ETC" = yes ]; then
-    run sudo install -m 644 -o root -g root "$REPO"/setup/env/*.env /etc/llm-profile/
-  else
-    run sudo -n install -m 644 -o root -g root "$REPO"/setup/env/*.env /etc/llm-profile/ \
-      || warn "the /etc sync failed — not fatal, see above"
+      run sudo -n install -m 644 -o root -g root "$REPO"/setup/env/*.env /etc/llm-profile/ \
+        || warn "the /etc sync failed — not fatal, see above"
+    fi
+    [ "$DRY" = 0 ] && ok "/etc/llm-profile refreshed"
   fi
-  [ "$DRY" = 0 ] && ok "/etc/llm-profile refreshed"
 fi
 
 step "2/7 daemon-reload"
 run systemctl --user daemon-reload
 
 step "3/7 stop the old model and re-key the prefix store"
-# Stop FIRST: llama-server holds the slot files open and keeps writing them.
+# Stop FIRST: a running backend holds the slot files open and keeps writing
+# them. One implementation for both: the halogen copy of this block had no
+# RESTORE arm and wrote `.owner` unconditionally.
+if [ "$HALOGEN_RUNNING" = 1 ]; then
+  run systemctl --user stop halogen.service
+  [ "$DRY" = 0 ] && ok "halogen.service stopped"
+fi
 for m in $OLD; do run systemctl --user stop "$(model_unit "$m")"; done
 # Every model keeps its own store — including models that were never the
 # immediate predecessor. The plan was decided in preflight.
@@ -435,7 +531,10 @@ if [ "$RESTORE" = 1 ]; then
   # rmdir, not rm -rf: it can only succeed on an EMPTY directory, so a store
   # that unexpectedly still has content stops the switch instead of being
   # silently merged into $NEW's.
-  if [ -z "$PARK_AS" ] && [ -d "$SLOTS" ]; then run rmdir "$SLOTS"; fi
+  if [ -z "$PARK_AS" ] && [ -d "$SLOTS" ]; then
+    [ -f "$SLOTS/.owner" ] && run rm -f "$SLOTS/.owner"
+    run rmdir "$SLOTS"
+  fi
   run mv "$SLOTS.$NEW" "$SLOTS"
   [ "$DRY" = 0 ] && ok "prefixes of $NEW brought back"
 fi
@@ -443,28 +542,47 @@ run mkdir -p "$SLOTS"
 run_write "$NEW" "$SLOTS/.owner"
 
 step "4/7 swap the services"
+if [ "$HALOGEN_RUNNING" = 1 ]; then
+  run systemctl --user disable --now halogen.service || true
+fi
 for m in $OLD; do run systemctl --user disable "$(model_unit "$m")" || true; done
+if [ "$IS_HALOGEN" = 1 ]; then
+  # install.sh links this too. Repeated here so a switch also works on a
+  # machine whose install predates the container backend — the link is
+  # idempotent and points into the checkout either way.
+  run mkdir -p "$HOME/.config/systemd/user"
+  run ln -sf "$REPO/setup/systemd/halogen.service" "$HOME/.config/systemd/user/halogen.service"
+  run systemctl --user daemon-reload
+fi
 run systemctl --user enable --now "$(model_unit "$NEW")"
 
 step "5/7 wait for the model"
 if [ "$DRY" = 0 ]; then
+  # llama-server proves it is up by answering /slots; a container backend has
+  # no slots and answers /health. Everything after that is the same question
+  # and is asked once.
+  PROBE="/slots"; [ "$IS_HALOGEN" = 1 ] && PROBE="/health"
   for _ in $(seq 1 450); do
-    curl -sf --max-time 3 "$SERVER/slots" >/dev/null 2>&1 && break
+    curl -sf --max-time 3 "$SERVER$PROBE" >/dev/null 2>&1 && break
     sleep 2
   done
-  curl -sf --max-time 3 "$SERVER/slots" >/dev/null || die "llama-user@$NEW never served /slots — check:
+  curl -sf --max-time 3 "$SERVER$PROBE" >/dev/null || die "$(model_unit "$NEW") never served $PROBE — check:
     journalctl --user -u $(model_unit "$NEW") -n 80"
-  ok "$SERVER/slots answers"
+  ok "$SERVER$PROBE answers"
 
-  # The check no unit file can argue away: exactly ONE server, serving $NEW.
+  # The check no unit file can argue away: exactly ONE backend, serving $NEW.
+  # It was dropped for halogen when that path was copied, and it is needed
+  # there MOST: /health is answered by whoever holds the port, and a
+  # hand-written Conflicts= line is the only thing keeping a llama-server off
+  # it while 128 GB of UMA are already spoken for.
   S="$(models_serving | tr '\n' ' ')"
   case "$(printf '%s' "$S" | wc -w)" in
-    1) [ "${S// /}" = "$NEW" ] && ok "one llama-server, serving $NEW" \
-         || die "the running server serves '${S// /}', not $NEW" ;;
-    0) warn "no llama-server found by command line (started differently?)" ;;
-    *) die "MORE THAN ONE llama-server is running: $S
+    1) [ "${S// /}" = "$NEW" ] && ok "one backend, serving $NEW" \
+         || die "the running backend serves '${S// /}', not $NEW" ;;
+    0) warn "no backend found by command line (started differently?)" ;;
+    *) die "MORE THAN ONE backend is running: $S
     That is the Conflicts= failure. Stop them all and switch again:
-      systemctl --user stop 'llama-user@*'" ;;
+      systemctl --user stop 'llama-user@*' halogen.service" ;;
   esac
 fi
 
@@ -495,14 +613,25 @@ else
   step "7/7 smoke against the server"
 fi
 if [ "$DRY" = 0 ] && [ "$GW_PRESENT" = 0 ]; then
-  curl -sf --max-time 300 --retry 2 --retry-delay 3 \
-    "$SERVER/v1/chat/completions" \
-    -H 'content-type: application/json' \
-    -d "{\"model\":\"$NEW\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}" \
-    | python3 -c "import json,sys; r=json.load(sys.stdin); \
+  if [ "$IS_HALOGEN" = 1 ]; then
+    curl -sf --max-time 300 --retry 2 --retry-delay 3 \
+      "$SERVER/v1/chat/completions" \
+      -H 'content-type: application/json' \
+      -d "{\"model\":\"halogen\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}" \
+      | python3 -c "import json,sys; r=json.load(sys.stdin); \
+c=r.get('choices') or []; assert c and c[0].get('message'), r; \
+print('  smoke ok:', (c[0]['message'].get('content') or '')[:40])" || die "Halogen answered /health but did not generate — check:
+      journalctl --user -u halogen.service -n 80"
+  else
+    curl -sf --max-time 300 --retry 2 --retry-delay 3 \
+      "$SERVER/v1/chat/completions" \
+      -H 'content-type: application/json' \
+      -d "{\"model\":\"$NEW\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}" \
+      | python3 -c "import json,sys; r=json.load(sys.stdin); \
 c=r.get('choices') or []; assert c and c[0].get('message'), r; \
 print('  smoke ok:', (c[0]['message'].get('content') or '')[:40])" || die "llama-server answered /slots but did not generate — check:
-    journalctl --user -u $(model_unit "$NEW") -n 80"
+      journalctl --user -u $(model_unit "$NEW") -n 80"
+  fi
 elif [ "$DRY" = 0 ]; then
   # The gateway was just restarted and needs a moment to bind — smoking
   # straight away raced it once (25.08.) and crashed on an empty reply.
@@ -520,17 +649,57 @@ print('  smoke ok:', [b.get('text','') for b in r['content'] if b.get('type')=='
     journalctl --user -u $GW_UNIT -n 80"
 fi
 
+# DOES THE CONSUMER'S CONFIGURED NAME STILL MEAN ANYTHING?
+#
+# ANTHROPIC_MODEL lives in a file this script does not touch, and the gateway
+# derives its names from what is served — so after a switch the two can
+# disagree with nothing anywhere saying so. The old behaviour of a mismatch
+# was WRONG AND LOUD (one model's thinking mode injected into another's
+# request); it is now right and quiet (fall through to the bare alias), and
+# quiet is exactly why it needs saying here. The gateway is the authority and
+# it is up by this point, so ask it rather than guessing.
+if [ "$DRY" = 0 ] && [ "$GW_PRESENT" = 1 ] && [ -r "$REPO/setup/claude/local.json" ]; then
+  WANT_MODEL="$(sed -n 's/.*"ANTHROPIC_MODEL"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                 "$REPO/setup/claude/local.json" | head -1)"
+  OFFERED="$(curl -sf --max-time 5 "$GATEWAY/v1/models" 2>/dev/null \
+             | python3 -c "import json,sys
+try: print(' '.join(m['id'] for m in json.load(sys.stdin).get('data', [])))
+except Exception: pass" 2>/dev/null)"
+  if [ -n "$WANT_MODEL" ] && [ -n "$OFFERED" ]; then
+    case " $OFFERED " in
+      *" $WANT_MODEL "*) ok "Claude Code asks for $WANT_MODEL, and it is offered" ;;
+      *) say
+         warn "the repo's consumer template asks for '$WANT_MODEL', which $NEW does not offer."
+         say "    setup/claude/local.json is pinned to a llama profile by"
+         say "    tests/test_models.py and is not the file to change. Set the name"
+         say "    where your client actually reads it — ~/.claude/profiles/local.json,"
+         say "    or the environment variables a non-interactive run needs anyway"
+         say "    (setup/README.md: --settings does not carry into claude -p, and"
+         say "    with a first-party model name it silently answers from the API)."
+         say "    Offered here now:"
+         for m in $OFFERED; do say "      $m"; done ;;
+    esac
+  fi
+fi
+
 say
 if [ "$DRY" = 1 ]; then
   say "DRY RUN — nothing was changed."
 else
-  say "DONE — $NEW is serving.  $(model_title "$NEW")"
+  if [ "$IS_HALOGEN" = 1 ]; then
+    say "DONE — halogen is serving.  (Halogen Flash Server · Qwen3.8-Flash-Next)"
+  else
+    say "DONE — $NEW is serving.  $(model_title "$NEW")"
+  fi
   say
   say "Claude Code sessions started from now use the names in"
   say "setup/claude/local.json. Running sessions keep their old name; the"
-  say "gateway passes it through and llama-server ignores it."
+  say "gateway passes it through and the backend handles it."
   if [ -n "$OLD" ]; then
     say
     say "Back:  bash setup/switch-model.sh $(printf '%s' "$OLD" | head -1)"
+  elif [ "$HALOGEN_RUNNING" = 1 ]; then
+    say
+    say "Back:  bash setup/switch-model.sh halogen"
   fi
 fi

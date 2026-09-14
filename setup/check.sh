@@ -582,7 +582,13 @@ head_ "Saved prefixes"
 # A slot state restored into the wrong model is garbage. switch-model.sh
 # writes the owner into the store; a store without one is a store nobody can
 # safely hand to the next model.
-SLOTS="${SLOTS:-$HOME/.cache/llama-slots}"
+# Resolved, not written down: the gateway asks systemdfile.slots_dir() and
+# this has to name the SAME directory. It did not until 12.09.2026 — this
+# section reported "prefixes belong to halogen (4,0K)" in green while the
+# store the gateway used held 89 GiB marked `.owner=qwen36`. The one line
+# whose job is to catch a store handed to the wrong model was looking at the
+# wrong store to do it.
+SLOTS="${SLOTS:-$(slots_dir)}"
 if [ ! -d "$SLOTS" ]; then
   printf "  \033[33m?\033[0m %s does not exist yet\n" "${SLOTS/#$HOME/\~}"
 elif [ ! -r "$SLOTS/.owner" ]; then
@@ -592,6 +598,13 @@ else
   RUNNING=$(models_serving | head -1)
   if [ -z "$RUNNING" ] || [ "$OWNER" = "$RUNNING" ]; then
     ok "prefixes belong to $OWNER ($(du -sh "$SLOTS" 2>/dev/null | cut -f1))"
+  elif ! backend_uses_slot_store "$RUNNING"; then
+    # A mismatch, and NOT the hazard the line below names: this backend
+    # neither reads nor writes the store, so nothing can be restored out of
+    # it into the wrong model. Saying so as an alarm would train the operator
+    # to ignore the alarm.
+    printf "  \033[33m?\033[0m prefixes belong to %s and %s is serving — %s does not use this store, so it is parked (%s)\n" \
+      "$OWNER" "$RUNNING" "$RUNNING" "$(du -sh "$SLOTS" 2>/dev/null | cut -f1)"
   else
     old "the prefix store belongs to $OWNER but $RUNNING is serving — a restore would feed one model's KV state to another"
   fi
@@ -599,8 +612,14 @@ fi
 
 head_ "Running state"
 if pgrep -x llama-server >/dev/null; then
-  SLOTS=$(curl -s -m3 http://127.0.0.1:8080/slots 2>/dev/null | grep -o '"id"' | wc -l)
-  ok "llama-server is running, $SLOTS slots"
+  # N_SLOTS, not SLOTS: that name already holds the store DIRECTORY a few
+  # lines up. Reusing it meant the MAX_INFLIGHT check below compared a number
+  # against a filesystem path whenever this branch was skipped — which is
+  # every time a container backend serves, since it runs no llama-server.
+  # Measured 12.09.2026: "MAX_INFLIGHT is 1, the server has /home/…/.cache/
+  # llama-slots slots — restart the gateway", in red, for nothing.
+  N_SLOTS=$(curl -s -m3 http://127.0.0.1:8080/slots 2>/dev/null | grep -o '"id"' | wc -l)
+  ok "llama-server is running, $N_SLOTS slots"
   # Check both the system and the user service. On Fedora with SELinux the
   # server runs as a user service (llama-user@), see README.
   #
@@ -627,7 +646,15 @@ if pgrep -x llama-server >/dev/null; then
     printf "  \033[33m?\033[0m --swa-full not found in the log (started by hand? other log target?)\n"
   fi
 else
-  printf "  \033[33m?\033[0m llama-server is not running\n"
+  # Not necessarily a fault: a container backend serves without any
+  # llama-server process. Say WHICH, so "not running" stops reading as
+  # "nothing is serving".
+  SERVING_NOW="$(models_serving | tr '\n' ' ')"
+  if [ -n "${SERVING_NOW// /}" ]; then
+    ok "no llama-server — ${SERVING_NOW% } is serving instead"
+  else
+    printf "  \033[33m?\033[0m llama-server is not running\n"
+  fi
 fi
 if curl -s -m3 http://127.0.0.1:8090/gateway/status >/dev/null 2>&1; then
   COLL=$(curl -s -m3 http://127.0.0.1:8090/gateway/status \
@@ -639,11 +666,14 @@ if curl -s -m3 http://127.0.0.1:8090/gateway/status >/dev/null 2>&1; then
   # with -np 4 the gateway would leave half the slots unused.
   MI=$(curl -s -m3 http://127.0.0.1:8090/gateway/status \
        | python3 -c 'import json,sys; print(json.load(sys.stdin).get("max_concurrent"))' 2>/dev/null)
-  if [ -n "$SLOTS" ] && [ -n "$MI" ] && [ "$SLOTS" != "0" ]; then
-    if [ "$MI" = "$SLOTS" ]; then
+  # Only when a COUNT was actually read. Without a llama-server there is no
+  # /slots to count, and comparing MAX_INFLIGHT against nothing — or against
+  # whatever a reused variable happened to hold — is worse than not saying.
+  if [ -n "${N_SLOTS:-}" ] && [ -n "$MI" ] && [ "$N_SLOTS" != "0" ]; then
+    if [ "$MI" = "$N_SLOTS" ]; then
       ok "MAX_INFLIGHT $MI matches the slot count"
     else
-      old "MAX_INFLIGHT is $MI, the server has $SLOTS slots — restart the gateway"
+      old "MAX_INFLIGHT is $MI, the server has $N_SLOTS slots — restart the gateway"
     fi
   fi
 else

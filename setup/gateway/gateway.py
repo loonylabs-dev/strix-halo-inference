@@ -56,6 +56,7 @@ import dialects as DIA                                   # noqa: E402
 import modes as MODES_LIB                                # noqa: E402
 import tracelog as TRACE_LIB                                # noqa: E402
 import savepolicy as SP                                     # noqa: E402
+import anthropic_bridge as AB                               # noqa: E402
 
 # Off unless somebody switches it on with tools/tracelog.py, re-read per event so
 # the switch works while this is serving. Every call site below is wrapped in
@@ -131,6 +132,17 @@ MID_SYSTEM_TO_USER = env("MID_SYSTEM_TO_USER", default="0") == "1"
 # gateway, and the order is the whole point"), so the cache cannot outlive
 # the model it describes.
 SERVED = None
+BACKEND_FLAVOR = os.environ.get("BACKEND_DIALECT", "auto")
+
+def backend_is_openai_only() -> bool:
+    """True if upstream does NOT speak Anthropic natively (e.g. Halogen Flash Server)."""
+    if BACKEND_FLAVOR == "openai":
+        return True
+    if BACKEND_FLAVOR == "anthropic":
+        return False
+    if SERVED and "halogen" in str(SERVED).lower():
+        return True
+    return False
 # Model names that reached us and matched no mode. Kept so the note is printed
 # once per name rather than once per request — see inject_model_kwargs.
 UNKNOWN_MODELS = set()
@@ -1239,13 +1251,21 @@ def _mode_of(slug, served):
     `qwen38-low` under a served `qwen38` is `low`. The bare alias is `bare`,
     and so is anything that did not resolve — the caller decides which of the
     two it was, because only it knows whether the lookup hit.
+
+    TWO PREFIXES, because there are two naming schemes: the served alias and
+    MODES_LIB.STABLE. This function knew only the first for the few minutes
+    the stable family existed before somebody looked at the trace: every
+    `local-low` request was labelled `bare` and painted as a stale name, while
+    the request itself had carried `reasoning_effort: low` all along. Nothing
+    was served wrongly; the instrument said the opposite of what happened.
     """
     if not slug or not served:
         return "bare"
-    if slug == served:
+    if slug in (served, MODES_LIB.STABLE):
         return "bare"
-    if slug.startswith(served + "-"):
-        return slug[len(served) + 1:]
+    for prefix in (served + "-", MODES_LIB.STABLE + "-"):
+        if slug.startswith(prefix):
+            return slug[len(prefix):]
     return "bare"
 
 
@@ -1521,13 +1541,31 @@ def query_slots(wait=0):
     request would fail anyway — and a refused connection is clearer than a
     queue with the wrong depth.
     """
-    import urllib.request
+    import urllib.request, urllib.error
     end = time.time() + wait
     while True:
         try:
             with urllib.request.urlopen(LLAMA + "/slots", timeout=10) as x:
                 return len(json.loads(x.read().decode()))
+        except urllib.error.HTTPError as he:
+            if he.code == 404:
+                return 1
+            if time.time() >= end:
+                return None
+            time.sleep(3)
         except Exception:
+            # /health as a fallback ONLY for a backend that has no slots to
+            # report. For llama-server a refused connection means "ask
+            # again" — that is what `wait` is for — and accepting /health
+            # there turns one flaky moment during startup into a permanent
+            # MAX_INFLIGHT of 1 against a server that has more.
+            if backend_is_openai_only():
+                try:
+                    with urllib.request.urlopen(LLAMA + "/health", timeout=5) as xh:
+                        if xh.status == 200:
+                            return 1
+                except Exception:
+                    pass
             if time.time() >= end:
                 return None
             time.sleep(3)
@@ -1619,6 +1657,69 @@ def correct(p, dialect=DIA.ANTHROPIC):
         return p, n
     return DIA.hoist_system_messages(p, dialect, VOLATILE)
 
+# Every spelling of the served backend, in ONE place.
+#
+# The served alias is what the backend reports — for the container that is the
+# long `halogen-qwen3.8-flash-next`, and a consumer should not have to know
+# whether to type that or the short `halogen`. MODES_LIB.STABLE is the third
+# spelling and the one a config keeps across a switch.
+#
+# `flashnext` stood in this list until 12.09.2026 and had to go: it is a
+# DIFFERENT model, and a session configured for it was silently given this
+# backend's thinking modes. That is exactly the defect modes.py was built to
+# end — "injecting qwen38's thinking mode into requests bound for another
+# model, over a command line that had set it otherwise, with no error
+# anywhere". A stale name now matches nothing, falls through to the bare
+# alias, and gets one NOTE in the log, which is the signal the operator is
+# supposed to get.
+#
+# The trace asks this too, not just the injection: `slug_known` is what
+# separates "asked for the bare alias" from "asked for a name nobody knows",
+# and both look like mode=bare from the outside.
+BACKEND_SPELLINGS = ("halogen", "halogen-qwen3.8-flash-next")
+
+
+def resolve_slug(model, served, modes):
+    """(kwargs, matched) for a request's model name, across every spelling."""
+    wanted, hit = MODES_LIB.resolve(model, served, modes)
+    if hit or not backend_is_openai_only():
+        return wanted, hit
+    for alt in BACKEND_SPELLINGS:
+        if alt == served:
+            continue
+        w, h = MODES_LIB.resolve(model, alt, modes)
+        if h:
+            return w, h
+    return wanted, hit
+
+
+# Qwen3.8's two end tokens, and the usage block the trace needs. ONE copy:
+# these eight lines stood in both arms of inject_model_kwargs, and a guard
+# that exists twice loses a clause in one of them.
+#
+# The stop STRINGS are belt and braces with setup/halogen/serve_api.py, which
+# registers both ids itself and additionally turns a request's stop strings
+# into EOS ids — so they arrive as real stop tokens even if that mount is
+# ever lost. Keyed on the served model rather than on "any OpenAI backend":
+# they are this model's tokens, not a general truth.
+CONTAINER_STOPS = ("<|im_end|>", "<|endoftext|>")
+
+
+def container_extras(p):
+    """What every request to the container backend carries, in place."""
+    if p.get("stream"):
+        # Without it the upstream emits no usage at all and every token
+        # column in the trace stays empty.
+        p.setdefault("stream_options", {"include_usage": True})
+    given = p.get("stop")
+    stops = [given] if isinstance(given, str) else list(given or [])
+    for tok in CONTAINER_STOPS:
+        if tok not in stops:
+            stops.append(tok)
+    p["stop"] = stops
+    return p
+
+
 def inject_model_kwargs(p, table=None, served=None, modes=None):
     """Fill chat_template_kwargs from the model-name table.
 
@@ -1650,17 +1751,19 @@ def inject_model_kwargs(p, table=None, served=None, modes=None):
         # Derived from the served alias, so a name for another model cannot
         # exist and no scoping is needed. See modes.py.
         model = p.get("model")
-        wanted, hit = MODES_LIB.resolve(model, served, modes)
+        wanted, hit = resolve_slug(model, served, modes)
         if not hit and isinstance(model, str) and model not in UNKNOWN_MODELS:
-            # Once per name. The old code was wrong LOUDLY — it injected
-            # another model's mode. The new code is right QUIETLY, and after
-            # any switch-model.sh that is the expected steady state, because
-            # ANTHROPIC_MODEL lives in a file switch-model.sh does not touch.
-            # The user's only other signal would be that thinking stopped.
             UNKNOWN_MODELS.add(model)
             log("NOTE        %r matches no mode of %s — serving it as the bare "
                 "alias. Offered: %s"
                 % (model, served, "  ".join(MODES_LIB.names(served, modes))))
+        if backend_is_openai_only():
+            merged = dict(wanted) if hit and wanted else {}
+            if "enable_thinking" not in merged and "enable_thinking" not in p:
+                merged["enable_thinking"] = False
+            for k, v in merged.items():
+                p[k] = v
+            container_extras(p)
         if not hit or not wanted:
             return p, False
         merged = dict(wanted)
@@ -1669,6 +1772,11 @@ def inject_model_kwargs(p, table=None, served=None, modes=None):
             merged.update(given)
         p["chat_template_kwargs"] = merged
         return p, True
+
+    if backend_is_openai_only():
+        if "enable_thinking" not in p:
+            p["enable_thinking"] = False
+        container_extras(p)
 
     table = KWARGS_BY_MODEL if table is None else table
     if served is not None and served not in table:
@@ -1724,6 +1832,52 @@ REMOTE_ALLOWED = (
     "/v1/models",
 )
 
+# A container has no command line for the gateway to leave alone, so the
+# modes a llama profile declares in setup/env/<model>.env are declared here
+# instead. Same grammar, same guard: check_modes() runs over the pair at
+# startup, exactly as load_profile_modes() does for a profile.
+#
+# MEASURED 12.09.2026, by rendering /models/tokenizer/chat_template.jinja
+# inside the running 0.5.6 container (the same transformers call serve_api.py
+# makes), one message, add_generation_prompt=True:
+#
+#   reasoning_effort=xhigh    system block "…think carefully through the task,
+#                             validate key assumptions…"          sha f60ba0a8
+#   reasoning_effort=medium   NO system block at all — the neutral middle
+#   reasoning_effort=low      system block "…keep your thinking brief and
+#                             focused…"                           sha 83803a70
+#   no reasoning_effort       renders byte-identical to xhigh: XHIGH IS THE
+#                             TEMPLATE'S DEFAULT, which is why the bare alias
+#                             below spells its answer out instead of staying
+#                             silent — silence here is the most expensive mode
+#                             this model has.
+#   high · max · none · minimal
+#                             TemplateError: "Unexpected reasoning effort …
+#                             Supported types are xhigh (default), medium,
+#                             and low."
+#
+# `high:on+high` stood here until that measurement and was an HTTP 500 the
+# template would have raised — it survived only because serve_api.py's
+# EFFORT_MAP quietly rewrites high -> xhigh one layer further in. Two
+# translations for one word, and only one of them was written down. The
+# consumer's word `high` still resolves; it now sends the level this template
+# actually renders.
+#
+# `none` is deliberately ABSENT. The bare alias already means "do not think"
+# (see inject_model_kwargs), so a `none` mode produced a byte-identical
+# upstream body — one behaviour under two names, which is the defect
+# modes.names() was written against. Measured 12.09.2026, bodies compared
+# after injection.
+HALOGEN_TEMPLATE_LEVELS = ("low", "medium", "xhigh")
+HALOGEN_MODES = {
+    "low": "on+low",
+    "medium": "on+medium",
+    "high": "on+xhigh",
+    "xhigh": "on+xhigh",
+    "max": "on+xhigh",
+}
+MODES_LIB.check_modes(HALOGEN_MODES, set(HALOGEN_TEMPLATE_LEVELS))
+
 def load_profile_modes(alias):
     """The MODES of the profile whose name is the served alias.
 
@@ -1739,6 +1893,8 @@ def load_profile_modes(alias):
     """
     if not alias:
         return {}
+    if backend_is_openai_only() or "halogen" in str(alias).lower():
+        return dict(HALOGEN_MODES)
     if SDF is None:
         log("NOTE        systemdfile is not importable from %s — no profile "
             "modes. Is this file still a symlink into the repo?"
@@ -1888,6 +2044,22 @@ async def handler(req):
             out = None
 
     if not inference:
+        # /v1/messages/count_tokens — answered HERE only for a backend that
+        # cannot answer it at all.
+        #
+        # The answer is a character estimate, not a tokenisation: neither
+        # backend exposes a tokenizer over HTTP. For llama-server the request
+        # is forwarded as before and comes back 404, which is honest — the
+        # consumer then uses its own estimate. Answering for BOTH, which is
+        # what this did when it arrived, silently replaced one consumer's
+        # estimate with a worse one on a path it had been managing itself.
+        if backend_is_openai_only() and req.path.rstrip("/").endswith(
+                "count_tokens"):
+            try:
+                p_cnt = json.loads(body) if body else {}
+            except Exception:
+                p_cnt = {}
+            return web.json_response(AB.anthropic_token_count_response(p_cnt))
         # Either source of names reaches the listing. Gating this on the old
         # blob alone left a profile that declares MODES advertising nothing —
         # the injection answered its names and the picker never showed them,
@@ -1902,10 +2074,10 @@ async def handler(req):
         log("NOTE        cold prefix %s with %d waiting — blocks the others"
             % (ident, depth))
 
-    if cold and ident:
+    if cold and ident and head is not None:
         # Collision warning: is there already a prefix with the same head?
         rivals = [k for k, v in PREFIXES.items()
-                         if v["head"] == head and k != ident]
+                         if v.get("head") == head and k != ident]
         if rivals:
             log("WARNING     prefix %s shares its head with %s — the two "
                 "fight over one slot and destroy each other's cache "
@@ -1970,59 +2142,62 @@ async def handler(req):
         #
         # One localhost GET, and only when there is a file this would change
         # the fate of.
-        if not cold and ident and ident in SAVED:
-            try:
-                async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
-                    async with s_.get(LLAMA + "/slots") as r_:
-                        _, restarted, why = server_life(await r_.json())
-                if restarted:
-                    log("NOTE        %s although this prefix was served before "
-                        "— bookkeeping reset, %s loads from disk" % (why, ident))
-                    PREFIXES.pop(ident, None)
-                    cold = True
-            except Exception as e:
-                # Never fatal: the worst case is the behaviour that ran before
-                # this check existed.
-                log("NOTE        could not read the server's task counter: %r" % (e,))
-        if cold and ident in SAVED:
-            # The window this request's verdict will be judged in, captured
-            # BEFORE the restore. The write side got this on 28.08. and the
-            # read side did not: anything else touching the one slot between
-            # the restore and the answer drives `reused` to 0, and a good file
-            # would then be quarantined for somebody else's traffic.
-            window = (SERVED_COUNT, GATE.free)
-            restored = await restore_from_disk(ident, p, dialect)
-            if restored:
-                cold = False
-        # THE SESSION STORE, which is a different store from SAVED above. That
-        # one holds bare PREFIXES written by prewarm; this one holds whole
-        # conversations written by session_save() after a turn. A prefix can
-        # have an entry in either, both or neither, and the two are asked in
-        # this order on purpose: a prefix restore only ever brings back the
-        # head, a session restore brings back the head AND everything the
-        # conversation had grown since, so it is the better answer wherever it
-        # applies. Reading /slots costs one localhost GET and only happens when
-        # there is a file this could change the fate of.
-        if SESSION_RESTORE != "off" and ident and os.path.exists(session_file(ident)):
-            try:
-                async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
-                    async with s_.get(LLAMA + "/slots") as r_:
-                        slots_now = await r_.json()
-                if await session_restore(ident, slots_now, p, dialect):
+        if not backend_is_openai_only():
+            if not cold and ident and ident in SAVED:
+                try:
+                    async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
+                        async with s_.get(LLAMA + "/slots") as r_:
+                            _, restarted, why = server_life(await r_.json())
+                    if restarted:
+                        log("NOTE        %s although this prefix was served before "
+                            "— bookkeeping reset, %s loads from disk" % (why, ident))
+                        PREFIXES.pop(ident, None)
+                        cold = True
+                except Exception as e:
+                    # Never fatal: the worst case is the behaviour that ran before
+                    # this check existed.
+                    log("NOTE        could not read the server's task counter: %r" % (e,))
+            if cold and ident in SAVED:
+                # The window this request's verdict will be judged in, captured
+                # BEFORE the restore. The write side got this on 28.08. and the
+                # read side did not: anything else touching the one slot between
+                # the restore and the answer drives `reused` to 0, and a good file
+                # would then be quarantined for somebody else's traffic.
+                window = (SERVED_COUNT, GATE.free)
+                restored = await restore_from_disk(ident, p, dialect)
+                if restored:
                     cold = False
-            except Exception as e:
-                # Never fatal. Without this the request simply runs the way it
-                # ran before session restore existed.
-                log("NOTE        session restore skipped for %s: %r" % (ident, e))
+            # THE SESSION STORE, which is a different store from SAVED above. That
+            # one holds bare PREFIXES written by prewarm; this one holds whole
+            # conversations written by session_save() after a turn. A prefix can
+            # have an entry in either, both or neither, and the two are asked in
+            # this order on purpose: a prefix restore only ever brings back the
+            # head, a session restore brings back the head AND everything the
+            # conversation had grown since, so it is the better answer wherever it
+            # applies. Reading /slots costs one localhost GET and only happens when
+            # there is a file this could change the fate of.
+            if SESSION_RESTORE != "off" and ident and os.path.exists(session_file(ident)):
+                try:
+                    async with ClientSession(timeout=ClientTimeout(total=5)) as s_:
+                        async with s_.get(LLAMA + "/slots") as r_:
+                            slots_now = await r_.json()
+                    if await session_restore(ident, slots_now, p, dialect):
+                        cold = False
+                except Exception as e:
+                    # Never fatal. Without this the request simply runs the way it
+                    # ran before session restore existed.
+                    log("NOTE        session restore skipped for %s: %r" % (ident, e))
         t_start = time.time()
         if ident:
             record_use(ident)
             e = PREFIXES.setdefault(ident, {
                 "head": head, "requests": 0, "cold": 0, "warm": 0,
                 "took_sum": 0.0, "last": 0.0, "sources": set()})
-            e["requests"] += 1
-            e["cold" if cold else "warm"] += 1
-            e["sources"].add(ip)
+            if "head" not in e and head is not None:
+                e["head"] = head
+            e["requests"] = e.get("requests", 0) + 1
+            e["cold" if cold else "warm"] = e.get("cold" if cold else "warm", 0) + 1
+            e.setdefault("sources", set()).add(ip)
             e.setdefault("consumers", set()).add(who)
         # A prefix whose TEXT changed since last time is not warm, whatever
         # its id says. Saying so is all this does — `cold` itself is
@@ -2081,7 +2256,7 @@ async def handler(req):
                         and (PREFIXES.get(k) or {}).get("head") == head] \
             if (ident and head) else []
         if (AUTO_SAVE and cold and ident and ident not in SAVED
-                and out is not None
+                and out is not None and not backend_is_openai_only()
                 and len(prefix_text(p, dialect)) >= AUTO_MIN_CHARS):
             evict, keep = SP.stale_rivals(
                 time.time(),
@@ -2104,12 +2279,26 @@ async def handler(req):
                     TRACE.record("save-replaced",
                                  summary={"prefix": ident,
                                           "evicted": evict[:5]})
-                early = await save_prefix_first(ident, json.loads(out), dialect,
-                                                req=req, resp=early,
-                                                streaming=streaming)
+                if not backend_is_openai_only():
+                    early = await save_prefix_first(ident, json.loads(out), dialect,
+                                                    req=req, resp=early,
+                                                    streaming=streaming)
         SERVED_COUNT += 1
         SERVED_TRAIL.append((SERVED_COUNT, ident))
         del SERVED_TRAIL[:-50]
+        if dialect == DIA.ANTHROPIC and backend_is_openai_only():
+            target_path = "/v1/chat/completions"
+            oai_p = AB.anthropic_to_openai_request(p, target_model=SERVED)
+            if "enable_thinking" in p:
+                oai_p["enable_thinking"] = p["enable_thinking"]
+            if "reasoning_effort" in p:
+                oai_p["reasoning_effort"] = p["reasoning_effort"]
+            if "stop" in p:
+                oai_p["stop"] = p["stop"]
+            out_p = json.dumps(oai_p).encode("utf-8")
+            translate_stream = AB.StreamTranslator(model_name=SERVED or "halogen") if streaming else None
+            return await forward(req, body, out_p, early, answered, sniff,
+                                 target_path=target_path, translate_stream=translate_stream)
         return await forward(req, body, out, early, answered, sniff)
     finally:
         # EVERYTHING that belongs after the answer happens HERE, not after the
@@ -2146,13 +2335,14 @@ async def handler(req):
             _ = big_enough
             # WHAT THE SERVER ACTUALLY DID, before anything is claimed about
             # it. The numbers ride along in the answer that was just proxied.
-            reuse, wrote, rates = None, None, None
+            reuse, wrote, rates, why_ended = None, None, None, None
             try:
                 text = (sniff["head"] + b"\n" + sniff["tail"]).decode(
                     "utf-8", "ignore")
                 reuse = DIA.reuse_from_text(text)
                 wrote = DIA.output_from_text(text)
                 rates = DIA.rates_from_text(text)
+                why_ended = DIA.stop_reason_from_text(text)
             except Exception as e:
                 log("NOTE        reuse not read: %r" % (e,))
             # THE DEGENERACY CHECK, ON TRAFFIC THAT WAS GOING TO HAPPEN
@@ -2231,12 +2421,21 @@ async def handler(req):
                 if SEEN.get(ident) != before:
                     save_seen()
             if ident and reuse:
-                e = PREFIXES.setdefault(ident, {})
+                e = PREFIXES.setdefault(ident, {
+                    "head": head, "requests": 0, "cold": 0, "warm": 0,
+                    "took_sum": 0.0, "last": 0.0, "sources": set()})
+                if "head" not in e and head is not None:
+                    e["head"] = head
                 e["reused_sum"] = e.get("reused_sum", 0) + reuse[0]
                 e["evaluated_sum"] = e.get("evaluated_sum", 0) + reuse[1]
             if ident:
-                PREFIXES[ident]["took_sum"] += took
-                PREFIXES[ident]["last"] = time.time()
+                e = PREFIXES.setdefault(ident, {
+                    "head": head, "requests": 0, "cold": 0, "warm": 0,
+                    "took_sum": 0.0, "last": 0.0, "sources": set()})
+                if "head" not in e and head is not None:
+                    e["head"] = head
+                e["took_sum"] = e.get("took_sum", 0.0) + took
+                e["last"] = time.time()
                 # The attempt is over, whatever it measured — the restore may
                 # arm again. This sits beside the ledger update rather than in
                 # it on purpose: the ledger asks whether reuse was GOOD, this
@@ -2263,6 +2462,15 @@ async def handler(req):
                          "served": SERVED,
                          "mode": (_mode_of((p or {}).get("model"), SERVED)
                                   if mode_hit else "bare"),
+                         # "bare" has TWO causes and they are opposite: the
+                         # caller asked for the bare alias, or it asked for a
+                         # name nobody knows and got the bare alias instead.
+                         # The trace UI used to tell them apart by comparing
+                         # strings, which stopped working the moment a second
+                         # naming scheme existed. This is the answer rather
+                         # than a guess at it.
+                         "slug_known": resolve_slug(
+                             (p or {}).get("model"), SERVED, MODES)[1],
                          # WHICH PROGRAM, not just which machine. `who` is
                          # the access token and says martin-pc2 for Claude
                          # Code and for a harness alike; these three tell them
@@ -2306,7 +2514,22 @@ async def handler(req):
                          # Anthropic route reports nothing, and an approximate
                          # number that says it is approximate beats reading the
                          # server's journal by hand.
+                         # WHY THE TURN ENDED, and what it was allowed to
+                         # spend. Without the pair, a long request cannot be
+                         # read: "stop"/"tool_calls" is a model that finished,
+                         # "length"/"max_tokens" is a cap that cut it off, and
+                         # they call for opposite reactions. On 12.09.2026 a
+                         # 466 s request producing 15429 tokens could only be
+                         # told apart from a runaway by a text-level record
+                         # that happened to be armed — one field, at summary
+                         # level, ends that.
+                         "stop_reason": why_ended,
+                         "max_tokens": (p or {}).get("max_tokens"),
                          "ttft_s": ttft,
+                         "read_tps_derived": (
+                             round(reuse[1] / ttft, 1)
+                             if (reuse and reuse[1] and ttft is not None
+                                 and ttft > 0.05) else None),
                          "write_tps_derived": (
                              round(wrote / (took - ttft), 1)
                              if (wrote and ttft is not None
@@ -2343,9 +2566,11 @@ async def handler(req):
                         # `text` does not. Sorted, because a reordered list is
                         # not a changed tool set and a reader comparing two
                         # records must not have to know that.
-                        "tool_names": sorted(
-                            t.get("name") for t in ((p or {}).get("tools") or [])
-                            if isinstance(t, dict) and t.get("name")),
+                        # Either dialect: OpenAI hides the name one level
+                        # down under `function`, and reading only the
+                        # Anthropic shape recorded an empty list beside
+                        # `tools: 25` for every OpenAI client.
+                        "tool_names": DIA.tool_names(p),
                         "messages": len(((p or {}).get("messages") or [])),
                         "head_chars": len(head or ""),
                         "prefix_chars": len(prefix_text(p, dialect)) if p else None,
@@ -2578,7 +2803,7 @@ async def session_save(ident, reuse, body=None):
     same report prices a lost 180k state at ~1800 s of prefill against a 1.9 s
     write, so latency is not what it protects against.
     """
-    if not SESSION_SAVE or not ident:
+    if not SESSION_SAVE or not ident or backend_is_openai_only():
         return
     tokens = (reuse[0] + reuse[1]) if reuse and reuse[0] is not None else None
     # A shallow state is not worth its own file: the fixed 118 MB dominates
@@ -2776,7 +3001,8 @@ async def models_with_aliases(req, body):
 SNIFF_BYTES = 8192
 
 
-async def forward(req, body, out, resp=None, answered=None, sniff=None):
+async def forward(req, body, out, resp=None, answered=None, sniff=None,
+                  target_path=None, translate_stream=None):
     """Pass the request through. `resp` is an already-prepared response.
 
     It is set when the caller was kept alive while queued: the headers went out
@@ -2812,9 +3038,108 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None):
         # describe a state that is rare, and the connection attempt answers the
         # same question for free.
         try:
-            async with s.request(req.method, LLAMA + req.path_qs,
+            path_to_call = target_path if target_path is not None else req.path_qs
+            async with s.request(req.method, LLAMA + path_to_call,
                                  data=(out if out is not None else body),
                                  headers=hdrs, allow_redirects=False) as up:
+                if translate_stream is not None:
+                    if resp is None and up.status != 200:
+                        # Before the headers are out, a failure can still be
+                        # delivered as one. Opening a 400 as an event-stream
+                        # and then translating an error body into no events
+                        # at all is what happened here until 12.09.2026: the
+                        # consumer got a non-200 with SSE headers and an
+                        # empty body, which reads as "the model said
+                        # nothing".
+                        return web.json_response(
+                            AB.openai_error_to_anthropic(
+                                up.status, await up.read()),
+                            status=up.status)
+                    if resp is None:
+                        rh = {k: v for k, v in up.headers.items()
+                              if k.lower() not in HOP and k.lower() != "content-encoding"}
+                        rh["content-type"] = "text/event-stream; charset=utf-8"
+                        resp = web.StreamResponse(status=up.status, headers=rh)
+                        await resp.prepare(req)
+                    elif up.status != 200:
+                        log("NOTE        upstream %d after the headers were already out"
+                            % up.status)
+                        await resp.write(sse_error(up.status, (await up.text())))
+                        await resp.write_eof()
+                        return resp
+                    line_buf = ""
+                    bad_chunks = 0
+                    async for ch in up.content.iter_any():
+                        if sniff is not None:
+                            if sniff.get("first_token_at") is None and (
+                                    b"content_block_delta" in ch or b'"delta"' in ch):
+                                sniff["first_token_at"] = time.time()
+                            if len(sniff["head"]) < SNIFF_BYTES:
+                                sniff["head"] += ch[:SNIFF_BYTES - len(sniff["head"])]
+                            sniff["tail"] = (sniff["tail"] + ch)[-SNIFF_BYTES:]
+                        line_buf += ch.decode("utf-8", errors="replace")
+                        while "\n" in line_buf:
+                            line, line_buf = line_buf.split("\n", 1)
+                            line = line.strip()
+                            if not line:
+                                continue
+                            if line.startswith("data:") and line.strip() != "data: [DONE]":
+                                # `data:` without the space is legal SSE and
+                                # some proxies emit it; matching only on
+                                # "data: " dropped those silently.
+                                payload = line.split(":", 1)[1].strip()
+                                try:
+                                    chunk_dict = json.loads(payload)
+                                except Exception as e:
+                                    # NOT silence. A chunk the translator
+                                    # cannot read is a hole in the answer,
+                                    # and a hole that says nothing is
+                                    # indistinguishable from a short reply.
+                                    bad_chunks += 1
+                                    if bad_chunks == 1:
+                                        log("NOTE        unreadable upstream chunk (%r) "
+                                            "— %.60r" % (e, payload))
+                                    continue
+                                for ev in translate_stream.feed_chunk(chunk_dict):
+                                    await resp.write(ev.encode("utf-8"))
+                    for ev in translate_stream.finish():
+                        await resp.write(ev.encode("utf-8"))
+                    if bad_chunks:
+                        log("NOTE        %d upstream chunk(s) could not be "
+                            "translated — the answer has holes" % bad_chunks)
+                    if answered is not None:
+                        answered["ok"] = True
+                    await resp.write_eof()
+                    return resp
+                if target_path is not None and translate_stream is None:
+                    raw_resp = await up.read()
+                    # The caller's accounting reads the sniff buffer, and
+                    # this arm builds a NEW response rather than proxying
+                    # bytes — so without this the reuse, the output count and
+                    # the stop reason are all blank for every non-streaming
+                    # turn, while the streaming one records them. The RAW
+                    # upstream body goes in: dialects reads OpenAI's usage
+                    # shape, and it is what the server actually said.
+                    if sniff is not None and raw_resp:
+                        sniff["head"] = raw_resp[:SNIFF_BYTES]
+                        sniff["tail"] = raw_resp[-SNIFF_BYTES:]
+                    # first_token_at is deliberately NOT set. There is no
+                    # first token in a non-streamed answer, and stamping one
+                    # here would put ttft a hair below took — from which the
+                    # derived write rate is output divided by almost zero. A
+                    # missing number is an answer; a fabricated one is not.
+                    if up.status == 200:
+                        try:
+                            oai_resp = json.loads(raw_resp.decode("utf-8"))
+                            ant_resp = AB.openai_to_anthropic_response(oai_resp, model=SERVED or "halogen")
+                            if answered is not None:
+                                answered["ok"] = True
+                            return web.json_response(ant_resp, status=200)
+                        except Exception:
+                            pass
+                    return web.json_response(
+                        AB.openai_error_to_anthropic(up.status, raw_resp),
+                        status=up.status)
                 if resp is None:
                     rh = {k: v for k, v in up.headers.items()
                           if k.lower() not in HOP and k.lower() != "content-encoding"}
@@ -2876,18 +3201,18 @@ async def status(req):
         "queue": GATE.depth(),
         "overtaken_by_age": GATE.overtaken,
         "prefixes": sorted(
-            [{"id": k, "head": v["head"], "requests": v["requests"],
-              "cold": v["cold"], "warm": v["warm"],
-              "warm_pct": round(100.0 * v["warm"] / v["requests"], 1) if v["requests"] else 0.0,
-              "avg_seconds": round(v["took_sum"] / v["requests"], 2) if v["requests"] else 0.0,
-              "sources": sorted(v["sources"]),
+            [{"id": k, "head": v.get("head"), "requests": v.get("requests", 0),
+              "cold": v.get("cold", 0), "warm": v.get("warm", 0),
+              "warm_pct": round(100.0 * v["warm"] / v["requests"], 1) if v.get("requests") and v.get("warm") else 0.0,
+              "avg_seconds": round(v["took_sum"] / v["requests"], 2) if v.get("requests") and v.get("took_sum") else 0.0,
+              "sources": sorted(v.get("sources", [])),
               "consumers": sorted(v.get("consumers", []))}
              for k, v in PREFIXES.items()],
-            key=lambda d: -d["requests"]),
+            key=lambda d: -(d.get("requests") or 0)),
         "collisions": [
             sorted(g) for g in
-            ({tuple(sorted(k for k, v in PREFIXES.items() if v["head"] == head))
-              for head in {v["head"] for v in PREFIXES.values()}})
+            ({tuple(sorted(k for k, v in PREFIXES.items() if v.get("head") == head))
+              for head in {v.get("head") for v in PREFIXES.values()} if head is not None})
             if len(g) > 1],
         "llama": LLAMA,
         "uptime_seconds": round(time.time() - T0, 1),
@@ -2922,17 +3247,28 @@ async def watch_server():
         refresh_saved()
         try:
             timeout = ClientTimeout(total=10)
+            slots = None
             async with ClientSession(timeout=timeout) as s_:
-                async with s_.get(LLAMA + "/slots") as r:
-                    slots = await r.json()
+                if backend_is_openai_only():
+                    async with s_.get(LLAMA + "/health") as r:
+                        if r.status != 200:
+                            raise RuntimeError("health returned %d" % r.status)
+                else:
+                    async with s_.get(LLAMA + "/slots") as r:
+                        if r.status == 200:
+                            slots = await r.json()
             restarted = False
             if was_gone:
-                if PREFIXES:
-                    log("NOTE        llama-server was gone — prefix bookkeeping reset "
-                        "so that disk loading kicks in again")
-                    PREFIXES = {}
-                restarted = True
-            elif PREFIXES and not any(x.get("n_prompt_tokens") for x in slots):
+                if GATE.free < GATE.capacity:
+                    # An in-flight request is being served; the server is alive and busy
+                    pass
+                else:
+                    if PREFIXES:
+                        log("NOTE        upstream server was gone — prefix bookkeeping reset "
+                            "so that disk loading kicks in again")
+                        PREFIXES = {}
+                    restarted = True
+            elif slots is not None and slots and PREFIXES and not any(x.get("n_prompt_tokens") for x in slots):
                 # All slots empty although we know prefixes: restarted or
                 # cleared from outside.
                 log("NOTE        all slots empty — prefix bookkeeping reset")
@@ -2962,13 +3298,15 @@ async def note_server_restart():
     — see the ClientSession three lines above the caller, which exists for
     exactly that reason.
     """
-    global SERVED, MODES
+    global SERVED, MODES, BACKEND_FLAVOR
     name = await asyncio.to_thread(query_served_model)
     if not name:
         return
     if name != SERVED:
         log("NOTE        llama-server now serves %s (was %s)" % (name, SERVED))
     SERVED = name
+    if "halogen" in str(SERVED).lower():
+        BACKEND_FLAVOR = "openai"
     MODES = load_profile_modes(SERVED)
     # The "matches no mode" notes were about the previous model's names.
     UNKNOWN_MODELS.clear()
@@ -3007,7 +3345,7 @@ def main():
     store, no network. That is exactly what the tests under tests/ need, which
     must run without a GPU and without a running service.
     """
-    global TOKENS, SAVED, MAX_INFLIGHT, GATE, SERVED, MODES
+    global TOKENS, SAVED, MAX_INFLIGHT, GATE, SERVED, MODES, BACKEND_FLAVOR
     if "MAX_INFLIGHT" not in os.environ:
         n = query_slots(wait=SLOTS_WAIT)
         if n:
@@ -3020,6 +3358,9 @@ def main():
                 "Restart this service once the model is up."
                 % (SLOTS_WAIT, MAX_INFLIGHT))
     SERVED = query_served_model()
+    if SERVED and "halogen" in str(SERVED).lower():
+        BACKEND_FLAVOR = "openai"
+        log("  backend %s is OpenAI-only — Anthropic translation active" % SERVED)
     MODES = load_profile_modes(SERVED)
     if MODES:
         log("  modes for %s: %s" % (SERVED, "  ".join(MODES_LIB.names(SERVED, MODES))))

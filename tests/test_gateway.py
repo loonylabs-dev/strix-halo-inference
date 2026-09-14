@@ -916,8 +916,14 @@ class TestModesComeFromTheProfile(GatewayOnTheWire):
         listing = await r.json()
         offered = [e.get("name") or e.get("id")
                    for e in listing.get("models", listing.get("data", []))]
+        # Two schemes since 12.09.2026: the served model's own names, and the
+        # stable `local` family that a consumer config can keep across a
+        # switch. Both are derived from the same modes by the same function,
+        # so neither can drift from the injection.
         self.assertEqual(offered, ["qwen38", "qwen38-none",
-                                   "qwen38-low", "qwen38-medium"])
+                                   "qwen38-low", "qwen38-medium",
+                                   "local", "local-none",
+                                   "local-low", "local-medium"])
 
     async def test_the_old_blob_still_works_where_no_profile_declares_modes(self):
         """Migration: a profile that has not been given MODES yet must keep
@@ -1729,6 +1735,37 @@ class TestTheSidecarHashIsFinallyRead(unittest.TestCase):
     def setUp(self):
         self.llama = GW.LLAMA
         self.addCleanup(lambda: setattr(GW, "LLAMA", self.llama))
+
+    def test_the_handler_arms_it_by_passing_the_body(self):
+        """A guard is only armed where it is CALLED.
+
+        `restore_from_disk(id_, body=None, dialect=...)` skips the whole
+        comparison when body is None — deliberately, so callers that have no
+        body can still restore. The handler HAS the body, and on 11.09.2026
+        the Halogen rework re-indented that call and dropped both arguments.
+        Nothing failed: a file holding another prefix's state is restored
+        again, the request pays a full prefill, and the only trace is
+        reused=0. The function's own tests above all pass either way, which
+        is why this one looks at the call site instead."""
+        import ast
+        gw = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(gw)
+        handler = next(n for n in ast.walk(tree)
+                       if isinstance(n, ast.AsyncFunctionDef)
+                       and n.name == "handler")
+        calls = [n for n in ast.walk(handler)
+                 if isinstance(n, ast.Call)
+                 and getattr(n.func, "id", None) == "restore_from_disk"]
+        self.assertTrue(calls, "the handler no longer restores at all")
+        for c in calls:
+            given = len(c.args) + len(c.keywords)
+            self.assertGreaterEqual(
+                given, 3,
+                "restore_from_disk() is called with %d argument(s) — without "
+                "the body and the dialect the sidecar hash is never compared "
+                "and a file saved for another prefix is restored silently"
+                % given)
 
     def test_an_uncomputable_hash_means_carry_on(self):
         """None is 'do not know'. Treating it as a mismatch would switch the

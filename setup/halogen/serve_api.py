@@ -31,9 +31,10 @@
 #      serve()): a max_tokens that does not fit the window the prompt left is
 #      clamped to that room when HALOGEN_FIT_TO_ROOM=1, and refused with the
 #      numbers as before when the gate is off or the room is below
-#      HALOGEN_FIT_TO_ROOM_FLOOR=1024. Enabled PER UNIT — the interactive
-#      Claude Code unit carries `HALOGEN_FIT_TO_ROOM=1` as a systemd drop-in,
-#      and the shared template and the bench side servers deliberately do not.
+#      HALOGEN_FIT_TO_ROOM_FLOOR=1024. Enabled PER UNIT — every halogen unit
+#      carries `HALOGEN_FIT_TO_ROOM=1` as an Environment= line (so the knob
+#      survives a rebuild and a switch-model to the 27B) — and the shared
+#      template and the bench side servers deliberately do not.
 #
 # RETIREMENT: hunks 1-3 go when an image ships them — check the upstream
 # changelog on every bump. Hunk 4 goes only if upstream ships an equivalent

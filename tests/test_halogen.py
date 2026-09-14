@@ -69,6 +69,52 @@ class TestTheUnitExcludesEveryModel(unittest.TestCase):
                     self.assertIn("halogen.service", line)
 
 
+# ------------------------------------------------- fit-to-room / unit scope ---
+class TestFitToRoomIsPerUnit(unittest.TestCase):
+    """HALOGEN_FIT_TO_ROOM clamps an over-budget max_tokens to the window the
+    prompt left instead of a 400 the interactive client cannot act on. It is
+    enabled PER UNIT on EVERY halogen unit, because which unit serves an
+    interactive agent client is switch-model's call at runtime and the defect is
+    not model-specific. It is deliberately NOT in the shared llm-stack.env
+    template and NOT on a bench side server: a budget quietly shrunk under a
+    measurement is the failure serve_api already documents, and a bench side
+    server never runs through a unit, so the unit-only placement is also the
+    isolation."""
+
+    UNITS = ("halogen.service", "halogen-qwen38flash.service", "halogen-qwen38.service")
+
+    def test_every_halogen_unit_sets_it(self):
+        for u in self.UNITS:
+            with self.subTest(unit=u):
+                self.assertIn("Environment=HALOGEN_FIT_TO_ROOM=1", unit_text(u),
+                              "%s lost the fit-to-room knob" % u)
+
+    def test_not_in_the_shared_template(self):
+        tpl = (REPO / "setup" / "local.env.template").read_text(encoding="utf-8")
+        self.assertNotIn("HALOGEN_FIT_TO_ROOM", tpl,
+                         "fit-to-room must stay per unit, never in the shared "
+                         "template, or a bench side server --env llm-stack "
+                         "would inherit it and shrink budgets under a run")
+
+    def test_not_in_any_profile_env(self):
+        profiles_dir = REPO / "setup" / "env"
+        self.assertTrue(
+            any(profiles_dir.glob("*.env")),
+            "no setup/env/*.env profiles to scan — the guard is vacuous")
+        for p in profiles_dir.glob("*.env"):
+            self.assertNotIn("HALOGEN_FIT_TO_ROOM", p.read_text(encoding="utf-8"),
+                             "%s must not carry fit-to-room" % p.name)
+
+    def test_not_in_any_bench_side_server(self):
+        bench_dir = REPO / "bench"
+        self.assertTrue(
+            (bench_dir / "sideserver.py").exists(),
+            "bench/sideserver.py is the bench side server the guard must find")
+        for p in bench_dir.glob("*.py"):
+            self.assertNotIn("HALOGEN_FIT_TO_ROOM", p.read_text(encoding="utf-8"),
+                             "%s must not set fit-to-room" % p.name)
+
+
 def _continues(text, line):
     """A continuation line of a backslash-wrapped directive."""
     lines = text.splitlines()

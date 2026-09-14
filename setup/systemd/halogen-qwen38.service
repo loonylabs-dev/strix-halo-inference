@@ -14,6 +14,11 @@ StartLimitBurst=3
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/llm-stack.env
+# Fit-to-room (per unit, on ALL halogen units — NEVER in the shared
+# llm-stack.env template or on a bench side server, which never runs through a
+# unit): an over-budget max_tokens clamps to the window the prompt left instead
+# of a 400 the interactive client cannot act on.
+Environment=HALOGEN_FIT_TO_ROOM=1
 ExecStart=%h/.local/lib/llm-stack/halogenexec qwen38
 ExecStop=/usr/bin/podman stop -t 10 halogen
 ExecStopPost=-/usr/bin/podman rm -f -t 1 halogen

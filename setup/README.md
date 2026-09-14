@@ -845,9 +845,9 @@ gate on, the budget is clamped to the room the prompt actually left and the clam
 is logged to stderr, so a session reaches the true edge of the window. Below
 `HALOGEN_FIT_TO_ROOM_FLOOR=1024` the refusal stays: a near-empty budget removes
 the answer rather than shortening it. The gate is **off by default** and is set
-**per unit** — here by the drop-in
-`~/.config/systemd/user/halogen-qwen38flash.service.d/fit-to-room.conf`. That
-drop-in lives outside this checkout, so a rebuild has to recreate it by hand; it
+**per unit** — as an `Environment=HALOGEN_FIT_TO_ROOM=1` line in **all three**
+halogen units (`halogen-qwen38flash`, `halogen-qwen38`, `halogen`), so the knob
+survives a rebuild and a `switch-model` to the 27B. It
 is deliberately NOT in the shared `llm-stack.env` template and NOT on any bench
 side server, where a budget quietly shrunk under a measurement is the failure
 this file already documents.

@@ -87,13 +87,6 @@ and the serving engine:
 * **Stable model aliases:** Use `local-low`, `local`, or `local-medium` in your
   clients. They resolve to the active engine's equivalent mode, so switching
   models never breaks your client configuration.
-* **Dedicated CPU Vision Sidecar:** Exposes `qwen3-vl-4b` and `vision` alongside
-  the primary GPU model. Runs on 8 dedicated Zen 5 CPU cores (CCD1: cores 8–15)
-  via `llama-vision.service` with an independent admission gate (`VISION_GATE`),
-  protecting Halogen GPU decoding from memory bus contention. Auto-starts on
-  demand and stops after 60 minutes of inactivity to reclaim RAM for the Linux
-  page cache. Fully compatible with Unity Asset Inventory, DeepSeek Harness,
-  and OpenAI multimodal clients.
 
 ## Memory authority: Never freeze the machine
 

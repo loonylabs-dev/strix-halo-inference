@@ -92,18 +92,6 @@ def env(name, old=None, default=None):
     return default
 
 LLAMA        = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
-VISION_URL   = os.environ.get("VISION_URL", "http://127.0.0.1:8082")
-VISION_IDLE_TIMEOUT = int(os.environ.get("VISION_IDLE_TIMEOUT", "3600"))
-VISION_MODELS = {
-    "qwen3-vl-4b",
-    "qwen3vl-4b",
-    "vision",
-    "qwen-vl",
-    "qwen-vl-4b",
-    "qwen3-vl",
-}
-VISION_GATE  = asyncio.Semaphore(1)
-VISION_IDLE_TASK = None
 PORT         = int(os.environ.get("PORT", 8090))
 BIND         = [a.strip() for a in os.environ.get("BIND", "127.0.0.1").split(",") if a.strip()]
 MAX_INFLIGHT = int(os.environ.get("MAX_INFLIGHT", 2))
@@ -1964,65 +1952,6 @@ def token_owner(req, prio):
     secret = auth[7:] if auth.startswith("Bearer ") else req.headers.get("x-api-key", "")
     return TOKENS.get(secret)
 
-
-async def is_vision_healthy() -> bool:
-    try:
-        timeout = ClientTimeout(total=1.5, sock_connect=1.0)
-        async with ClientSession(timeout=timeout) as s:
-            async with s.get(VISION_URL + "/health") as resp:
-                return resp.status == 200
-    except Exception:
-        return False
-
-
-async def ensure_vision_running(timeout: float = 15.0) -> bool:
-    if await is_vision_healthy():
-        return True
-    log("VISION      llama-vision is not running — starting llama-vision.service via systemctl")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl", "--user", "start", "llama-vision.service",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.wait()
-    except Exception as e:
-        log("NOTE        failed to invoke systemctl start llama-vision.service: %r" % (e,))
-        return False
-
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        await asyncio.sleep(0.3)
-        if await is_vision_healthy():
-            log("VISION      llama-vision is now ready (took %.2fs)" % (time.time() - t0))
-            return True
-    log("WARNING     llama-vision did not become ready within %.1fs" % timeout)
-    return False
-
-
-def touch_vision_activity():
-    global VISION_IDLE_TASK
-    if VISION_IDLE_TIMEOUT <= 0:
-        return
-    if VISION_IDLE_TASK and not VISION_IDLE_TASK.done():
-        VISION_IDLE_TASK.cancel()
-    VISION_IDLE_TASK = asyncio.create_task(_vision_idle_killer())
-
-
-async def _vision_idle_killer():
-    try:
-        await asyncio.sleep(VISION_IDLE_TIMEOUT)
-        log("IDLE        stopping llama-vision.service after %ds of inactivity" % VISION_IDLE_TIMEOUT)
-        proc = await asyncio.create_subprocess_exec(
-            "systemctl", "--user", "stop", "llama-vision.service",
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.wait()
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        log("NOTE        failed to stop llama-vision.service on idle: %r" % (e,))
-
-
 async def handler(req):
     global SERVED_COUNT
     ip = req.remote or "?"
@@ -2069,61 +1998,6 @@ async def handler(req):
     if inference and body:
         try:
             p = json.loads(body)
-            req_model = (p.get("model") or "").strip().lower()
-            is_vision = (
-                req_model in VISION_MODELS
-                or "qwen3vl-4b" in req_model
-                or "qwen3-vl-4b" in req_model
-                or "qwen-vl" in req_model
-            )
-            if is_vision:
-                who = "local" if prio == 0 else token_owner(req, prio)
-                if who != "local" and IN_FLIGHT_PER_TOKEN.get(who, 0) >= PER_TOKEN_MAX:
-                    log("THROTTLED   %-15s %-6s %s already has %d in flight"
-                        % (ip, PRIORITY_NAME[prio], who, PER_TOKEN_MAX))
-                    return web.json_response(
-                        {"type": "error", "error": {"type": "rate_limit_error",
-                                                    "message": "at most %d concurrent requests per access"
-                                                               % PER_TOKEN_MAX}},
-                        status=429)
-                IN_FLIGHT_PER_TOKEN[who] = IN_FLIGHT_PER_TOKEN.get(who, 0) + 1
-                try:
-                    t_vision_start = time.time()
-                    streaming = bool(p.get("stream"))
-                    log("VISION      START       %-15s %-6s %s model=%s streaming=%s"
-                        % (ip, PRIORITY_NAME[prio], who, req_model, streaming))
-                    async with VISION_GATE:
-                        if not await ensure_vision_running():
-                            return web.json_response(
-                                {"error": {"type": "service_unavailable",
-                                           "message": "Vision server (llama-vision) failed to start."}},
-                                status=503, headers={"Retry-After": "5"})
-                        touch_vision_activity()
-                        p["model"] = "qwen3-vl-4b"
-                        target_path = None
-                        translate_stream = None
-                        if dialect == DIA.ANTHROPIC:
-                            target_path = "/v1/chat/completions"
-                            oai_p = AB.anthropic_to_openai_request(p, target_model="qwen3-vl-4b")
-                            out_bytes = json.dumps(oai_p).encode("utf-8")
-                            if streaming:
-                                translate_stream = AB.StreamTranslator(model_name="qwen3-vl-4b")
-                        else:
-                            out_bytes = json.dumps(p).encode("utf-8")
-
-                        answered = {"ok": False}
-                        sniff = {"head": b"", "tail": b""}
-                        resp = await forward(req, body, out_bytes, answered=answered, sniff=sniff,
-                                             target_path=target_path, translate_stream=translate_stream,
-                                             upstream_url=VISION_URL)
-                        touch_vision_activity()
-                        took = time.time() - t_vision_start
-                        log("VISION      DONE        %-15s %-6s %s took=%.2fs"
-                            % (ip, PRIORITY_NAME[prio], who, took))
-                        return resp
-                finally:
-                    IN_FLIGHT_PER_TOKEN[who] = max(0, IN_FLIGHT_PER_TOKEN.get(who, 1) - 1)
-
             for k in DROP:
                 p.pop(k, None)
             streaming = bool(p.get("stream"))
@@ -2200,7 +2074,7 @@ async def handler(req):
         # the injection answered its names and the picker never showed them,
         # which is the same disagreement between listing and injection that
         # variant 1 exists to make impossible.
-        if req.path.rstrip("/") == "/v1/models":
+        if req.path.rstrip("/") == "/v1/models" and (MODES or KWARGS_BY_MODEL):
             return await models_with_aliases(req, body)
         return await forward(req, body, out)
 
@@ -3109,36 +2983,6 @@ def add_aliases(listing, table, served=None):
         listing[key] = entries
     return listing
 
-
-def add_vision_models(listing):
-    keys = DIA.model_listing_arrays(listing)
-    if not keys:
-        if isinstance(listing, dict):
-            listing["data"] = []
-            keys = ["data"]
-        else:
-            return listing
-    for key in keys:
-        entries = listing[key]
-        have = {e.get("name") or e.get("id") or e.get("model")
-                for e in entries if isinstance(e, dict)}
-        for v_name in ("qwen3-vl-4b", "vision"):
-            if v_name in have:
-                continue
-            entries.append({
-                "id": v_name,
-                "name": v_name,
-                "model": v_name,
-                "object": "model",
-                "owned_by": "llamacpp-vision",
-                "created": 0,
-                "capabilities": ["completion", "multimodal"],
-                "description": "Qwen3-VL 4B Vision Model (CPU sidecar)"
-            })
-        listing[key] = entries
-    return listing
-
-
 async def models_with_aliases(req, body):
     """Pass /v1/models through, then add the names the gateway serves."""
     hdrs = {k: v for k, v in req.headers.items() if k.lower() not in HOP}
@@ -3154,11 +2998,9 @@ async def models_with_aliases(req, body):
         log("NOTE        /v1/models could not be extended: %r" % (e,))
         return await forward(req, body, None)
     if MODES:
-        res = add_derived_names(listing, MODES_LIB.names(SERVED, MODES))
-    else:
-        res = add_aliases(listing, KWARGS_BY_MODEL, SERVED)
-    res = add_vision_models(res)
-    return web.json_response(res)
+        return web.json_response(
+            add_derived_names(listing, MODES_LIB.names(SERVED, MODES)))
+    return web.json_response(add_aliases(listing, KWARGS_BY_MODEL, SERVED))
 
 # How much of a proxied answer is kept to read the accounting out of. Head AND
 # tail, because the two dialects put it at opposite ends: an Anthropic stream
@@ -3185,7 +3027,7 @@ async def iter_stream_with_heartbeat(reader, interval=STREAM_KEEPALIVE_INTERVAL)
 
 
 async def forward(req, body, out, resp=None, answered=None, sniff=None,
-                  target_path=None, translate_stream=None, upstream_url=None):
+                  target_path=None, translate_stream=None):
     """Pass the request through. `resp` is an already-prepared response.
 
     It is set when the caller was kept alive while queued: the headers went out
@@ -3222,8 +3064,7 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
         # same question for free.
         try:
             path_to_call = target_path if target_path is not None else req.path_qs
-            target_base = upstream_url if upstream_url is not None else LLAMA
-            req_ctx = s.request(req.method, target_base + path_to_call,
+            req_ctx = s.request(req.method, LLAMA + path_to_call,
                                 data=(out if out is not None else body),
                                 headers=hdrs, allow_redirects=False)
             is_stream = (translate_stream is not None or resp is not None or
@@ -3402,11 +3243,10 @@ async def forward(req, body, out, resp=None, answered=None, sniff=None,
         except asyncio.CancelledError:
             raise
         except (OSError, aiohttp.ClientConnectionError) as e:
-            server_name = "vision-server" if upstream_url else "llama-server"
-            log("NOTE        %s unreachable (%s) — 503 to %s"
-                % (server_name, type(e).__name__, req.remote))
-            msg = ("%s is not reachable. It is probably restarting; "
-                   "try again in a few seconds." % ("Vision server" if upstream_url else "llama-server"))
+            log("NOTE        llama-server unreachable (%s) — 503 to %s"
+                % (type(e).__name__, req.remote))
+            msg = ("llama-server is not reachable. It is probably restarting; "
+                   "try again in a few seconds.")
             if resp is not None:
                 await resp.write(sse_error(503, msg))
                 await resp.write_eof()

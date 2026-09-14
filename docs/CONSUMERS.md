@@ -585,20 +585,18 @@ contains no text block at all. Size it generously even for short answers.
   limit never bites. Without `stream: true` you have no such protection — see
   "If you access it with scripts" above.
 
-## Vision and Multimodal Support
-
-The stack offers two complementary vision paths:
-
-1. **Integrated Halogen Vision Tower**: The primary GPU model (Halogen Qwen 3.8 Flash-Next) has its vision tower enabled (`HALOGEN_VISION_TOWER=1`). When chatting directly through Claude Code, DeepSeek Harness, or Cursor, image content blocks are embedded directly in the conversation context.
-2. **Dedicated CPU Vision Sidecar (`qwen3-vl-4b` / `vision`)**: A standalone `Qwen3-VL-4B` instance running on 8 Zen 5 CPU cores (CCD1: cores 8–15). Perfect for batch image tagging (e.g. Unity Asset Inventory), automated asset classification, or sub-agent image inspectors without consuming GPU memory or locking Halogen's KV cache.
-   - **Endpoint**: `/v1/chat/completions` (OpenAI format) or `/v1/messages` (Anthropic format).
-   - **Model name**: `qwen3-vl-4b` or `vision`.
-   - **Concurrency**: Governed by `VISION_GATE`, running in parallel with Halogen GPU coding turns with zero mutual blocking.
-   - **Lifecycle**: Starts automatically on-demand and stops after 60 minutes of inactivity to release RAM.
-
 ## What you should not expect
 
-- **One active user at a time on GPU.** There is one GPU. A cold start on the GPU sets the pace. That is why the gateway prioritises local requests over remote ones. The CPU Vision sidecar, however, runs concurrently with the GPU model.
+- **Vision is a property of the SERVED MODEL**, so check `/v1/models`
+  (`capabilities`) rather than trusting this list. The model served since
+  01.09. (`flashnext`) is text-only — no converted projector exists for it —
+  and `/v1/models` reports `capabilities: ["completion"]` (checked
+  02.09.2026). This entry has been wrong in both directions now: it said
+  "no vision" while a projector was loaded (until 25.08.) and "vision works"
+  while a text-only model served (until 02.09.).
+- **One active user at a time.** There is one GPU and one model in memory. A
+  foreign cold start blocks everyone else for its duration (measured: 98 s).
+  That is why the gateway prioritises local requests over remote ones.
 - **No replacement for a flagship model.** How good the model IS at your work
   is not something this repo measures — plenty of other people benchmark
   models, and a home-grown battery would age badly and be argued with. What is

@@ -101,7 +101,6 @@ link_ "$REPO/tools/prewarm.py"        "$LIB/prewarm.py"
 link_ "$SRC/waitformodel"             "$LIB/waitformodel"
 link_ "$SRC/llamaexec"                "$LIB/llamaexec"
 link_ "$SRC/halogenexec"              "$LIB/halogenexec"
-link_ "$SRC/visionexec"               "$LIB/visionexec"
 # The memory guard, and the two modules it is made of. budget.py imports
 # systemdfile.py from its OWN directory, so the pair travels together — the
 # same rule that keeps dialects.py next to gateway.py, and for the same
@@ -143,8 +142,6 @@ link_ "$SRC/systemd/halogen-qwen38.service" \
       "$HOME/.config/systemd/user/halogen-qwen38.service"
 link_ "$SRC/systemd/halogen.service" \
       "$HOME/.config/systemd/user/halogen.service"
-link_ "$SRC/systemd/llama-vision.service" \
-      "$HOME/.config/systemd/user/llama-vision.service"
 link_ "$SRC/systemd/prefix-cleanup.service" \
       "$HOME/.config/systemd/user/prefix-cleanup.service"
 link_ "$SRC/systemd/llama-probe.service" \

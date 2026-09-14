@@ -957,7 +957,8 @@ class TestModesComeFromTheProfile(GatewayOnTheWire):
         self.assertEqual(offered, ["qwen38", "qwen38-none",
                                    "qwen38-low", "qwen38-medium",
                                    "local", "local-none",
-                                   "local-low", "local-medium"])
+                                   "local-low", "local-medium",
+                                   "qwen3-vl-4b", "vision"])
 
     async def test_the_old_blob_still_works_where_no_profile_declares_modes(self):
         """Migration: a profile that has not been given MODES yet must keep
@@ -3246,6 +3247,63 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(b"data: done\n\n", written)
         finally:
             GW.STREAM_KEEPALIVE_INTERVAL = old_interval
+
+
+class TestVisionRouting(GatewayOnTheWire):
+    """Vision requests bypass GATE.enter() and forward to VISION_URL."""
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.vision_seen = []
+        async def vllama(request):
+            self.vision_seen.append((request.method, request.path_qs, await request.read()))
+            if request.path == "/health":
+                return web.json_response({"status": "ok"})
+            return web.json_response({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "choices": [{"message": {"role": "assistant", "content": "A 2D pixel art mining scene"}}]
+            })
+        vapp = web.Application()
+        vapp.router.add_route("*", "/{tail:.*}", vllama)
+        self.vserver = TestServer(vapp)
+        await self.vserver.start_server()
+        self.backup_vision = {
+            "VISION_URL": GW.VISION_URL,
+            "VISION_IDLE_TIMEOUT": GW.VISION_IDLE_TIMEOUT,
+        }
+        GW.VISION_URL = str(self.vserver.make_url("")).rstrip("/")
+        GW.VISION_IDLE_TIMEOUT = 0
+
+    async def asyncTearDown(self):
+        for k, v in self.backup_vision.items():
+            setattr(GW, k, v)
+        await self.vserver.close()
+        await super().asyncTearDown()
+
+    async def test_vision_routing_routes_to_vision_server(self):
+        payload = {
+            "model": "qwen3-vl-4b",
+            "messages": [{"role": "user", "content": "What is in this image?"}]
+        }
+        r = await self.fetch("/v1/chat/completions", payload=payload)
+        self.assertEqual(r.status, 200)
+        data = await r.json()
+        self.assertIn("pixel art", data["choices"][0]["message"]["content"])
+        inference_reqs = [req for req in self.vision_seen if req[1] != "/health"]
+        self.assertEqual(len(inference_reqs), 1)
+        self.assertEqual(len(self.seen), 0)
+        forwarded_body = json.loads(inference_reqs[0][2].decode("utf-8"))
+        self.assertEqual(forwarded_body["model"], "qwen3-vl-4b")
+
+    async def test_vision_gate_does_not_block_main_gate(self):
+        payload = {
+            "model": "vision",
+            "messages": [{"role": "user", "content": "Describe style"}]
+        }
+        r = await self.fetch("/v1/chat/completions", payload=payload)
+        self.assertEqual(r.status, 200)
+        self.assertEqual(GW.GATE.depth(), 0)
+        self.assertEqual(GW.GATE.free, 2)
 
 
 if __name__ == "__main__":

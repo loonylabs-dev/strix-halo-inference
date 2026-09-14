@@ -373,15 +373,15 @@ The disk read comes from the model's architecture: Qwen 3.8 Flash-Next holds
 the NVMe SSD and is read on-demand via the Linux page cache during prompt prefill.
 While reading uncached table entries, the GPU waits on I/O. As soon as prefill
 completes and decoding begins, SSD traffic drops to zero and the GPU runs fully
-compute-bound at ~40–50 tokens/s.
+compute-bound at ~48–56 tokens/s (with Prompt Lookup Decoding and MTP active).
 
 ### Concurrency, timeouts, and Gateway arbitration
 
-On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full speed (~45–50 tokens/s) when a request runs alone (`speculates while alone`). Admitting multiple requests concurrently on the engine disables MTP speculation and causes chunked prefill/decode time-slicing across the 47.7 GiB disk table, starving decoding sessions to ~1 token/minute and risking client-side read timeouts (such as DSH's `pi ai stream idle timeout 300000ms` or Cloudflare 524).
+On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full speed (~48–56 tokens/s with PLD) when a request runs alone (`speculates while alone`). Admitting multiple requests concurrently on the engine disables MTP speculation and causes chunked prefill/decode time-slicing across the 47.7 GiB disk table, starving decoding sessions and risking client-side read timeouts (such as DSH's `pi ai stream idle timeout 300000ms` or Cloudflare 524). Furthermore, on Halogen 0.6.3, cold-start prompt loading parallelizes N-gram disk reads across 64 threads (`HALOGEN_NGRAM_GATHER_THREADS`), cutting cold table lookup times from minutes down to seconds even on 150k+ token sessions.
 
-The gateway protects against this:
-1. **Serialised GPU execution (`MAX_INFLIGHT=1`)**: Requests are queued and served one by one at full MTP decode speed. While in the queue or awaiting upstream prefill, the gateway emits periodic SSE keepalive comments / Anthropic pings every 15 seconds, preventing timeouts and retry storms.
-2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 262,144-position KV pool. Multiple client sessions (e.g. DSH and a second chat) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
+The gateway protects against contention:
+1. **Serialised GPU execution (`MAX_INFLIGHT=1`)**: Requests are queued and served one by one at full MTP + PLD decode speed. While in the queue or awaiting upstream prefill, the gateway emits periodic SSE keepalive comments / Anthropic pings every 10 seconds (`QUEUE_KEEPALIVE=10`), preventing client read timeouts (such as DSH's 40s timeout or Cloudflare 524).
+2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 524,288-position KV pool. Multiple client sessions (e.g. DSH main coding at 112k+ and background resource inspector at 71k+) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
 
 The prefix rules of the last section apply unchanged: the id is formed
 from the system prompt and the tool block, so a changed plugin set means
@@ -585,18 +585,20 @@ contains no text block at all. Size it generously even for short answers.
   limit never bites. Without `stream: true` you have no such protection — see
   "If you access it with scripts" above.
 
+## Vision and Multimodal Support
+
+The stack offers two complementary vision paths:
+
+1. **Integrated Halogen Vision Tower**: The primary GPU model (Halogen Qwen 3.8 Flash-Next) has its vision tower enabled (`HALOGEN_VISION_TOWER=1`). When chatting directly through Claude Code, DeepSeek Harness, or Cursor, image content blocks are embedded directly in the conversation context.
+2. **Dedicated CPU Vision Sidecar (`qwen3-vl-4b` / `vision`)**: A standalone `Qwen3-VL-4B` instance running on 8 Zen 5 CPU cores (CCD1: cores 8–15). Perfect for batch image tagging (e.g. Unity Asset Inventory), automated asset classification, or sub-agent image inspectors without consuming GPU memory or locking Halogen's KV cache.
+   - **Endpoint**: `/v1/chat/completions` (OpenAI format) or `/v1/messages` (Anthropic format).
+   - **Model name**: `qwen3-vl-4b` or `vision`.
+   - **Concurrency**: Governed by `VISION_GATE`, running in parallel with Halogen GPU coding turns with zero mutual blocking.
+   - **Lifecycle**: Starts automatically on-demand and stops after 60 minutes of inactivity to release RAM.
+
 ## What you should not expect
 
-- **Vision is a property of the SERVED MODEL**, so check `/v1/models`
-  (`capabilities`) rather than trusting this list. The model served since
-  01.09. (`flashnext`) is text-only — no converted projector exists for it —
-  and `/v1/models` reports `capabilities: ["completion"]` (checked
-  02.09.2026). This entry has been wrong in both directions now: it said
-  "no vision" while a projector was loaded (until 25.08.) and "vision works"
-  while a text-only model served (until 02.09.).
-- **One active user at a time.** There is one GPU and one model in memory. A
-  foreign cold start blocks everyone else for its duration (measured: 98 s).
-  That is why the gateway prioritises local requests over remote ones.
+- **One active user at a time on GPU.** There is one GPU. A cold start on the GPU sets the pace. That is why the gateway prioritises local requests over remote ones. The CPU Vision sidecar, however, runs concurrently with the GPU model.
 - **No replacement for a flagship model.** How good the model IS at your work
   is not something this repo measures — plenty of other people benchmark
   models, and a home-grown battery would age badly and be argued with. What is

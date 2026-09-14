@@ -58,8 +58,8 @@ IMAGE="$(halogen_image "$FLAVOR")"
 # The sha256 of /halogen/tools/serve_api.py and tool_parse.py in the image
 # the vendored copies were cut from. Written in their headers too; compared
 # by tests/test_halogen.py so they cannot drift apart.
-BASE_SHA256="d6fe7165e884817f41790bf1db865c78bb19679672a7d9d8a9c36de80e6dd598"
-TOOL_PARSE_BASE_SHA256="34606f21488f7a2c7acfac45d192f097d137284eddb0c34f3815af54103d0d54"
+BASE_SHA256="ada3bee2da0baf5efe6cd2be82e9899e909f558bbe36c17452878affc4dd4f2d"
+TOOL_PARSE_BASE_SHA256="8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4"
 
 EXTRA_MOUNTS=()
 PATCHED="$REPO/setup/halogen/serve_api.py"
@@ -147,13 +147,10 @@ if [ -n "$VISION_WANT" ]; then
 fi
 
 POOL_WANT="${HALOGEN_KV_POOL_POSITIONS:-$(local_var HALOGEN_KV_POOL_POSITIONS 2>/dev/null || true)}"
-if [ -z "$POOL_WANT" ]; then
-  if [ -n "$VISION_WANT" ]; then
-    POOL_WANT=262144
-  else
-    POOL_WANT=524288
-  fi
-fi
+POOL_WANT="${POOL_WANT:-524288}"
+
+MAX_TOK_WANT="${HALOGEN_MAX_TOK:-$(local_var HALOGEN_MAX_TOK 2>/dev/null || true)}"
+MAX_TOK_WANT="${MAX_TOK_WANT:-16384}"
 
 if [ "$FLAVOR" = "qwen38" ]; then
   SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"
@@ -178,7 +175,7 @@ if [ "$FLAVOR" = "qwen38" ]; then
     "$IMAGE"
 fi
 
-echo "halogenexec: starting Halogen Flash Server (Qwen3.8-Flash-Next) from $MODELS_DIR on port $HOST_PORT (slots: $SLOTS_WANT, pool: $POOL_WANT)..."
+echo "halogenexec: starting Halogen Flash Server (Qwen3.8-Flash-Next) from $MODELS_DIR on port $HOST_PORT (slots: $SLOTS_WANT, pool: $POOL_WANT, max_tok: $MAX_TOK_WANT)..."
 exec podman run --rm \
   --name halogen \
   --device /dev/kfd \
@@ -190,6 +187,7 @@ exec podman run --rm \
   -e HALOGEN_API_PORT="$HOST_PORT" \
   -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
   -e HALOGEN_KV_POOL_POSITIONS="$POOL_WANT" \
+  -e HALOGEN_MAX_TOK="$MAX_TOK_WANT" \
   -e HALOGEN_CHECKPOINT=/models/qwen38-flash-next-w4b.hgn \
   -e HALOGEN_ADMIT_CHUNK="${HALOGEN_ADMIT_CHUNK:--1}" \
   "${VISION_ARGS[@]}" \

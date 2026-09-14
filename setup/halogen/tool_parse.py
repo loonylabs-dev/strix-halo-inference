@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.5.6
-#             image digest sha256:c738212d7ecc5f5288f0dca9173b2d0f0188b9fde94e7ee07f074d71f8152d89
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.6.3
+#             image digest sha256:23008b9580b8bdba59c491939d3a7212f728384ddfdb4655b4a580b5b1914645
 #   base file /halogen/tools/tool_parse.py
-#   BASE_SHA256 = 34606f21488f7a2c7acfac45d192f097d137284eddb0c34f3815af54103d0d54
+#   BASE_SHA256 = 8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -14,22 +14,10 @@
 # change to this one file — the shape of defect this repository keeps
 # finding, and the reason setup/patches/ exists for llama.cpp.
 #
-# WHAT IS CHANGED — two hunks against the base above:
-#
-#   1. _parse_block_incremental() / _parse_params_incremental():
-#      The upstream parser in _parse_block() returned None mid-stream whenever
-#      </function> had not yet arrived, and _parse_params() waited for the
-#      closing </parameter> tag before returning any parameter. For large
-#      tool parameters (such as writing a file or HTML code taking thousands
-#      of tokens), this caused 0 bytes of SSE output for >100s, triggering
-#      Cloudflare tunnel idle timeouts (HTTP 524 / 500).
-#   2. ToolStream: Rewritten to support incremental parameter streaming.
-#      As string parameter tokens arrive, they are escaped and streamed
-#      immediately as OpenAI delta.tool_calls[0].function.arguments JSON
-#      fragments, while holding back partial closing tag markers.
-#
-# RETIREMENT: both hunks go when an image ships them — check the upstream
-# changelog on every bump; the mount check refuses the start and says so.
+# WHAT IS CHANGED:
+#   Upstream 0.6.1 officially adopted the incremental tool-call parameter
+#   streaming mechanism (_scan_params, _stream_safe, and ToolStream JSON chunking)
+#   addressing public issue #36. This copy is re-cut from 0.6.3.
 # ===========================================================================
 """tools/tool_parse.py — Qwen3.8 tool-call parsing.
 
@@ -72,7 +60,6 @@ _PARAM_RE = re.compile(r"<parameter=([^>\n]*)>[ \t]*\n?")
 # value containing the literal text '</parameter>' (a tool that writes source
 # code about tools will produce one) closes at the right occurrence.
 _AFTER_END_RE = re.compile(r"\s*(<parameter=|</function>|</tool_call>)")
-HOLD_TAGS = (PARAM_END, "</function>", "</tool_call>", "<parameter=")
 
 
 def new_call_id():
@@ -223,16 +210,17 @@ def _value_end(body, vstart, final):
     return None, None
 
 
-def _parse_params(body, final=True):
-    """-> [(name, raw_value)] for every COMPLETE parameter in a function body."""
+def _scan_params(body, final=True):
+    """-> ([(name, raw_value)] for every COMPLETE parameter in a function
+    body, (name, text_so_far) for the one still being written or None)."""
     out, pos = [], 0
     while True:
         m = _PARAM_RE.search(body, pos)
         if not m:
-            return out
+            return out, None
         end, nxt = _value_end(body, m.end(), final)
         if end is None:
-            return out
+            return out, (m.group(1).strip(), body[m.end():])
         raw = body[m.end():end]
         if raw.endswith("\n"):      # the template's own separator, not data
             raw = raw[:-1]
@@ -240,40 +228,42 @@ def _parse_params(body, final=True):
         pos = nxt
 
 
-def _parse_params_incremental(body, final=True):
-    """-> (completed_params, active_param)
-    where completed_params is [(name, raw_value), ...]
-    and active_param is (name, raw_value_so_far) or None.
+def _parse_params(body, final=True):
+    """-> [(name, raw_value)] for every COMPLETE parameter in a function body."""
+    return _scan_params(body, final)[0]
+
+
+def _stream_safe(sofar):
+    """The prefix of a parameter value still being written that is CERTAIN
+    to be a prefix of the value `_scan_params` will finally return, so it can
+    go on the wire now (public issue #36).
+
+    Three things are held back. Everything from the LAST '</parameter>' on:
+    a value may contain that text (code about tools), and `_value_end`
+    resolves which occurrence closes it only when the text after one is a
+    legal follower, or, at the end, by taking the last one, so nothing after
+    the last occurrence is known to be value. A tail that could be the start
+    of a tag ('<', '</par', '<param'), for the same reason. And trailing
+    whitespace, because the separator newline before the closing tag is not
+    data and a block that ends without its tags is stripped by the block
+    regex; either way it is released the moment a non-blank character
+    follows it. Holding more is always safe, it only delays.
     """
-    completed = []
-    pos = 0
-    while True:
-        m = _PARAM_RE.search(body, pos)
-        if not m:
-            return completed, None
-        vstart = m.end()
-        end, nxt = _value_end(body, vstart, final)
-        pname = m.group(1).strip()
-        if end is not None:
-            raw = body[vstart:end]
-            if raw.endswith("\n"):
-                raw = raw[:-1]
-            completed.append((pname, raw))
-            pos = nxt
-        else:
-            # Active parameter: check if PARAM_END is already present in body
-            p_idx = body.find(PARAM_END, vstart)
-            if p_idx >= 0:
-                raw_active = body[vstart:p_idx]
-                if raw_active.endswith("\n"):
-                    raw_active = raw_active[:-1]
-            else:
-                raw_active = body[vstart:]
-            return completed, (pname, raw_active)
+    j = sofar.rfind(PARAM_END)
+    if j >= 0:
+        sofar = sofar[:j]
+    else:
+        k = sofar.rfind("<")
+        if k >= 0 and (PARAM_END.startswith(sofar[k:])
+                       or "<parameter=".startswith(sofar[k:])):
+            sofar = sofar[:k]
+    return sofar.rstrip()
 
 
 def _parse_block(block, types, final=True):
-    """One <tool_call> body -> (name, [(param, raw)]) or None if malformed."""
+    """One <tool_call> body -> (name, [(param, raw)], pending) or None if
+    malformed. `pending` is the parameter still being written, see
+    `_scan_params`; always None once the block is complete."""
     m = _FUNC_RE.search(block)
     if not m:
         return None
@@ -285,40 +275,12 @@ def _parse_block(block, types, final=True):
     if cut >= 0:
         body = body[:cut]
     elif not final:
-        return None                 # mid-stream: the call is still arriving
+        params, pending = _scan_params(body, final=False)
+        return name, params, pending  # mid-stream: the call is still arriving
     # A complete <tool_call>...</tool_call> whose </function> the model
     # forgot is still a call. The closing tool_call tag already proves the
     # block ended, so refusing it here would drop a real call over a typo.
-    return name, _parse_params(body, final=final)
-
-
-def _parse_block_incremental(block, types, final=True):
-    """One in-progress or complete <tool_call> body -> (name, completed, active, is_func_closed)."""
-    m = _FUNC_RE.search(block)
-    if not m:
-        return None
-    name = m.group(1).strip()
-    if not name:
-        return None
-    body = block[m.end():]
-    cut = body.find("</function>")
-    is_func_closed = cut >= 0
-    if is_func_closed:
-        body = body[:cut]
-    completed, active = _parse_params_incremental(body, final=(final or is_func_closed))
-    return name, completed, active, is_func_closed
-
-
-def _get_safe_len(val):
-    """How much of val is definitely not part of a trailing closing marker."""
-    hold = 0
-    for tag in HOLD_TAGS:
-        for n in range(len(tag) - 1, 0, -1):
-            if val.endswith(tag[:n]):
-                if n > hold:
-                    hold = n
-                break
-    return len(val) - hold
+    return name, _parse_params(body, final=final), None
 
 
 def build_arguments(name, params, types):
@@ -348,7 +310,7 @@ def split_tool_calls(text, tools=None, make_id=new_call_id):
             continue                # leave the raw block inside `content`
         gaps.append(text[pos:m.start()])
         pos = m.end()
-        name, params = parsed
+        name, params, _ = parsed
         calls.append({"id": make_id(), "type": "function",
                       "function": {"name": name,
                                    "arguments": build_arguments(name, params,
@@ -369,17 +331,43 @@ class ToolStream:
     same way ThinkSplit is, because a marker can arrive split across two
     tokens and only the full text is unambiguous.
 
-    Incremental streaming emits parameter JSON fragments as tokens arrive,
-    guaranteeing continuous network traffic and sub-second feedback for
-    agentic tool calls (such as code and file generation) without buffering
-    megabytes until closing tags.
+    GRANULARITY (public issue #36, and the mechanism behind #3). Until 0.6.1
+    nothing left this splitter before '</function>' arrived, so a call's
+    id, name and every argument went out together in one burst: a 150-char
+    bash command was 1.4 s of dead air, a file-writing call was minutes, and
+    Node's undici (a 300 s inactivity timer, no client setting) hung up on
+    the long ones. Now the id+name event goes out as soon as the function
+    tag closes, a non-string parameter goes out when its value closes (the
+    wire carries values untyped, so an integer cannot be typed before its
+    last digit), and a STRING parameter streams: its JSON opening `"key": "`
+    on the parameter tag, then the value as it arrives, JSON-escaped in
+    pieces (the escaping is per character, so pieces concatenate to exactly
+    `json.dumps` of the whole), then the closing quote. What is held back
+    while a value is open is decided by `_stream_safe`. The concatenation of
+    every fragment is byte-identical to the non-streaming `arguments`, which
+    `tools/smoke-toolstream.py` asserts on a battery of hostile values. Only
+    a parameter whose schema says `string` streams; an untyped one takes the
+    lossy guess path at the end, as before.
+
+    A run cut off by max_tokens inside a call now leaves that call's partial
+    arguments on the wire with `finish_reason: "length"`, which is what
+    OpenAI does; the non-streaming path keeps dropping the unfinished call.
     """
 
     def __init__(self, tools=None, make_id=new_call_id):
         self.types = schema_types(tools)
         self.make_id = make_id
         self.sent = ""      # content already emitted
-        self.calls = []     # per-index state dict
+        # per-index: {name, n: params emitted whole, closed,
+        #             open: key of the string parameter mid-stream or None,
+        #             v: chars of its value already on the wire}
+        self.calls = []
+
+    @staticmethod
+    def _esc(s):
+        """JSON-escape a piece of a string value: json.dumps minus the quotes.
+        Per-character, so pieces concatenate to the whole's escaping."""
+        return json.dumps(s, ensure_ascii=False)[1:-1]
 
     def _outside(self, text):
         """Text that is definitely NOT part of a tool call, held back at the
@@ -427,89 +415,60 @@ class ToolStream:
 
         events = []
         for i, (body, complete) in enumerate(self._blocks(full)):
-            parsed = _parse_block_incremental(body, self.types, final=complete)
+            parsed = _parse_block(body, self.types, final=complete)
             if parsed is None:
                 continue
-            name, completed_params, active_param, is_func_closed = parsed
+            name, params, pending = parsed
             while len(self.calls) <= i:
                 self.calls.append(None)
             st = self.calls[i]
             if st is None:
-                st = self.calls[i] = {
-                    "name": name,
-                    "n_completed": 0,
-                    "active_key": None,
-                    "active_streamed_chars": 0,
-                    "closed": False,
-                    "params_opened": 0,
-                    "string_open": False
-                }
+                st = self.calls[i] = {"name": name, "n": 0, "closed": False,
+                                      "open": None, "v": 0}
                 events.append({"index": i, "id": self.make_id(),
                                "type": "function",
                                "function": {"name": name, "arguments": ""}})
             if st["closed"]:
                 continue
-
             fn_types = self.types.get(name, {})
 
-            # 1. Handle newly completed parameters
-            while st["n_completed"] < len(completed_params):
-                k, raw = completed_params[st["n_completed"]]
-                jtype = fn_types.get(k)
-                if st["active_key"] == k and st["string_open"]:
-                    raw_len = len(raw)
-                    if raw_len > st["active_streamed_chars"]:
-                        tail_chunk = raw[st["active_streamed_chars"]:]
-                        frag = json.dumps(tail_chunk, ensure_ascii=False)[1:-1]
-                        if frag:
-                            events.append({"index": i, "function": {"arguments": frag}})
-                    events.append({"index": i, "function": {"arguments": "\""}})
-                    st["string_open"] = False
-                    st["active_key"] = None
-                    st["active_streamed_chars"] = 0
+            def emit(frag):
+                if frag:
+                    events.append({"index": i,
+                                   "function": {"arguments": frag}})
+            for k, raw in params[st["n"]:]:
+                if st["open"] is not None:
+                    # the parameter that was streaming just closed: the
+                    # rest of its value, then the quote. What went out is
+                    # raw[:v] by construction (_stream_safe, and the text
+                    # this is driven by only ever grows).
+                    emit(self._esc(raw[st["v"]:]) + '"')
+                    st["open"], st["v"] = None, 0
                 else:
-                    prefix = "{" if st["params_opened"] == 0 else ", "
-                    frag = prefix + json.dumps(k, ensure_ascii=False) + ": " + \
-                           json.dumps(coerce(raw, jtype), ensure_ascii=False)
-                    events.append({"index": i, "function": {"arguments": frag}})
-                    st["params_opened"] += 1
-                st["n_completed"] += 1
-
-            # 2. Handle active in-progress parameter
-            if active_param is not None and not is_func_closed:
-                ak, a_val = active_param
-                jtype = fn_types.get(ak)
-                is_str = (jtype == "string") or (jtype is None and not a_val.lstrip().startswith(("{", "[")))
-                if is_str:
-                    if st["active_key"] != ak:
-                        prefix = "{" if st["params_opened"] == 0 else ", "
-                        open_frag = prefix + json.dumps(ak, ensure_ascii=False) + ": \""
-                        events.append({"index": i, "function": {"arguments": open_frag}})
-                        st["params_opened"] += 1
-                        st["active_key"] = ak
-                        st["string_open"] = True
-                        st["active_streamed_chars"] = 0
-
-                    safe_len = _get_safe_len(a_val)
-                    if safe_len > st["active_streamed_chars"]:
-                        new_chars = a_val[st["active_streamed_chars"]:safe_len]
-                        chunk_frag = json.dumps(new_chars, ensure_ascii=False)[1:-1]
-                        if chunk_frag:
-                            events.append({"index": i, "function": {"arguments": chunk_frag}})
-                        st["active_streamed_chars"] = safe_len
-
-            # 3. Handle closing
-            if (complete or is_func_closed) and not st["closed"]:
-                if st["string_open"]:
-                    events.append({"index": i, "function": {"arguments": "\""}})
-                    st["string_open"] = False
-                events.append({"index": i, "function": {"arguments": "{}" if st["params_opened"] == 0 else "}"}})
+                    emit(("{" if st["n"] == 0 else ", ")
+                         + json.dumps(k, ensure_ascii=False) + ": "
+                         + json.dumps(coerce(raw, fn_types.get(k)),
+                                      ensure_ascii=False))
+                st["n"] += 1
+            if pending is not None and fn_types.get(pending[0]) == "string":
+                k, sofar = pending
+                if st["open"] is None:
+                    emit(("{" if st["n"] == 0 else ", ")
+                         + json.dumps(k, ensure_ascii=False) + ': "')
+                    st["open"], st["v"] = k, 0
+                safe = _stream_safe(sofar)
+                if len(safe) > st["v"]:
+                    emit(self._esc(safe[st["v"]:]))
+                    st["v"] = len(safe)
+            if complete:
+                events.append({"index": i,
+                               "function": {"arguments":
+                                            "{}" if st["n"] == 0 else "}"}})
                 st["closed"] = True
-
         return delta, events
 
     def any_calls(self):
-        return any(c and (c["closed"] or c["params_opened"] > 0) for c in self.calls)
+        return any(c and c["closed"] for c in self.calls)
 
 
 def normalize_messages(messages):
@@ -540,6 +499,12 @@ def normalize_messages(messages):
         m = dict(m)
         if m.get("role") == "function":     # legacy client spelling
             m["role"] = "tool"
+        # Public issue #32: OpenAI's `developer` role is what clients send
+        # for a reasoning model's instructions (pi does, for every model it
+        # marks as reasoning), and this template only knows `system`. They
+        # mean the same thing here; the template rejected it with a 400.
+        if m.get("role") == "developer":
+            m["role"] = "system"
         tcs = m.get("tool_calls")
         if m.get("role") == "assistant" and isinstance(tcs, list):
             fixed = []

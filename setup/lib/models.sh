@@ -118,7 +118,7 @@ workload_meta() {       # $1 = workload, $2 = variable, $3 = default
 # out: bump one and the others serve or MEASURE a different version while
 # reporting the new one. That is the six-places failure at the top of this
 # file, one backend later.
-HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.5.6"
+HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.6.3"
 HALOGEN_27B_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen:0.1.3"
 
 halogen_image() {
@@ -198,7 +198,7 @@ models_serving() {
   local pid
   for pid in $(pgrep -x llama-server 2>/dev/null); do
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null \
-      | awk '$0=="--alias"{getline; print; exit}'
+      | awk 'BEGIN{p="8080"} $0=="--port"{getline; p=$0} $0=="--alias"{getline; a=$0} END{if (p=="8080" && a!="") print a}'
   done | sort -u
   # The container backend has no --alias to read and no llama-server process
   # to find, so the question is asked of ITS process instead.

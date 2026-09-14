@@ -33,7 +33,7 @@ class TestToolParseHeaderAndBaseSha(unittest.TestCase):
         m = re.search(r"BASE_SHA256\s*[:=]\s*([0-9a-f]{64})", head)
         self.assertEqual(
             m.group(1),
-            "34606f21488f7a2c7acfac45d192f097d137284eddb0c34f3815af54103d0d54",
+            "8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4",
             "BASE_SHA256 does not match the cut copy in the pinned image")
 
 

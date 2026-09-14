@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.5.6
-#             image digest sha256:c738212d7ecc5f5288f0dca9173b2d0f0188b9fde94e7ee07f074d71f8152d89
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.6.3
+#             image digest sha256:23008b9580b8bdba59c491939d3a7212f728384ddfdb4655b4a580b5b1914645
 #   base file /halogen/tools/serve_api.py
-#   BASE_SHA256 = d6fe7165e884817f41790bf1db865c78bb19679672a7d9d8a9c36de80e6dd598
+#   BASE_SHA256 = ada3bee2da0baf5efe6cd2be82e9899e909f558bbe36c17452878affc4dd4f2d
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -118,10 +118,40 @@ VIS_MIN_PIXELS = 256 * 256
 # 5.5 / 11.8 / 25.3 / 105.8 s at 1280x800 / 1080p / 1440p / 4K and reads no
 # better above 1440p. Oversize is DOWNSCALED here, not refused.
 VIS_MAX_PIXELS = int(os.environ.get("HALOGEN_VISION_MAX_PIXELS", 2560 * 1440))
+# The image stamps its release into HALOGEN_IMAGE_VERSION (the Containerfile
+# sets it from the same VERSION build arg as the OCI label). Public issue #26
+# was an api at 0.4.4 in front of an engine at 0.5.6, and nothing in either
+# container's log or in /health said a version, so a user reading both had no
+# way to see they disagreed. The engine reports its own on the INFO line and
+# this front-end compares; see version_status().
+API_VERSION = (os.environ.get("HALOGEN_IMAGE_VERSION") or "unknown").strip() \
+    or "unknown"
 # Resolved from the tokenizer at startup, never hardcoded: the id is 248056 on
 # this checkpoint and a literal would be one more fork leftover waiting to
 # happen.
 IMAGE_TOKEN_ID = None
+# PUBLIC ISSUE #39: A MENTION OF THE PLACEHOLDER IS NOT A PLACEHOLDER.
+#
+# The tokenizer parses added tokens out of ordinary text, so a user who
+# types `<|image_pad|>` (a pasted log, a quoted traceback, a bug report
+# about this server) or a model that prints it produces the SPECIAL id, the
+# same id the chat template writes for an image part. The engine refuses
+# that id when no image covers it (public issue #26), and the refusal is
+# right for a rendered placeholder with no pixels behind it and wrong for a
+# mention: the next turn re-tokenizes the history, so one mention anywhere
+# in a conversation, by either side, made every later turn a 400.
+#
+# A mention now becomes the ordinary tokens of its own spelling (`<`, `|`,
+# `image`, `_pad`, `|`, `>` on this tokenizer), decided on IDS after
+# tokenization, so the model reads the same characters and the engine never
+# sees an uncovered placeholder. Which pads are the template's is decided by
+# what the template writes -- see textify_pad_mentions(). The rest of the
+# vision family is resolved here for that test; the text spellings are
+# computed from the tokenizer, and CHECKED to decode back to the name.
+VIDEO_TOKEN_ID = None
+VISION_START_ID = None
+VISION_END_ID = None
+PAD_TEXT_IDS = {}
 
 
 def pillow_ready():
@@ -145,13 +175,136 @@ _PILLOW = None
 
 
 def vis_resolve_token(tok):
-    global IMAGE_TOKEN_ID
-    for name in ("<|image_pad|>",):
+    global IMAGE_TOKEN_ID, VIDEO_TOKEN_ID, VISION_START_ID, VISION_END_ID
+
+    def one(name):
         i = tok.convert_tokens_to_ids(name)
-        if isinstance(i, int) and i >= 0:
-            IMAGE_TOKEN_ID = i
-            return i
-    return None
+        return i if isinstance(i, int) and i >= 0 else None
+    IMAGE_TOKEN_ID = one("<|image_pad|>")
+    VIDEO_TOKEN_ID = one("<|video_pad|>")
+    VISION_START_ID = one("<|vision_start|>")
+    VISION_END_ID = one("<|vision_end|>")
+    PAD_TEXT_IDS.clear()
+    for name, sid in (("<|image_pad|>", IMAGE_TOKEN_ID),
+                      ("<|video_pad|>", VIDEO_TOKEN_ID)):
+        if sid is None:
+            continue
+        # The placeholder's spelling as TEXT: what the tokenizer produces
+        # when told not to parse special tokens. Verified rather than
+        # trusted: the pieces must decode back to the name and none may
+        # be the special id itself, or a "mention" would still be a
+        # placeholder. A tokenizer that fails this keeps the old behaviour
+        # (the engine's refusal), and says so at startup.
+        try:
+            plain = list(tok(name, add_special_tokens=False,
+                             split_special_tokens=True)["input_ids"])
+        except TypeError:
+            plain = []
+        if plain and sid not in plain and tok.decode(plain) == name:
+            PAD_TEXT_IDS[sid] = plain
+        else:
+            print(f"serve_api: {name} has no text spelling on this "
+                  f"tokenizer; a message that mentions it will be refused "
+                  f"by the engine (issue #39)", flush=True)
+    return IMAGE_TOKEN_ID
+
+
+def textify_pad_mentions(ids, snap=0, snap2=0, n_images=0):
+    """-> (ids, snap, snap2, n): every vision placeholder id that is only
+    MENTIONED becomes the ordinary tokens of its spelling (issue #39).
+
+    Which pads are the template's, decided by what the template writes: an
+    image part renders as `<|vision_start|><|image_pad|><|vision_end|>` and
+    nothing else in the template emits a pad. So when the request carries
+    images, a pad flanked by that pair is the template's and every other
+    pad is a mention; when it carries none, every pad is a mention. A video
+    pad is always a mention, because a `video` content part is refused
+    before the template runs (vis_collect), so no template ever wrote one.
+
+    The one shape this cannot tell apart: a user who types the whole triple
+    AND attaches images in the same request. That pad is counted as the
+    template's, the count no longer matches the images, and
+    expand_image_pads() refuses with both numbers -- a 400 that names
+    itself, never a silently misplaced image.
+
+    The tokenization at a mention is `' '`, `'<'`, `'|'`, ... rather than
+    the `' <|'`, ... a plain-text tokenization of the same characters would
+    give, because the special token was a hard boundary for its
+    neighbours. The characters are identical; only the split differs, and
+    only at the mention. Every request without a mention is untouched.
+
+    SNAP and SNAP2 are token COUNTS into `ids`, so growth before either
+    shifts it. Both are read from their ORIGINAL values: the shifted value
+    is never compared against the running index, which is the mistake
+    expand_image_pads() used to make.
+    """
+    if not PAD_TEXT_IDS or not any(v in PAD_TEXT_IDS for v in ids):
+        return ids, snap, snap2, 0
+    out, grown, n = [], 0, 0
+    snap0, snap20, last = snap, snap2, len(ids) - 1
+    for i, v in enumerate(ids):
+        plain = PAD_TEXT_IDS.get(v)
+        templ = (v == IMAGE_TOKEN_ID and n_images > 0 and 0 < i < last
+                 and ids[i - 1] == VISION_START_ID
+                 and ids[i + 1] == VISION_END_ID)
+        if plain is not None and not templ:
+            out.extend(plain)
+            grown += len(plain) - 1
+            n += 1
+        else:
+            out.append(v)
+        if snap0 and i == snap0 - 1:
+            snap = snap0 + grown
+        if snap20 and i == snap20 - 1:
+            snap2 = snap20 + grown
+    return out, snap, snap2, n
+
+
+def expand_image_pads(ids, snap, snap2, images):
+    """One `<|image_pad|>` per image becomes `ntok` of them.
+
+    The template writes `<|vision_start|><|image_pad|><|vision_end|>`, one
+    pad per image, and the engine needs one token per merged patch. The
+    expansion happens on IDS, after tokenization, because the pad is a
+    special token the tokenizer never merges across, so its positions are
+    exact.
+
+    SNAP and SNAP2 are token COUNTS into this same list, so every
+    expansion before them shifts them; getting that wrong would point the
+    prompt cache's snapshot into the middle of an image and silently cost
+    every warm turn.
+    """
+    if not images:
+        return ids, snap, snap2, []
+    pads = [i for i, v in enumerate(ids) if v == IMAGE_TOKEN_ID]
+    if len(pads) != len(images):
+        raise HTTPException(400, f"the chat template emitted {len(pads)} "
+                                 f"image placeholders for {len(images)} "
+                                 f"images")
+    out, placed, grown, k = [], [], 0, 0
+    # Read the ORIGINAL counts. This used to compare the running index
+    # against the SHIFTED snap, so once a shift had happened the test
+    # fired again at the new value and added the growth a second time,
+    # and a third, for as long as the prompt lasted. Latent for an
+    # image, whose growth (63 tokens at the smallest size) outruns the
+    # few-token assistant opener that follows the history point, so the
+    # shifted value was never reached; found when issue #39's five-token
+    # growth per mention did not outrun it.
+    snap0, snap20 = snap, snap2
+    for i, v in enumerate(ids):
+        if k < len(pads) and i == pads[k]:
+            H, W, _rgb, ntok = images[k]
+            placed.append((len(out), H, W))
+            out.extend([IMAGE_TOKEN_ID] * ntok)
+            grown += ntok - 1
+            k += 1
+        else:
+            out.append(v)
+        if snap0 and i == snap0 - 1:
+            snap = snap0 + grown
+        if snap20 and i == snap20 - 1:
+            snap2 = snap20 + grown
+    return out, snap, snap2, placed
 
 
 def vis_smart_resize(height, width, factor=VIS_UNIT,
@@ -244,6 +397,15 @@ def vis_collect(msgs):
             elif item.get("type") == "image" or "image" in item:
                 v = item.get("image")
                 out.append(vis_decode_part(v if isinstance(v, str) else ""))
+            elif item.get("type") == "video" or "video" in item:
+                # Refused HERE, before the template writes its
+                # `<|video_pad|>`: the engine has no video path and would
+                # refuse the pad on the D line, which on a streaming request
+                # arrives after the headers (issue #39). Refusing every
+                # template video pad up front is also what lets
+                # textify_pad_mentions() treat every video pad as a mention.
+                raise ValueError("this server has no video path; a `video` "
+                                 "content part cannot be served")
     return out
 
 def oai_error(status, message, code=None):
@@ -271,6 +433,43 @@ FIRST_TOKEN_S = 1800.0   # waits out PREFILL; a cold 262K prompt is ~19 min
 NEXT_TOKEN_S = 300.0     # between tokens a round is sub-second; minutes = wedge
 ABORT_DRAIN_S = 10.0     # resync is an optimization; reconnecting is correct
 
+# PUBLIC ISSUE #25: HOW LONG AN IDLE POOLED CONNECTION LIVES.
+#
+# uvicorn's default is 5 seconds and this file never set it, so every client
+# that idled longer than that between turns found its pooled socket closed and
+# its next request failing. The reporter bracketed it precisely: reuse at 1, 2,
+# 3 and 4 s idle all 200, reuse at 5, 6 and 8 s all RemoteDisconnected, with
+# back-to-back reuse at zero idle passing, which is the control that rules out
+# a server closing after every response.
+#
+# Five seconds is a web default and this is not a web server. The normal client
+# here is an agent that idles for the length of a tool call, a file write, or a
+# person reading the last answer, and `POST` is not idempotent so undici will
+# not transparently retry on a fresh socket the way it would for a `GET`. The
+# failure therefore reaches the user rather than being absorbed.
+#
+# An idle HTTP connection holds a file descriptor and a task. It holds no
+# engine slot and no KV, so it is uncoupled from HALOGEN_KV_SLOTS and there is
+# no reason for this to be stingy. 300 s is the reporter's suggestion and is
+# arbitrary past a few minutes; the KNOB is the fix, not the number. The race
+# is inherent to HTTP keep-alive either way -- a server may close at the moment
+# a client writes -- so a client that pools connections should still retry on a
+# fresh socket. What the 5 s default did was make a rare race constant.
+KEEPALIVE_S = float(os.environ.get("HALOGEN_KEEPALIVE_TIMEOUT", 300.0))
+
+# PUBLIC ISSUES #3 AND #36: A STREAM THAT GOES QUIET GETS HUNG UP ON.
+#
+# Node's undici, which Pi and Qwen Code are built on, kills a response body
+# that is silent for 300 s (`bodyTimeout`, no setting in either client), and
+# #3's reporter showed that re-chunking the identical bytes through a proxy
+# made every failure disappear. Two things made this server silent for that
+# long: tool-call arguments were flushed as one burst (#36, fixed in
+# tool_parse.ToolStream), and a prefill sends nothing until its first token
+# (a cold 262k prompt is minutes). An SSE comment line (`: keepalive`) is
+# invisible to every SSE parser and resets every inactivity timer, so one
+# goes out whenever nothing else has for this many seconds. 0 disables it.
+SSE_KEEPALIVE_S = float(os.environ.get("HALOGEN_SSE_KEEPALIVE_S", 10.0))
+
 
 class EngineBusy(HTTPException):
     def __init__(self):
@@ -278,6 +477,23 @@ class EngineBusy(HTTPException):
                          detail="timed out waiting for the engine: "
                                 "halogen serves one request at a time "
                                 "(batch-1) and the queue did not clear")
+
+
+def engine_refusal(parts):
+    """The message for an engine `D <req> error ...` line.
+
+    The engine now writes its reason after the six fixed fields, so
+    the client reads the same sentence the engine log does. Before that the
+    reason went only to stderr and this text had to GUESS: the first version
+    blamed prompt length for what was usually an unsupported field, and the
+    second refused to guess at all. An older engine still sends the bare
+    line, and gets the no-guess text.
+    """
+    why = " ".join(parts[7:]).strip()
+    if why:
+        return "the engine refused this request: " + why
+    return ("the engine rejected this request. Check /health for what this "
+            "build supports, and that the prompt fits the context.")
 
 
 class Engine:
@@ -527,13 +743,23 @@ class Engine:
                         # project has now shipped four times. Absent (an
                         # older engine) = no, which is what an older engine
                         # is.
-                        "vision": len(p) >= 17 and p[16] == "1"}
+                        "vision": len(p) >= 17 and p[16] == "1",
+                        # The engine's release, from ITS image's stamp (#26).
+                        # Absent = an engine older than the field, which is
+                        # itself the answer: it predates this front-end.
+                        "version": p[17] if len(p) >= 18 else "unknown",
+                        # Prompt lookup beside the head: the n-gram length
+                        # matched against the request's own context and the
+                        # chain length proposed; 0 = off. Absent (an older
+                        # engine) = none.
+                        "pld_n": int(p[18]) if len(p) >= 20 else 0,
+                        "pld_k": int(p[19]) if len(p) >= 20 else 0}
         except Exception:
             pass
         return {"mtp": False, "draft_head": False, "default": 0,
                 "kv_slots": 1, "slot_ctx": 0, "cache_mode": 1,
                 "sampling": False, "rope_factor": 1.0, "kv_pool": 0,
-                "vision": False}
+                "vision": False, "version": "unknown"}
 
     async def _ensure(self):
         if self.w is None or self.w.is_closing():
@@ -562,6 +788,11 @@ class Engine:
             d["commit"] = int(parts[9])
         if len(parts) >= 11:            # an earlier change prompt cache
             d["n_cached"] = int(parts[10])
+        if len(parts) >= 12:            # issue #22: tokens produced beside
+            d["shared"] = int(parts[11])   # other streams (inside commit)
+        if len(parts) >= 14:            # prompt-lookup rounds (among
+            d["pld_rounds"] = int(parts[12])   # rounds) and the drafts they
+            d["pld_accepted"] = int(parts[13])  # accepted (inside commit)
         return d
 
     async def _gen_batched(self, req, line):
@@ -600,8 +831,7 @@ class Engine:
                            float(parts[3]) if len(parts) > 3 else None)
                 elif parts[0] == "D":
                     if parts[2] == "error":
-                        raise HTTPException(400, "engine rejected the request "
-                                                 "(prompt longer than a slot?)")
+                        raise HTTPException(400, engine_refusal(parts))
                     finished = True
                     yield None, self._done_dict(parts), None
                     return
@@ -734,15 +964,7 @@ class Engine:
             elif parts[0] == "D" and int(parts[1]) == req:
                 self.active = None
                 if parts[2] == "error":
-                    # Do NOT guess a cause here. This fires for any engine
-                    # refusal, and the old text blamed prompt length for what
-                    # was usually an unsupported field. Sampling now rejects
-                    # up front with its own message; whatever reaches here is
-                    # genuinely unexplained, so say that.
-                    raise HTTPException(400, "the engine rejected this "
-                                             "request. Check /health for what "
-                                             "this build supports, and that "
-                                             "the prompt fits the context.")
+                    raise HTTPException(400, engine_refusal(parts))
                 yield None, self._done_dict(parts), None
                 return
 
@@ -767,8 +989,13 @@ class Engine:
             p = raw.decode().split()
         if not p or p[0] != "C" or len(p) < 10:
             return None
+        # 0.6.1 (issue #31): `reserved_bytes` and `cap_bytes` were stand-ins
+        # from when the cache held one entry (and so were `entries` and
+        # `evicted`, which are real now). Field 3 is the size of one entry,
+        # the last stored; field 4 is HALOGEN_CACHE_ENTRIES. Named for what
+        # they are; an engine older than 0.6.1 still fills the positions.
         d = {"entries": int(p[1]), "bytes": int(p[2]),
-             "reserved_bytes": int(p[3]), "cap_bytes": int(p[4]),
+             "last_entry_bytes": int(p[3]), "max_entries": int(p[4]),
              "hits": int(p[5]), "misses": int(p[6]), "stores": int(p[7]),
              "evicted": int(p[8]), "prompt_tokens_saved": int(p[9])}
         if len(p) >= 14:   # trailing: the cache's own copy cost, an earlier change
@@ -840,10 +1067,133 @@ class Engine:
         await self.close()
 
 
+# OpenAI effort vocabulary -> what this template actually accepts.
+EFFORT_MAP = {"minimal": "low", "low": "low", "medium": "medium",
+              "high": "xhigh", "xhigh": "xhigh"}
+
+
+# PUBLIC ISSUE #30: SERVER-SIDE DEFAULTS FOR WHAT A CLIENT MAY OMIT.
+#
+# Most agent clients send no sampling fields at all, and this server's
+# built-in default is greedy because greedy is what every identity gate
+# certifies. Qwen's own operating point for this model is SAMPLED in every
+# mode (generation_config.json ships do_sample: true, T=1.0, top_p=0.95,
+# top_k=20), so until now an operator who wanted the model card's settings
+# needed every client to cooperate. These variables give the OPERATOR a
+# default for each field a request may leave out. The rules:
+#
+#   * A field the request SENDS always wins; a default only fills a field the
+#     request left out, one field at a time. That is the whole contract.
+#   * A request that sends `temperature: 0` decodes greedy and takes NONE of
+#     the sampling defaults: it chose greedy, and greedy has no sampler for a
+#     top_p or a penalty to apply to. A request that omits temperature gets
+#     the server's, if set, and samples.
+#   * A bad value refuses to START, with the variable named, rather than
+#     serving something else. An out-of-range request value is a 400 today
+#     for the same reason; an out-of-range default would silently make every
+#     request that 400, which is worse.
+#   * Setting HALOGEN_TEMPERATURE moves every unadorned request off the greedy
+#     path, and the greedy path is the only one the bitwise guarantees are
+#     made on. /health says which path the default takes, so a client can
+#     read it rather than infer it.
+#
+# Read once at import, so that a misconfiguration is found when the api
+# starts (`--check-defaults` lets the entrypoint find it BEFORE the engine
+# spends minutes pinning the checkpoint).
+def _env_number(name, lo, hi, kind):
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        v = kind(raw)
+    except ValueError:
+        raise SystemExit(f"serve_api: {name}={raw!r} is not a "
+                         f"{'whole number' if kind is int else 'number'}")
+    if not (lo <= v <= hi):
+        raise SystemExit(f"serve_api: {name}={raw} is outside {lo}..{hi}; "
+                         f"values are not clamped, fix the variable")
+    return v
+
+
+def _env_effort(name):
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    e = EFFORT_MAP.get(raw.strip().lower())
+    if e is None:
+        raise SystemExit(f"serve_api: {name}={raw!r} unsupported; use "
+                         f"{'|'.join(EFFORT_MAP)}")
+    return e
+
+
+def _env_bool(name):
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    raise SystemExit(f"serve_api: {name}={raw!r} is not a boolean; use 1 or 0")
+
+
+DEFAULTS = {
+    "max_tokens": _env_number("HALOGEN_MAX_TOKENS_DEFAULT", 1, 1 << 30, int),
+    "temperature": _env_number("HALOGEN_TEMPERATURE", 0.0, 2.0, float),
+    "top_p": _env_number("HALOGEN_TOP_P", 0.0, 1.0, float),
+    "top_k": _env_number("HALOGEN_TOP_K", 0, 1 << 30, int),
+    "min_p": _env_number("HALOGEN_MIN_P", 0.0, 1.0, float),
+    "presence_penalty": _env_number("HALOGEN_PRESENCE_PENALTY", -2.0, 2.0,
+                                    float),
+    "frequency_penalty": _env_number("HALOGEN_FREQUENCY_PENALTY", -2.0, 2.0,
+                                     float),
+    "reasoning_effort": _env_effort("HALOGEN_REASONING_EFFORT"),
+    # 0.6.1: the ninth default. The template thinks unless told not to, and
+    # a client that cannot send `enable_thinking` (the Responses API has no
+    # such field) had no way to run this server in instruct mode. Same rule
+    # as the other eight: a request that names it wins.
+    "enable_thinking": _env_bool("HALOGEN_ENABLE_THINKING"),
+}
+# The built-in budgets when HALOGEN_MAX_TOKENS_DEFAULT is unset. Chat and
+# Responses share one (the model reasons before it answers, and a budget too
+# small removes the answer rather than shortening it, see ChatReq); the
+# legacy completions route keeps OpenAI's small convention. ONE variable
+# overrides both, because an operator raising "the default budget" means
+# every route they use.
+CHAT_MAX_TOKENS = DEFAULTS["max_tokens"] or 8192
+COMPLETION_MAX_TOKENS = DEFAULTS["max_tokens"] or 128
+SAMPLING_DEFAULT_FIELDS = ("temperature", "top_p", "top_k", "min_p",
+                           "presence_penalty", "frequency_penalty")
+
+
+def server_default(req, field):
+    """The request's value if it sent one, else the server's default.
+
+    Keyed on the VALUE being None rather than on `model_fields_set`, because
+    /v1/responses builds its ChatReq with every field passed explicitly (as
+    None when the client omitted it), which pydantic counts as "set".
+    """
+    v = getattr(req, field, None)
+    return v if v is not None else DEFAULTS.get(field)
+
+
+def defaults_summary():
+    """The defaults an operator set, for the startup line and /health."""
+    names = {"max_tokens": "HALOGEN_MAX_TOKENS_DEFAULT",
+             "temperature": "HALOGEN_TEMPERATURE", "top_p": "HALOGEN_TOP_P",
+             "top_k": "HALOGEN_TOP_K", "min_p": "HALOGEN_MIN_P",
+             "presence_penalty": "HALOGEN_PRESENCE_PENALTY",
+             "frequency_penalty": "HALOGEN_FREQUENCY_PENALTY",
+             "reasoning_effort": "HALOGEN_REASONING_EFFORT",
+             "enable_thinking": "HALOGEN_ENABLE_THINKING"}
+    return {names[k]: v for k, v in DEFAULTS.items() if v is not None}
+
+
 class CompletionReq(BaseModel):
     model: str = MODEL_ID
     prompt: str = ""
-    max_tokens: int = 128
+    max_tokens: int = COMPLETION_MAX_TOKENS
     stream: bool = False
     stop: list[str] | str | None = None
     # an earlier change: {"include_usage": true} appends a final chunk carrying usage,
@@ -894,6 +1244,12 @@ class CompletionReq(BaseModel):
     response_format: dict | None = None
 
 
+# The template controls this server honours, in either spelling. Module
+# scope rather than a class attribute because pydantic reads an unannotated
+# class attribute as a field default.
+TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking")
+
+
 class ChatReq(BaseModel):
     model: str = MODEL_ID
     messages: list[dict]
@@ -904,7 +1260,7 @@ class ChatReq(BaseModel):
     # reasoning_content. 8192 clears an ordinary request with headroom while
     # still bounding how long one request can hold a slot. Callers who need
     # more ask for more; the ceiling is separate policy (--max-tokens-cap).
-    max_tokens: int = 8192
+    max_tokens: int = CHAT_MAX_TOKENS
     # OpenAI deprecated `max_tokens` for Chat Completions when reasoning models
     # shipped: generated tokens began including reasoning the caller never sees,
     # so the bound needed a name for what it actually bounds.
@@ -931,6 +1287,17 @@ class ChatReq(BaseModel):
     # {"type": "function", "function": {"name": ...}}.
     tool_choice: str | dict | None = None
     parallel_tool_calls: bool | None = None
+    # PUBLIC ISSUE #24: THE OTHER SPELLING OF THE THREE FIELDS ABOVE.
+    #
+    # vLLM and SGLang take template controls NESTED, as
+    # `chat_template_kwargs: {"enable_thinking": false}`, and that is what most
+    # agentic clients send because that is what they were written against.
+    # This field was not declared, so pydantic's default `extra="ignore"`
+    # dropped it with no warning and no log line, and a caller who asked for
+    # thinking off got a 200 with thinking on. Silently not doing what was
+    # asked is the defect #14 was, and the answer there was the same: name it
+    # on the wire rather than discard it.
+    chat_template_kwargs: dict | None = None
 
     @model_validator(mode="after")
     def _resolve_budget(self):
@@ -958,6 +1325,45 @@ class ChatReq(BaseModel):
                 + "); they are the same budget under three names, send one")
         if distinct:
             self.max_tokens = distinct.pop()
+        return self
+
+    @model_validator(mode="after")
+    def _fold_template_kwargs(self):
+        """Fold `chat_template_kwargs` into the top-level fields.
+
+        Same discipline as `_resolve_budget` above, for the same reason: two
+        spellings of one thing, agreeing duplicates accepted, disagreement a
+        400 rather than a guess. An unsupported KEY is also a 400 and not a
+        silent drop, because the whole point of this validator is that a
+        control the caller sent must never vanish. Naming the supported keys
+        in the message means a client discovers the right spelling from the
+        error instead of from a 200 that did not do what was asked.
+        """
+        if self.chat_template_kwargs is None:
+            return self
+        if not isinstance(self.chat_template_kwargs, dict):
+            raise ValueError("chat_template_kwargs must be an object")
+        unknown = [k for k in self.chat_template_kwargs
+                   if k not in TEMPLATE_KWARGS]
+        if unknown:
+            raise ValueError(
+                "chat_template_kwargs contains unsupported key(s) "
+                + ", ".join(repr(k) for k in sorted(unknown))
+                + "; this server honours "
+                + ", ".join(TEMPLATE_KWARGS)
+                + ", which may also be sent as top-level fields")
+        for k in TEMPLATE_KWARGS:
+            if k not in self.chat_template_kwargs:
+                continue
+            nested = self.chat_template_kwargs[k]
+            if k in self.model_fields_set:
+                top = getattr(self, k)
+                if top is not None and top != nested:
+                    raise ValueError(
+                        f"conflicting {k}: {top!r} at the top level and "
+                        f"{nested!r} in chat_template_kwargs; they are the "
+                        f"same control under two names, send one")
+            setattr(self, k, nested)
         return self
     # an earlier change: IMPLEMENTED. temperature 0 (the default) is greedy and keeps
     # the speculative fast path; anything above 0 samples and is routed to
@@ -989,9 +1395,6 @@ class ChatReq(BaseModel):
     response_format: dict | None = None
 
 
-# OpenAI effort vocabulary -> what this template actually accepts.
-EFFORT_MAP = {"minimal": "low", "low": "low", "medium": "medium",
-              "high": "xhigh", "xhigh": "xhigh"}
 # What remains accepted-but-ignored. temperature/top_p/seed/top_k/min_p came
 # off this list at an earlier change -- the point of the list is that it shrinks.
 class ResponsesReq(BaseModel):
@@ -1251,8 +1654,8 @@ def penalty_spec(req):
     if sample_spec(req) is None:
         return ""
     out = ""
-    pp = float(req.presence_penalty or 0.0)
-    fp = float(req.frequency_penalty or 0.0)
+    pp = float(server_default(req, "presence_penalty") or 0.0)
+    fp = float(server_default(req, "frequency_penalty") or 0.0)
     if pp or fp:
         out += " PENALTY %.9g %.9g" % (pp, fp)
     if req.logit_bias:
@@ -1284,7 +1687,9 @@ def sample_spec(req):
     temperature 0 IS greedy, and routing it through the sampler would put a
     new kernel under the identity hashes that certify the greedy path.
     """
-    t = req.temperature
+    # Issue #30: a request that OMITS temperature takes the server's default;
+    # one that SENDS 0 chose greedy and takes no sampling default at all.
+    t = server_default(req, "temperature")
     if t is None or t <= 0.0:
         return None
     # Whether the ENGINE samples is check_sampling's question (it has the
@@ -1294,8 +1699,9 @@ def sample_spec(req):
     # unreproducible, which is the honest reading of "no seed given" -- rather
     # than a fixed default that would make every unseeded request identical.
     seed = req.seed if req.seed is not None else random.getrandbits(63)
-    return (float(t), int(req.top_k or 0), float(req.top_p or 0.0),
-            float(req.min_p or 0.0), int(seed))
+    return (float(t), int(server_default(req, "top_k") or 0),
+            float(server_default(req, "top_p") or 0.0),
+            float(server_default(req, "min_p") or 0.0), int(seed))
 _warned_sampling = set()
 # Wire values of src/serve.cpp's GEN drafter field (an earlier change, an earlier change).
 DRAFTERS = {"serial": 0, "mtp": 1, "dflash2": 2}
@@ -1375,7 +1781,9 @@ def wants_usage(req):
 def chat_kwargs(req, mode="auto"):
     """Template kwargs from an OpenAI-shaped request. Only pass what the
     caller actually set — the template's own defaults (thinking on, effort
-    xhigh) are the model's intended behavior."""
+    xhigh) are the model's intended behavior. Issue #30: the operator may
+    move the effort default (HALOGEN_REASONING_EFFORT); a request that names
+    one still wins."""
     kw = {}
     if req.reasoning_effort is not None:
         e = EFFORT_MAP.get(req.reasoning_effort.lower())
@@ -1384,8 +1792,10 @@ def chat_kwargs(req, mode="auto"):
                                      f"'{req.reasoning_effort}' unsupported; "
                                      f"use {'|'.join(EFFORT_MAP)}")
         kw["reasoning_effort"] = e
-    if req.enable_thinking is not None:
-        kw["enable_thinking"] = req.enable_thinking
+    elif DEFAULTS["reasoning_effort"] is not None:
+        kw["reasoning_effort"] = DEFAULTS["reasoning_effort"]
+    if server_default(req, "enable_thinking") is not None:
+        kw["enable_thinking"] = server_default(req, "enable_thinking")
     if req.preserve_thinking is not None:
         kw["preserve_thinking"] = req.preserve_thinking
     # tool_choice='none' means the model must not call one, and the cleanest
@@ -1739,9 +2149,34 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                                     "spec" if d.get("rounds")
                                                     else "batch")
                 spec = ""
+                shared = d.get("shared", 0)
                 if d.get("rounds"):
-                    spec = (f"{d['rounds']} rounds, "
-                            f"commit {d['commit'] / d['rounds']:.2f}/round | ")
+                    # PUBLIC ISSUE #22: `commit` counts EVERY token the
+                    # request produced, and `rounds` only the speculative
+                    # rounds it ran while alone. A request that got one round
+                    # alone and then shared the engine for 189 tokens printed
+                    # `1 rounds, commit 190.00/round`, and two reporters on
+                    # two machines read that as a decode defect. The ratio is
+                    # now over the speculative tokens only, and the shared
+                    # tokens are named at the end of the line. Healthy is
+                    # 1.6 to 1.8. The `N rounds, commit X/round | prompt`
+                    # shape is what bench-serving.py's LEDGER regex parses,
+                    # so the new count goes after it, not inside it.
+                    spec = (f"{d['rounds']} rounds, commit "
+                            f"{(d['commit'] - shared) / d['rounds']:.2f}"
+                            f"/round | ")
+                pld = ""
+                if d.get("pld_rounds"):
+                    # how many of those rounds drafted from the request's
+                    # own context (prompt lookup), and what they accepted
+                    # per round. A TRAILING clause, after detok: the
+                    # `rounds, commit X/round | prompt N` shape is what
+                    # bench-serving.py's LEDGER regex parses, and the first
+                    # cut put this inside it and silently dropped every
+                    # prompt-lookup case from the bench's mean.
+                    pld = (f" | pld {d['pld_rounds']} rounds, "
+                           f"{d['pld_accepted'] / d['pld_rounds']:.2f}"
+                           f" acc/round")
                 # LEDGER in tools/bench-serving.py requires `([\d.]+) t/s`
                 # AND a `rounds, commit` clause. These degenerate lines never
                 # carry rounds, so "n/a" cannot break that parser -- but the
@@ -1763,7 +2198,15 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                       # O(n^2) is invisible by construction. `wait` and `sse`
                       # were dropped: wait duplicates the t/s field and
                       # changes meaning with concurrency, sse is a constant.
-                      f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok",
+                      f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
+                      # Issue #22, the other half: how many of this request's
+                      # tokens were produced beside other streams (one row of
+                      # a batched step, or a serial rest stretch), where the
+                      # per-stream rate is the README's concurrency table and
+                      # not the single-stream figure.
+                      + (f" | {shared} tok beside other streams" if shared
+                         else "")
+                      + pld,
                       flush=True)
                 break
             # time spent WAITING on the engine == everything since we last
@@ -1871,6 +2314,73 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             u["prompt_tokens_details"] = {"cached_tokens": d["n_cached"]}
         return u
 
+    async def keepalive(frames, every):
+        """Yield `frames` through, and a `: keepalive` SSE comment whenever
+        `every` seconds pass with nothing to send (issues #3/#36 above).
+
+        The next frame is awaited as a task so the wait can time out
+        without cancelling the generator underneath. A cancellation of THIS
+        generator (the client hung up) is forwarded to that task and awaited,
+        so the inner generators' finally blocks, which stop the engine, run
+        before the caller's own cleanup, exactly as they did when the caller
+        iterated `frames` directly.
+        """
+        if every <= 0:
+            async for f in frames:
+                yield f
+            return
+        it = frames.__aiter__()
+        nxt = None
+        try:
+            while True:
+                if nxt is None:
+                    nxt = asyncio.ensure_future(it.__anext__())
+                done, _ = await asyncio.wait({nxt}, timeout=every)
+                if not done:
+                    yield ": keepalive\n\n"
+                    continue
+                task, nxt = nxt, None
+                try:
+                    f = task.result()
+                except StopAsyncIteration:
+                    return
+                yield f
+        finally:
+            if nxt is not None and not nxt.done():
+                nxt.cancel()
+                try:
+                    await nxt
+                except BaseException:
+                    pass
+
+    async def guarded(gen):
+        """Issue #39, the second half: an error raised by the generation
+        AFTER the SSE headers went out -- the engine's D-line refusal, a
+        first-token or mid-decode timeout, a closed engine socket -- used to
+        propagate as an HTTPException into Starlette, which cannot send a
+        status it has already sent, and the client got a cut connection and
+        the log a `Caught handled exception, but response already started`
+        traceback. It is now the last item of the generation, a done record
+        with reason `error`, and each serializer writes it in its own wire's
+        error shape (OpenAI's `{"error": ...}` data frame, the Responses
+        `error` event), then ends the stream. The log gets one line.
+        """
+        try:
+            async for item in gen:
+                yield item
+        except HTTPException as e:
+            print(f"serve_api: error after the stream started: "
+                  f"{e.status_code} {e.detail}", flush=True)
+            yield None, {"reason": "error", "status": e.status_code,
+                         "message": str(e.detail),
+                         "code": ("engine_busy" if e.status_code == 503
+                                  else None)}
+
+    def error_body(d):
+        return {"message": d["message"],
+                "type": ERROR_TYPES.get(d["status"], "server_error"),
+                "param": None, "code": d.get("code")}
+
     async def sse(gen, cid, created, chat, split, tstream=None, pre="",
                   parallel=True, include_usage=False):
         def envelope():
@@ -1920,6 +2430,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # running mean over the process is the right shape.
         async for delta, d in gen:
             _s0 = time.perf_counter()
+            if d is not None and d.get("reason") == "error":
+                # The shape OpenAI streams an error in: a data frame whose
+                # top level is `error`, which the SDKs raise as APIError.
+                yield f"data: {json.dumps({'error': error_body(d)})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
             if d is not None:
                 fin = {"stop": "stop", "cancel": "stop",
                        "length": "length"}.get(d["reason"], "stop")
@@ -2074,6 +2590,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                          item=item))
 
         async for delta, d in gen:
+            if d is not None and d.get("reason") == "error":
+                # The Responses wire's own error event; the SDK raises on
+                # it and the stream ends without a `completed`.
+                yield ev("error", **error_body(d))
+                return
             if d is not None:
                 if msg_open:
                     yield close_message()
@@ -2207,6 +2728,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # image-capable server from one that will answer its
                 # screenshot question from the text alone.
                 "vision": vision_status(),
+                # The two containers' releases side by side (#26: an api four
+                # releases behind its engine answered image questions from
+                # nothing, and no surface said which version either one was).
+                "version": version_status(),
                 # Whether the engine's loop is TURNING, asked rather than
                 # assumed: PONG on a queued connection is the one signal a
                 # listen backlog cannot fake.
@@ -2238,6 +2763,15 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     or engine.info.get(DRAFTER_CAP[n])],
                 "drafter_default": rev.get(engine.info.get("default", 0),
                                            "serial"),
+                # Prompt lookup: chains drafted from the request's own text
+                # beside the head, greedy requests only. What the ENGINE
+                # runs, not what this process was configured with (the two
+                # can be different containers).
+                "prompt_lookup": (
+                    {"ngram": engine.info.get("pld_n"),
+                     "chain": engine.info.get("pld_k"),
+                     "applies_to": "greedy requests with the mtp drafter"}
+                    if engine.info.get("pld_n") else "off"),
                 # False here means every draft step reads the full 248,320-row
                 # lm_head instead of the 98,304 shortlist (an earlier change.f).
                 "shortlist_draft_head": bool(engine.info.get("draft_head")),
@@ -2325,6 +2859,41 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 "token_budget_aliases": ["max_tokens", "max_completion_tokens",
                                          "max_output_tokens"],
                 "max_tokens_default": ChatReq.model_fields["max_tokens"].default,
+                # PUBLIC ISSUES #21 AND #24: WHAT THAT BUDGET IS SPENT
+                # ON. The budget above covers reasoning AND content, and with
+                # no `reasoning_effort` sent the chat template's own default is
+                # `xhigh`, which on a long agentic prompt can consume the whole
+                # 8192 before the model closes its thinking block. The caller
+                # then gets content "" with everything in reasoning_content and
+                # `finish_reason: "length"`, which at least one agent harness
+                # reports as "the model returned no assistant message" and
+                # retries, deterministically, forever.
+                #
+                # The default was discoverable nowhere. A client could read
+                # `max_tokens_default` here and still have no way to learn that
+                # the budget it sets is being spent on reasoning it never asked
+                # for. These three fields say it.
+                "reasoning_effort_default": DEFAULTS["reasoning_effort"]
+                                            or "xhigh",
+                "reasoning_effort_values": list(EFFORT_MAP),
+                "token_budget_covers_reasoning": True,
+                # PUBLIC ISSUE #30: what the operator set as the default for
+                # a field a request leaves out, keyed by the variable, so a
+                # client can see the server's policy rather than infer it
+                # from an answer. Empty when nothing is set. The rule is
+                # stated beside it because "temperature absent" now means
+                # two different things on two differently configured
+                # servers, and only this field tells them apart.
+                "server_defaults": defaults_summary(),
+                "server_defaults_rule": (
+                    "a field the request sends always wins; a default fills "
+                    "only a field the request omits. A request that sends "
+                    "temperature 0 decodes greedy and takes no sampling "
+                    "default"),
+                # Both spellings reach the same three controls; see
+                # TEMPLATE_KWARGS. An unsupported key in the nested form is a
+                # 400, never a silent drop.
+                "chat_template_kwargs": list(TEMPLATE_KWARGS),
                 # an earlier change: errors use OpenAI's {"error": {...}} envelope, not
                 # FastAPI's {"detail": ...}, and a malformed body is a 400
                 # rather than a 422.
@@ -2348,13 +2917,18 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                     "seed", "presence_penalty",
                                     "frequency_penalty", "logit_bias",
                                     "logprobs"],
-                    "decode": "temperature 0 (the default) is greedy: a "
-                              "forward pass and an argmax, byte-identical to "
-                              "serial greedy decode. temperature > 0 samples "
-                              "from the filtered target on the same drafter "
-                              "the request would otherwise get; with the MTP "
-                              "drafter the speculative accept/reject rule "
-                              "emits exactly the target distribution",
+                    "decode": (
+                        ("temperature absent samples at the server's "
+                         "default of %g (HALOGEN_TEMPERATURE); temperature "
+                         "0 is greedy: " % DEFAULTS["temperature"])
+                        if DEFAULTS["temperature"] else
+                        "temperature 0 (the default) is greedy: ")
+                        + "a forward pass and an argmax, byte-identical to "
+                          "serial greedy decode. temperature > 0 samples "
+                          "from the filtered target on the same drafter "
+                          "the request would otherwise get; with the MTP "
+                          "drafter the speculative accept/reject rule "
+                          "emits exactly the target distribution",
                     "filters": "top_k, top_p and min_p compose as an "
                                "intersection (the HF/vLLM convention); "
                                "top_p >= 1 and top_k = 0 disable a filter",
@@ -2402,43 +2976,6 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         return {"object": "list",
                 "data": [{"id": MODEL_ID, "object": "model",
                           "owned_by": "halogen", "created": 0}]}
-
-    def expand_image_pads(ids, snap, snap2, images):
-        """One `<|image_pad|>` per image becomes `ntok` of them.
-
-        The template writes `<|vision_start|><|image_pad|><|vision_end|>`, one
-        pad per image, and the engine needs one token per merged patch. The
-        expansion happens on IDS, after tokenization, because the pad is a
-        special token the tokenizer never merges across, so its positions are
-        exact.
-
-        SNAP and SNAP2 are token COUNTS into this same list, so every
-        expansion before them shifts them; getting that wrong would point the
-        prompt cache's snapshot into the middle of an image and silently cost
-        every warm turn.
-        """
-        if not images:
-            return ids, snap, snap2, []
-        pads = [i for i, v in enumerate(ids) if v == IMAGE_TOKEN_ID]
-        if len(pads) != len(images):
-            raise HTTPException(400, f"the chat template emitted {len(pads)} "
-                                     f"image placeholders for {len(images)} "
-                                     f"images")
-        out, placed, grown, k = [], [], 0, 0
-        for i, v in enumerate(ids):
-            if k < len(pads) and i == pads[k]:
-                H, W, _rgb, ntok = images[k]
-                placed.append((len(out), H, W))
-                out.extend([IMAGE_TOKEN_ID] * ntok)
-                grown += ntok - 1
-                k += 1
-            else:
-                out.append(v)
-            if snap and i == snap - 1:
-                snap += grown
-            if snap2 and i == snap2 - 1:
-                snap2 += grown
-        return out, snap, snap2, placed
 
     def render_prompt(msgs, kw):
         """-> (ids, snap): the tokenized chat prompt and the STABLE PREFIX
@@ -2497,6 +3034,21 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             if snap and snap2 >= snap:
                 snap2 = 0
         return ids, snap, snap2
+
+    def version_status():
+        """This front-end's release beside the engine's, and whether they agree.
+
+        `match` is None when either side is unknown (an engine older than
+        the INFO field, or a front-end run outside the image), False when
+        both are known and differ. A False here is the whole of public issue
+        #26: the front-end that renders the prompt and the engine that runs
+        it were built four releases apart, and the image path that one had
+        the other did not.
+        """
+        eng = engine.info.get("version") or "unknown"
+        known = API_VERSION != "unknown" and eng != "unknown"
+        return {"api": API_VERSION, "engine": eng,
+                "match": (API_VERSION == eng) if known else None}
 
     def vision_status():
         """What this server can do with an image, and why not when it cannot.
@@ -2563,6 +3115,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         except Exception as e:                      # template raise_exception
             raise HTTPException(400, f"chat template rejected the request: "
                                      f"{e}")
+        # Issue #39: a mentioned placeholder becomes text BEFORE the pads
+        # are counted against the images, so a mention beside a real image
+        # does not read as an extra image.
+        ids, snap, snap2, _ = textify_pad_mentions(ids, snap, snap2, len(imgs))
         if not imgs:
             return ids, snap, snap2, None
         ids, snap, snap2, placed = expand_image_pads(ids, snap, snap2, imgs)
@@ -2646,10 +3202,21 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         split = ThinkSplit(thinking)
         tstream = ToolStream(tools) if tools else None
         if stream:
+            n_ev = 0
+            n_ka = 0
+            finished = False
+            t_body = time.perf_counter()
+            # Issue #3's instrument: the largest gap between two DATA frames
+            # and when the last one went out, so a hangup's line says
+            # whether the stream had gone quiet and for how long.
+            t_last = t_body
+            gap_max = 0.0
+
             async def body():
+                nonlocal n_ev, n_ka, finished, t_last, gap_max
                 try:
-                    gen = run(ids, max_tokens, stops, drafter, sample,
-                              penalty, snap, snap2, images)
+                    gen = guarded(run(ids, max_tokens, stops, drafter, sample,
+                                      penalty, snap, snap2, images))
                     # The Responses wire is a different SERIALIZATION of the
                     # same generation. Everything that matters for safety --
                     # the slot semaphore, the abort on hangup, the inflight
@@ -2662,9 +3229,47 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                         if wire == "responses" else
                         sse(gen, cid, created, chat, split, tstream, pre,
                             parallel, include_usage))
-                    async for ev in stream_iter:
+                    async for ev in keepalive(stream_iter, SSE_KEEPALIVE_S):
+                        if ev.startswith(":"):
+                            n_ka += 1
+                            yield ev
+                            continue
+                        now = time.perf_counter()
+                        gap_max = max(gap_max, now - t_last)
+                        t_last = now
+                        n_ev += 1
                         yield ev
+                    finished = True
                 finally:
+                    # PUBLIC ISSUE #3: A HANGUP AND A CLEAN FINISH USED
+                    # TO LOOK IDENTICAL IN THE LOG.
+                    #
+                    # uvicorn logs `200 OK` either way, because the status went
+                    # out with the headers long before, and the `serve_api:`
+                    # summary never prints on a hangup because it is emitted
+                    # when the generator yields its completion record and the
+                    # generator was cancelled before reaching it. So the whole
+                    # server-side trace of a client that gave up mid-stream was
+                    # a bare access line indistinguishable from success.
+                    #
+                    # That cost a public thread several rounds: a reporter
+                    # inferred an engine stall from the ABSENCE of our timeout
+                    # message, which is inference from silence, and the silence
+                    # was ours. A disconnect is a normal event, not an error,
+                    # so this is one line rather than a traceback -- but it has
+                    # to be a line.
+                    if not finished:
+                        now = time.perf_counter()
+                        print("serve_api: client disconnected mid-stream, %s, "
+                              "%d SSE frames and %d chars sent in %.1fs, "
+                              "largest gap between frames %.1fs, last frame "
+                              "%.1fs before the hangup, %d keepalives "
+                              "(the engine is being stopped; this is the "
+                              "client hanging up, not a server error)"
+                              % (cid, n_ev, len(split.full), now - t_body,
+                                 max(gap_max, now - t_last), now - t_last,
+                                 n_ka),
+                              flush=True)
                     # client hung up (or errored) mid-stream: stop the engine
                     # instead of letting it decode to max_tokens with nobody
                     # listening, then hand the slot to whoever is queued.
@@ -2785,6 +3390,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
     @app.post("/v1/completions")
     async def completions(req: CompletionReq):
         ids = tok(req.prompt, add_special_tokens=False)["input_ids"]
+        # No image path on this route, so every placeholder is a mention.
+        ids, _, _, _ = textify_pad_mentions(list(ids))
         check_sampling(req)
         return await serve(ids, req.max_tokens, stop_list(req.stop),
                            req.stream, False, "cmpl",
@@ -2812,7 +3419,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                       f"by this endpoint", flush=True)
         mode, forced = tool_choice_mode(req)
         pre = force_prefill(mode, forced, req.tools)
-        thinking = req.enable_thinking is not False
+        thinking = server_default(req, "enable_thinking") is not False
         kw = chat_kwargs(req, mode)
         if pre:
             # The prefill lands where the reasoning block would start, so the
@@ -2873,7 +3480,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         effort = (req.reasoning or {}).get("effort")
         shim = ChatReq(model=req.model, messages=[{"role": "user",
                                                    "content": ""}],
-                       max_tokens=req.max_output_tokens or 8192,
+                       max_tokens=req.max_output_tokens or CHAT_MAX_TOKENS,
                        stream=req.stream, tools=chat_tools, tool_choice=tc,
                        parallel_tool_calls=req.parallel_tool_calls,
                        reasoning_effort=effort, drafter=req.drafter,
@@ -2887,7 +3494,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         check_sampling(shim)
         mode, forced = tool_choice_mode(shim)
         pre = force_prefill(mode, forced, chat_tools)
-        thinking = True
+        # The Responses wire has no enable_thinking field, so only the
+        # server default (HALOGEN_ENABLE_THINKING) can turn thinking off.
+        thinking = server_default(shim, "enable_thinking") is not False
         kw = chat_kwargs(shim, mode)
         if pre:
             kw["enable_thinking"] = False
@@ -2935,7 +3544,27 @@ def main():
     ap.add_argument("--max-tokens-cap", type=int, default=65536,
                     help="server-side ceiling on max_tokens (batch-1: one "
                          "long request blocks every other client)")
+    # Issue #30: validate the HALOGEN_* defaults and exit. The entrypoint
+    # runs this BEFORE the engine starts, so a bad variable is found in a
+    # second rather than after minutes of pinning the checkpoint. The values
+    # themselves were checked at import; what remains is the one that needs
+    # the cap.
+    ap.add_argument("--check-defaults", action="store_true",
+                    help="validate the HALOGEN_* request defaults and exit")
     args = ap.parse_args()
+
+    if DEFAULTS["max_tokens"] and DEFAULTS["max_tokens"] > args.max_tokens_cap:
+        raise SystemExit(
+            f"serve_api: HALOGEN_MAX_TOKENS_DEFAULT={DEFAULTS['max_tokens']} "
+            f"exceeds the cap of {args.max_tokens_cap} "
+            f"(HALOGEN_MAX_TOKENS_CAP); every request that omitted a budget "
+            f"would be refused. Lower the default or raise the cap.")
+    if args.check_defaults:
+        d = defaults_summary()
+        print("serve_api: request defaults "
+              + (", ".join(f"{k}={v}" for k, v in d.items()) if d
+                 else "none set (built-in)"), flush=True)
+        return
 
     import uvicorn
     from transformers import AutoTokenizer
@@ -2954,8 +3583,35 @@ def main():
         await engine.connect()
         print(f"serve_api: engine at {args.engine}, "
               f"listening on {args.host}:{args.port}", flush=True)
+        # Issue #30: a sampling default on an engine build that cannot
+        # sample would turn every unadorned request into a 400. Refuse to
+        # serve rather than misrepresent the configuration; the entrypoint
+        # takes the container down on an api exit.
+        if DEFAULTS["temperature"] and not engine.info.get("sampling"):
+            print("serve_api: HALOGEN_TEMPERATURE is set but this engine "
+                  "build decodes greedy only; unset it or use a build that "
+                  "samples", flush=True)
+            os._exit(1)
+        d = defaults_summary()
+        if d:
+            print("serve_api: request defaults "
+                  + ", ".join(f"{k}={v}" for k, v in d.items())
+                  + " (a field the request sends wins; temperature 0 in a "
+                    "request is greedy and takes no sampling default)",
+                  flush=True)
+        eng = engine.info.get("version") or "unknown"
+        print(f"serve_api: version {API_VERSION}, engine version {eng}",
+              flush=True)
+        if eng != API_VERSION:
+            print(f"serve_api: WARNING the api ({API_VERSION}) and the engine "
+                  f"({eng}) are different releases. Run both containers from "
+                  f"the same image tag: what one of them can do, the other "
+                  f"may not know how to ask for (images, for one), and the "
+                  f"answer may be wrong without any error saying so.",
+                  flush=True)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info",
+                timeout_keep_alive=KEEPALIVE_S)
 
 
 if __name__ == "__main__":

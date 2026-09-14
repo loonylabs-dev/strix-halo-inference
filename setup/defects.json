@@ -867,14 +867,14 @@
       },
       "shows_as": "slow",
       "symptom": "High system load (D-state wait), intermittent system freezes, extreme TTFT latency (>60s) and >98,000 compact_stall events in /proc/vmstat during prompt prefill.",
-      "measured": "Measured 12.09.2026: with qwen38-flash-next-vision.hgn active and default POOL_WANT=1048576, available 2 MiB contiguous blocks in /proc/buddyinfo dropped below 260. /proc/vmstat recorded >98,000 compact_stall events and processes accumulated minutes of D-state wait while streaming the 47.7 GiB PLE table from disk. Measured 13.09.2026: reducing to 262144 over-corrected, causing deep DSH sessions (112k coding + 71k background inspector) to mutually evict each other's KV cache (127-315s cold re-prefill per turn). Sizing HALOGEN_KV_POOL_POSITIONS to 524288 (14.4 GiB KV cache) allows multiple deep sessions to remain resident simultaneously. Crucially, pairing this with HALOGEN_MAX_TOK=16384 drops the prefill arena scratch from 20.6 GiB to 8.4 GiB (saving 12.2 GiB of contiguous 2 MiB hugepages), allowing the entire working memory (26.6 GiB) to fit easily into free physical memory (34.4 GiB free 2 MiB blocks) upon startup with >6.5 GiB headroom. Halogen startup time dropped from minutes of compaction stall to 16.0s flat with 0 compaction stalls.",
-      "mitigation": "setup/halogenexec dynamically defaults HALOGEN_KV_POOL_POSITIONS to 524288 and HALOGEN_MAX_TOK to 16384, eliminating mutual session eviction while guaranteeing zero startup compaction stalls.",
+      "measured": "Measured 12.09.2026: with qwen38-flash-next-vision.hgn active and default POOL_WANT=524288 or 1048576, available 2 MiB contiguous blocks in /proc/buddyinfo dropped below 260. /proc/vmstat recorded >98,000 compact_stall events and processes accumulated minutes of D-state wait while streaming the 47.7 GiB PLE table from disk. Reducing POOL_WANT to 262144 frees ~18-27 GiB RAM (~7.2 GiB KV pool instead of ~25-35 GiB), keeping contiguous high-order pages available and completely eliminating compact_stalls.",
+      "mitigation": "setup/halogenexec dynamically defaults HALOGEN_KV_POOL_POSITIONS to 262144 when HALOGEN_VISION_TOWER is enabled (or vision model is present), leaving 13-15 GiB headroom for kernel page cache.",
       "detect": {
         "kind": "manual"
       },
       "status": "mitigated",
       "first_seen": "2026-09-12",
-      "last_checked": "2026-09-13"
+      "last_checked": "2026-09-12"
     },
     {
       "id": "halogen-concurrency-prefill-deadlock",
@@ -886,13 +886,13 @@
       "shows_as": "slow",
       "symptom": "When two sessions hit Halogen concurrently, active decoding collapses from ~45 t/s to ~1 token per minute, while incoming requests wait minutes without HTTP headers and abort with stream idle timeouts (e.g. DSH 'pi ai stream idle timeout 300000ms' or Cloudflare 524), triggering client retries that lock the engine in continuous SSD prefill thrashing.",
       "measured": "Measured 12.09.2026: Halogen container logs recorded 'serve_api: mtp 695 tok in 655.03s = 1.06 t/s | 352 rounds' when a second request arrived during generation. Halogen's internal scheduler admitted the prompt in 32k chunks with 1-token decode ticks, starving the active stream while performing random N-gram reads across the 47.7 GiB disk table. Concurrently, DSH waited 300s without HTTP headers, timed out, and retried, creating an endless contention loop. As soon as the second session disconnected, decode speed immediately surged to 44.0 t/s.",
-      "mitigation": "1) Set MAX_INFLIGHT=1 in setup/llm-gateway.env to serialise GPU turns through the gateway while retaining Halogen's 4-slot KV pool in RAM. 2) In gateway.py forward() and enter_with_lifesign(), emit SSE keepalive comments / Anthropic pings every 10s (QUEUE_KEEPALIVE=10) during queue wait and upstream prefill wait, preventing client read timeouts (e.g. DSH 40s timeout). 3) In setup/halogenexec, pass HALOGEN_ADMIT_CHUNK=-1 so direct requests prefill at once instead of time-slicing into 1-token ticks. 4) Set HALOGEN_KV_POOL_POSITIONS=524288 so concurrent sessions (112k + 71k) fit simultaneously in the KV pool without LRU cache eviction.",
+      "mitigation": "1) Set MAX_INFLIGHT=1 in setup/llm-gateway.env to serialise GPU turns through the gateway while retaining Halogen's 4-slot KV pool in RAM. 2) In gateway.py forward(), emit SSE keepalive comments / Anthropic pings every 15s during upstream prefill wait before headers arrive, preventing client and Cloudflare idle timeouts. 3) In setup/halogenexec, pass HALOGEN_ADMIT_CHUNK=-1 so direct requests prefill at once instead of time-slicing into 1-token ticks.",
       "detect": {
         "kind": "manual"
       },
       "status": "mitigated",
       "first_seen": "2026-09-12",
-      "last_checked": "2026-09-13"
+      "last_checked": "2026-09-12"
     }
   ]
 }

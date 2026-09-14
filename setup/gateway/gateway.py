@@ -93,7 +93,7 @@ def env(name, old=None, default=None):
 
 LLAMA        = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
 VISION_URL   = os.environ.get("VISION_URL", "http://127.0.0.1:8082")
-VISION_IDLE_TIMEOUT = int(os.environ.get("VISION_IDLE_TIMEOUT", "600"))
+VISION_IDLE_TIMEOUT = int(os.environ.get("VISION_IDLE_TIMEOUT", "3600"))
 VISION_MODELS = {
     "qwen3-vl-4b",
     "qwen3vl-4b",
@@ -1473,10 +1473,11 @@ class PriorityGate:
         self.free += 1
 
 # How often to send a sign of life while a request is queued. llama-server
-# sends the same thing during a long prefill, and that is what makes the tunnel
-# and aggressive client timeouts work: Cloudflare drops after 125s of silence,
-# and agent clients (like DSH) abort after 40s if no frame or ping arrives.
-KEEPALIVE = int(env("QUEUE_KEEPALIVE", None, 10))
+# sends the same thing every 30 s during a long prefill, and that is what makes
+# the tunnel work at all: Cloudflare drops a connection after 125 s of silence.
+# Between GATE.enter() and forward() nothing used to be written, so a queued
+# remote caller was dropped without the gateway ever learning about it.
+KEEPALIVE = int(env("QUEUE_KEEPALIVE", None, 30))
 
 SSE_HEADERS = {"content-type": "text/event-stream",
                "cache-control": "no-cache",
@@ -1495,7 +1496,7 @@ def sse_error(status, text):
                                                % (status, text[:200])}})
     return ("event: error\ndata: %s\n\n" % payload).encode()
 
-async def enter_with_lifesign(prio, req, streaming, dialect=None):
+async def enter_with_lifesign(prio, req, streaming):
     """Wait for a gate slot, and keep a streaming caller alive while waiting.
 
     Returns (seconds waited, prepared response or None). A prepared response
@@ -2237,7 +2238,7 @@ async def handler(req):
     # PER_TOKEN_MAX such cases the access got nothing but 429.
     early = None
     try:
-        waited, early = await enter_with_lifesign(prio, req, streaming, dialect=dialect)
+        waited, early = await enter_with_lifesign(prio, req, streaming)
     except BaseException:
         # A slot already obtained is given back by enter_with_lifesign itself,
         # only the counter is missing here.

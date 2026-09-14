@@ -419,10 +419,14 @@ head_ "Services"
 # missing for a day after the switch to qwen38.
 ACTIVE="$(models_active)"
 case "$(printf '%s' "$ACTIVE" | grep -c .)" in
-  0) printf "  \033[33m?\033[0m no llama-user@ instance is active\n" ;;
-  1) E=$(systemctl --user is-enabled "$(model_unit "$ACTIVE")" 2>/dev/null)
-     if [ "$E" = "enabled" ]; then ok "$(model_unit "$ACTIVE") (active, enabled) — $(model_title "$ACTIVE")"
-     else old "$(model_unit "$ACTIVE") is active but ${E:-not enabled} — a reboot brings back a different model"; fi ;;
+  0) printf "  \033[33m?\033[0m no model is active\n" ;;
+  1) UNIT="$(model_unit "$ACTIVE")"
+     if [ "$ACTIVE" = "halogen-qwen38flash" ] && systemctl --user is-active halogen.service >/dev/null 2>&1; then
+       UNIT="halogen.service"
+     fi
+     E=$(systemctl --user is-enabled "$UNIT" 2>/dev/null || true)
+     if [ "$E" = "enabled" ]; then ok "$UNIT (active, enabled) — $(model_title "$ACTIVE")"
+     else old "$UNIT is active but ${E:-not enabled} — a reboot brings back a different model"; fi ;;
   *) old "MORE THAN ONE model is active: $(printf '%s' "$ACTIVE" | tr '\n' ' ')
       They all want port 8080. That is the Conflicts= failure — see
       setup/systemd/llama-user@.service." ;;
@@ -651,7 +655,15 @@ else
   # "nothing is serving".
   SERVING_NOW="$(models_serving | tr '\n' ' ')"
   if [ -n "${SERVING_NOW// /}" ]; then
-    ok "no llama-server — ${SERVING_NOW% } is serving instead"
+    case "${SERVING_NOW% }" in
+      halogen*)
+        N_SLOTS=$(curl -s -m15 http://127.0.0.1:8080/health 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("slots", 1))' 2>/dev/null || echo 1)
+        ok "${SERVING_NOW% } is running, $N_SLOTS slots"
+        ;;
+      *)
+        ok "no llama-server — ${SERVING_NOW% } is serving instead"
+        ;;
+    esac
   else
     printf "  \033[33m?\033[0m llama-server is not running\n"
   fi
@@ -736,8 +748,18 @@ head_ "The watchdog for the silent failure modes"
 # The registry above says WHAT can go wrong. This says whether anything would
 # notice if it did. Both two-slot defects here end as degraded output with no
 # error anywhere, so an unattended machine needs something that asks.
-PT=$(systemctl --user is-enabled llama-probe.timer 2>/dev/null)
-if [ "$PT" = "enabled" ]; then
+PT=$(systemctl --user is-enabled llama-probe.timer 2>/dev/null || true)
+SERVING_PROBE="${SERVING_NOW:-$(models_serving | tr '\n' ' ')}"
+case "${SERVING_PROBE% }" in
+  halogen*)
+    if [ "$PT" = "enabled" ] || systemctl --user is-active llama-probe.timer >/dev/null 2>&1; then
+      printf "  \033[33m?\033[0m llama-probe.timer is active but ${SERVING_PROBE% } is serving — run switch-model.sh ${SERVING_PROBE% } to disable\n"
+    else
+      ok "llama-probe.timer inactive (not needed for ${SERVING_PROBE% } backend)"
+    fi
+    ;;
+  *)
+    if [ "$PT" = "enabled" ]; then
   ok "llama-probe.timer enabled"
   LAST=$(systemctl --user show llama-probe.service -p ExecMainStatus --value 2>/dev/null)
   # The EXIT CODE cannot say whether anything was looked at. Since 29.08. a
@@ -758,10 +780,12 @@ if [ "$PT" = "enabled" ]; then
     "") printf "  \033[33m?\033[0m llama-probe.service has not run yet\n" ;;
     *) old "the last probe FAILED (status $LAST${LASTV:+, $LASTV}) — journalctl --user -u llama-probe" ;;
   esac
-else
-  printf "  \033[33m?\033[0m llama-probe.timer is %s — nothing would notice a\n" "${PT:-not installed}"
-  printf "    poisoned server; it answers, it just answers wrongly\n"
-fi
+    else
+      printf "  \033[33m?\033[0m llama-probe.timer is %s — nothing would notice a\n" "${PT:-not installed}"
+      printf "    poisoned server; it answers, it just answers wrongly\n"
+    fi
+    ;;
+esac
 
 head_ "Memory budget — what the running profile claimed, and what it took"
 # The half that keeps the declaration honest. setup/lib/budget.py refuses a

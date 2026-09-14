@@ -44,7 +44,7 @@ day it was written. This one has named an already-replaced model twice.)
 
 Since 11.09.2026 the backend behind the endpoint need not be `llama-server` at
 all: a container backend can be serving instead, and then the names above are
-its own — `halogen-qwen3.8-flash-next`, plus `-low`, `-medium`, `-high`.
+its own — `halogen-qwen3.8-flash-next` (with aliases `halogen-qwen38flash` and `halogen`), plus `-low`, `-medium`, `-high` (or `halogen-qwen38` when serving 27B).
 
 ### The name that does not go stale
 
@@ -320,12 +320,24 @@ llm-pi-ai:
       baseURL: $ENDPOINT/v1
       defaultContextWindow: 200000   # slot holds 204800, see below
       models:
-        - id: flashnext-low
-          name: Qwen Flash-Next (low thinking)
-        - id: flashnext
-          name: Qwen Flash-Next (no thinking)
-        - id: flashnext-medium
-          name: Qwen Flash-Next (medium thinking)
+        - id: local-low
+          name: Local Model (low thinking — recommended)
+          input: [text, image]
+        - id: local
+          name: Local Model (no thinking)
+          input: [text, image]
+        - id: local-medium
+          name: Local Model (medium thinking)
+          input: [text, image]
+        - id: halogen-qwen3.8-flash-next-low
+          name: Halogen Qwen Flash-Next (low thinking)
+          input: [text, image]
+        - id: halogen-qwen3.8-flash-next
+          name: Halogen Qwen Flash-Next (no thinking)
+          input: [text, image]
+        - id: halogen-qwen3.8-flash-next-medium
+          name: Halogen Qwen Flash-Next (medium thinking)
+          input: [text, image]
 ```
 
 The provider key and `displayName` are yours to choose — they are labels in
@@ -335,9 +347,40 @@ as `CLAUDE_CODE_MAX_CONTEXT_TOKENS` in the other variants.
 `bash setup/consumer-info.sh` prints it if the stack is yours; ask the operator
 if it is not.
 
+### Multimodal / Image support in DeepSeek Harness
+
+Notice the `input: [text, image]` line in the configuration above.
+DeepSeek Harness (`@deepseek-ai/dsh-llm-pi-ai`) defaults custom models to
+text-only (`DEFAULT_INPUT = ["text"]`). If you do not declare `input: [text, image]`
+explicitly in `settings.yaml`, DSH will refuse attached images client-side with
+`The selected model does not support images. Try switching to a multimodal model.`
+before any request reaches the server.
+
+When Halogen is serving with its vision tower (`qwen38-flash-next-vision.hgn`),
+multimodal images are ingested seamlessly by the vision tower adapter, producing
+visual embeddings that flow directly into the attention context alongside text tokens.
+
+### SSD activity during prompt prefill (PLE N-Gram table)
+
+When sending prompts (text or image) to `halogen-qwen3.8-flash-next`, you may
+observe a brief surge in NVMe SSD read throughput while GPU compute dips.
+**The model is NOT switching back and forth between text and image models.**
+Both text weights and the vision tower remain permanently resident in memory.
+
+The disk read comes from the model's architecture: Qwen 3.8 Flash-Next holds
+68.0 GiB of neural network weights locked in RAM/GPU, while its massive
+**47.7 GiB Predictive Language Embedding (PLE) N-gram lookup table** resides on
+the NVMe SSD and is read on-demand via the Linux page cache during prompt prefill.
+While reading uncached table entries, the GPU waits on I/O. As soon as prefill
+completes and decoding begins, SSD traffic drops to zero and the GPU runs fully
+compute-bound at ~40–50 tokens/s.
+
 The prefix rules of the last section apply unchanged: the id is formed
 from the system prompt and the tool block, so a changed plugin set means
-one cold start. `dsh` is a developer preview — expect breaking changes
+one cold start. When starting a chat, `dsh` fires a short background request
+(~150 tokens, `max_completion_tokens: 64`) to summarize the session title;
+the gateway traces this under its own prefix id, separate from the main
+conversation turn. `dsh` is a developer preview — expect breaking changes
 between versions.
 
 ## Variant C · Anthropic via the API or Vertex, plus this model

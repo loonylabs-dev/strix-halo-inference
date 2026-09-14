@@ -1549,6 +1549,14 @@ def query_slots(wait=0):
                 return len(json.loads(x.read().decode()))
         except urllib.error.HTTPError as he:
             if he.code == 404:
+                # Backend has no /slots (e.g. Halogen). Check /health for slot count.
+                try:
+                    with urllib.request.urlopen(LLAMA + "/health", timeout=5) as xh:
+                        if xh.status == 200:
+                            data = json.loads(xh.read().decode())
+                            return max(1, int(data.get("slots", 1)))
+                except Exception:
+                    pass
                 return 1
             if time.time() >= end:
                 return None
@@ -1563,7 +1571,8 @@ def query_slots(wait=0):
                 try:
                     with urllib.request.urlopen(LLAMA + "/health", timeout=5) as xh:
                         if xh.status == 200:
-                            return 1
+                            data = json.loads(xh.read().decode())
+                            return max(1, int(data.get("slots", 1)))
                 except Exception:
                     pass
             if time.time() >= end:
@@ -1676,7 +1685,7 @@ def correct(p, dialect=DIA.ANTHROPIC):
 # The trace asks this too, not just the injection: `slug_known` is what
 # separates "asked for the bare alias" from "asked for a name nobody knows",
 # and both look like mode=bare from the outside.
-BACKEND_SPELLINGS = ("halogen", "halogen-qwen3.8-flash-next")
+BACKEND_SPELLINGS = ("halogen", "halogen-qwen38flash", "halogen-qwen3.8-flash-next", "halogen-qwen38")
 
 
 def resolve_slug(model, served, modes):

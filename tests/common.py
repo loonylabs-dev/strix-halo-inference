@@ -48,6 +48,17 @@ if not os.environ.get("TRACE_DIR"):
     os.environ["TRACE_DIR"] = _TRACE_TMP
     atexit.register(shutil.rmtree, _TRACE_TMP, True)
 
+# --- the tests must not inherit broken shell function exports ----------------
+#
+# Environment Modules (/etc/profile.d/modules.sh) exports bash functions
+# like BASH_FUNC_module%% and BASH_FUNC_ml%%. In subshells or non-interactive
+# shells, these can fail to parse and print syntax errors on stderr,
+# contaminating subprocesses that capture stderr (e.g. llama-server --version).
+for _k in list(os.environ):
+    if _k.startswith("BASH_FUNC_"):
+        del os.environ[_k]
+
+
 
 def load(path, name, env_=None):
     """Load a script file as a module.

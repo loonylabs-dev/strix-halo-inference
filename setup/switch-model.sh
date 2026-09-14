@@ -141,31 +141,52 @@ run_write() {   # $1 = content, $2 = file. Separate from run(): a redirect is
 # A name that may own a prefix store. `models_known` alone answers no to the
 # container backend, and answering no is how a foreign store came to be
 # relabelled instead of parked.
-owner_known() { [ "$1" = "halogen" ] || models_known "$1"; }
+owner_known() {
+  case "$1" in
+    halogen*) return 0 ;;
+    *) models_known "$1" ;;
+  esac
+}
 
-if [ "$NEW" = "halogen" ]; then
-  IS_HALOGEN=1
-elif models_known "$NEW"; then
-  IS_HALOGEN=0
-else
-  die "unknown model '$NEW'. The repo knows:
+case "$NEW" in
+  halogen|halogen-qwen38flash)
+    NEW="halogen-qwen38flash"
+    IS_HALOGEN=1
+    ;;
+  halogen-qwen38)
+    IS_HALOGEN=1
+    ;;
+  *)
+    if models_known "$NEW"; then
+      IS_HALOGEN=0
+    else
+      die "unknown model '$NEW'. The repo knows:
 $(models_all | sed 's/^/      /')
+      halogen-qwen38flash (Halogen Flash Server · Qwen3.8-Flash-Next)
+      halogen-qwen38      (Halogen Server · Qwen3.8-27B)
 
     A model IS its profile: create setup/env/$NEW.env, then
     bash setup/install.sh --user-only"
-fi
+    fi
+    ;;
+esac
 
 HALOGEN_RUNNING=0
 if [ "$IS_HALOGEN" = 1 ]; then
-  step "0/7 preflight for 'halogen'  (Halogen Flash Server · Qwen3.8-Flash-Next)"
+  step "0/7 preflight for '$NEW'  ($(model_title "$NEW"))"
 
-  [ -f "$REPO/setup/systemd/halogen.service" ] || die "setup/systemd/halogen.service is missing"
+  [ -f "$REPO/setup/systemd/$(model_unit "$NEW")" ] || [ -f "$REPO/setup/systemd/halogen.service" ] || die "setup/systemd/$(model_unit "$NEW") is missing"
   [ -x "$REPO/setup/halogenexec" ] || die "setup/halogenexec is missing or not executable"
 
   # Asked, not resolved here — models.sh owns the chain.
   HALO_DIR="$(halogen_models_dir)"
-  CHECKPOINT="$(find -L "$HALO_DIR" -maxdepth 1 -name '*.hgn' ! -name '*overlay*' 2>/dev/null | head -1)"
-  [ -n "$CHECKPOINT" ] && [ -f "$CHECKPOINT" ] || die "Halogen checkpoint (*.hgn) not found in $HALO_DIR"
+  if [ "$NEW" = "halogen-qwen38" ]; then
+    CHECKPOINT="$(find -L "$HALO_DIR" -maxdepth 1 -name 'qwen3.8-27b*.hgn' 2>/dev/null | head -1)"
+    [ -n "$CHECKPOINT" ] && [ -f "$CHECKPOINT" ] || die "Halogen 27B checkpoint (qwen3.8-27b*.hgn) not found in $HALO_DIR"
+  else
+    CHECKPOINT="$(find -L "$HALO_DIR" -maxdepth 1 -name '*.hgn' ! -name '*overlay*' ! -name '*27b*' 2>/dev/null | head -1)"
+    [ -n "$CHECKPOINT" ] && [ -f "$CHECKPOINT" ] || die "Halogen checkpoint (*.hgn) not found in $HALO_DIR"
+  fi
   ok "model checkpoint readable ($CHECKPOINT)"
 
   PORT=8080
@@ -187,19 +208,19 @@ if [ "$IS_HALOGEN" = 1 ]; then
   command -v podman >/dev/null 2>&1 || die "podman is not installed"
   ok "podman container runtime available"
 
-  OLD="$(models_active || true)"
+  OLD="$(models_active | grep -vx "$NEW" || true)"
   SERVING="$(models_serving | tr '\n' ' ')"
   if [ -n "$OLD" ]; then
     ok "running now: $(printf '%s' "$OLD" | tr '\n' ' ') — will be stopped"
   else
-    ok "no other llama model is active"
+    ok "no other model is active"
   fi
   [ -n "${SERVING// /}" ] && ok "process command line says: $SERVING"
 
-  if systemctl --user is-active halogen.service >/dev/null 2>&1 && [ "$DRY" = 0 ]; then
+  if [ "$(models_active | tr '\n' ' ')" = "$NEW " ] && [ "$DRY" = 0 ]; then
     say
-    say "halogen is already the active model. Nothing to do."
-    say "  restart it:  systemctl --user restart halogen.service"
+    say "$NEW is already the active model. Nothing to do."
+    say "  restart it:  systemctl --user restart $(model_unit "$NEW")"
     exit 0
   fi
 else
@@ -392,10 +413,11 @@ PY
 fi
 
 HALOGEN_RUNNING=0
-if systemctl --user is-active halogen.service >/dev/null 2>&1; then
-  HALOGEN_RUNNING=1
-  ok "running now: halogen (Halogen Flash Server) — will be stopped"
-fi
+for hu in halogen-qwen38flash.service halogen.service halogen-qwen38.service; do
+  if systemctl --user is-active "$hu" >/dev/null 2>&1; then
+    HALOGEN_RUNNING=1
+  fi
+done
 OLD="$(models_active | grep -vx "$NEW" || true)"
 SERVING="$(models_serving | tr '\n' ' ')"
 if [ -n "$OLD" ]; then
@@ -516,8 +538,8 @@ step "3/7 stop the old model and re-key the prefix store"
 # them. One implementation for both: the halogen copy of this block had no
 # RESTORE arm and wrote `.owner` unconditionally.
 if [ "$HALOGEN_RUNNING" = 1 ]; then
-  run systemctl --user stop halogen.service
-  [ "$DRY" = 0 ] && ok "halogen.service stopped"
+  run systemctl --user stop halogen-qwen38flash.service halogen.service halogen-qwen38.service 2>/dev/null || true
+  [ "$DRY" = 0 ] && ok "halogen service(s) stopped"
 fi
 for m in $OLD; do run systemctl --user stop "$(model_unit "$m")"; done
 # Every model keeps its own store — including models that were never the
@@ -543,7 +565,7 @@ run_write "$NEW" "$SLOTS/.owner"
 
 step "4/7 swap the services"
 if [ "$HALOGEN_RUNNING" = 1 ]; then
-  run systemctl --user disable --now halogen.service || true
+  run systemctl --user disable --now halogen-qwen38flash.service halogen.service halogen-qwen38.service 2>/dev/null || true
 fi
 for m in $OLD; do run systemctl --user disable "$(model_unit "$m")" || true; done
 if [ "$IS_HALOGEN" = 1 ]; then
@@ -551,10 +573,23 @@ if [ "$IS_HALOGEN" = 1 ]; then
   # machine whose install predates the container backend — the link is
   # idempotent and points into the checkout either way.
   run mkdir -p "$HOME/.config/systemd/user"
+  run ln -sf "$REPO/setup/systemd/$(model_unit "$NEW")" "$HOME/.config/systemd/user/$(model_unit "$NEW")"
   run ln -sf "$REPO/setup/systemd/halogen.service" "$HOME/.config/systemd/user/halogen.service"
   run systemctl --user daemon-reload
 fi
 run systemctl --user enable --now "$(model_unit "$NEW")"
+if [ "$(model_probe "$NEW")" = "yes" ]; then
+  if systemctl --user list-unit-files llama-probe.timer >/dev/null 2>&1; then
+    run systemctl --user enable --now llama-probe.timer
+  fi
+else
+  if systemctl --user is-active llama-probe.timer >/dev/null 2>&1; then
+    run systemctl --user stop llama-probe.timer
+  fi
+  if systemctl --user is-enabled llama-probe.timer >/dev/null 2>&1; then
+    run systemctl --user disable llama-probe.timer
+  fi
+fi
 
 step "5/7 wait for the model"
 if [ "$DRY" = 0 ]; then
@@ -582,7 +617,7 @@ if [ "$DRY" = 0 ]; then
     0) warn "no backend found by command line (started differently?)" ;;
     *) die "MORE THAN ONE backend is running: $S
     That is the Conflicts= failure. Stop them all and switch again:
-      systemctl --user stop 'llama-user@*' halogen.service" ;;
+      systemctl --user stop 'llama-user@*' halogen-qwen38flash.service halogen.service halogen-qwen38.service" ;;
   esac
 fi
 
@@ -617,11 +652,11 @@ if [ "$DRY" = 0 ] && [ "$GW_PRESENT" = 0 ]; then
     curl -sf --max-time 300 --retry 2 --retry-delay 3 \
       "$SERVER/v1/chat/completions" \
       -H 'content-type: application/json' \
-      -d "{\"model\":\"halogen\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}" \
+      -d "{\"model\":\"$NEW\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}" \
       | python3 -c "import json,sys; r=json.load(sys.stdin); \
 c=r.get('choices') or []; assert c and c[0].get('message'), r; \
-print('  smoke ok:', (c[0]['message'].get('content') or '')[:40])" || die "Halogen answered /health but did not generate — check:
-      journalctl --user -u halogen.service -n 80"
+print('  smoke ok:', (c[0]['message'].get('content') or '')[:40])" || die "$(model_title "$NEW") answered /health but did not generate — check:
+      journalctl --user -u $(model_unit "$NEW") -n 80"
   else
     curl -sf --max-time 300 --retry 2 --retry-delay 3 \
       "$SERVER/v1/chat/completions" \
@@ -687,7 +722,7 @@ if [ "$DRY" = 1 ]; then
   say "DRY RUN — nothing was changed."
 else
   if [ "$IS_HALOGEN" = 1 ]; then
-    say "DONE — halogen is serving.  (Halogen Flash Server · Qwen3.8-Flash-Next)"
+    say "DONE — $NEW is serving.  ($(model_title "$NEW"))"
   else
     say "DONE — $NEW is serving.  $(model_title "$NEW")"
   fi
@@ -700,6 +735,6 @@ else
     say "Back:  bash setup/switch-model.sh $(printf '%s' "$OLD" | head -1)"
   elif [ "$HALOGEN_RUNNING" = 1 ]; then
     say
-    say "Back:  bash setup/switch-model.sh halogen"
+    say "Back:  bash setup/switch-model.sh halogen-qwen38flash"
   fi
 fi

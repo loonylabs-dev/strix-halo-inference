@@ -44,18 +44,29 @@ class TestTheUnitExcludesEveryModel(unittest.TestCase):
     """
 
     def test_it_names_every_profile(self):
-        text = unit_text("halogen.service")
-        line = " ".join(
-            l.strip().rstrip("\\")
-            for l in text.splitlines()
-            if l.strip().startswith("Conflicts=") or _continues(text, l))
-        got = sorted(w for w in line.replace("Conflicts=", " ").split()
-                     if w.endswith(".service"))
-        self.assertEqual(
-            got, sorted("llama-user@%s.service" % m for m in profiles()),
-            "halogen.service's Conflicts= no longer matches setup/env/ — a "
-            "profile it does not name can be started beside it, and both in "
-            "UMA is how this machine went down on 26.08.2026")
+        for u in ("halogen.service", "halogen-qwen38flash.service", "halogen-qwen38.service"):
+            with self.subTest(unit=u):
+                text = unit_text(u)
+                line = " ".join(
+                    l.strip().rstrip("\\")
+                    for l in text.splitlines()
+                    if l.strip().startswith("Conflicts=") or _continues(text, l))
+                got = sorted(w for w in line.replace("Conflicts=", " ").split()
+                             if w.endswith(".service") and w.startswith("llama-user@"))
+                self.assertEqual(
+                    got, sorted("llama-user@%s.service" % m for m in profiles()),
+                    "%s's Conflicts= no longer matches setup/env/ — a "
+                    "profile it does not name can be started beside it, and both in "
+                    "UMA is how this machine went down on 26.08.2026" % u)
+                if u == "halogen.service":
+                    self.assertIn("halogen-qwen38.service", line)
+                    self.assertIn("halogen-qwen38flash.service", line)
+                elif u == "halogen-qwen38flash.service":
+                    self.assertIn("halogen-qwen38.service", line)
+                    self.assertIn("halogen.service", line)
+                elif u == "halogen-qwen38.service":
+                    self.assertIn("halogen-qwen38flash.service", line)
+                    self.assertIn("halogen.service", line)
 
 
 def _continues(text, line):
@@ -534,7 +545,7 @@ class TestServingIsReadOffTheProcess(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         for name in r.stdout.split():
             with self.subTest(name=name):
-                self.assertTrue(name == "halogen" or name in profiles(),
+                self.assertTrue(name.startswith("halogen") or name in profiles(),
                                 "%r is neither a profile nor halogen" % name)
 
     def test_there_is_a_verb_that_names_the_unit(self):

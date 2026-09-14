@@ -259,6 +259,40 @@ class TestTheServedModelIsAskedForOnce(unittest.TestCase):
                          "the refresh must be reached from one place, after both")
 
 
+class TestQuerySlots(unittest.TestCase):
+    """query_slots asks /slots, and falls back to /health when serving an
+    OpenAI/container backend (like Halogen) that returns 404 on /slots."""
+
+    def test_query_slots_from_slots_endpoint(self):
+        import io
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+        with mock.patch("urllib.request.urlopen",
+                        lambda r, *a, **k: Resp(json.dumps([{"id": 0}, {"id": 1}]).encode())):
+            self.assertEqual(GW.query_slots(), 2)
+
+    def test_query_slots_from_health_on_404(self):
+        import io, urllib.error
+        class Resp(io.BytesIO):
+            def __init__(self, d):
+                super().__init__(json.dumps(d).encode())
+                self.status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def fake_urlopen(req, *a, **k):
+            url = req if isinstance(req, str) else req.full_url
+            if "/slots" in url:
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            if "/health" in url:
+                return Resp({"status": "ok", "slots": 4})
+            raise OSError("unhandled url: %s" % url)
+
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            self.assertEqual(GW.query_slots(), 4)
+
+
 class TestIdContract(unittest.TestCase):
     """The bug that made the automatic saving useless.
 
@@ -1398,7 +1432,7 @@ class TestZoneRemote(GatewayOnTheWire):
         Exception', and CancelledError is not one."""
         ident = GW.prefix_id(self.payload())[0]
         GW.SAVED = {ident: "irgendwas"}
-        async def boom(k):
+        async def boom(*args, **kwargs):
             raise asyncio.CancelledError()
         GW.restore_from_disk = boom
         free_before = GW.GATE.free

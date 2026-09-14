@@ -118,8 +118,10 @@ request time, so prefill sat inside every decode number.
 
 | Name | For |
 |---|---|
-| `qwen36` | Qwen3.6-35B-A3B — **production since 04.09.2026.** Speed measured, quality not. See below |
-| `flashnext` | Qwen3.8-Flash-Next — production 01.-04.09.2026, kept as the way back (`switch-model.sh flashnext`) |
+| `halogen-qwen38flash` (alias: `halogen`) | Qwen3.8-Flash-Next via Halogen Flash Server — **serving now** (container, unified text & vision tower, MTP speculation, 4 slots) |
+| `halogen-qwen38` | Qwen3.8-27B via Halogen Server (container, DFlash2 speculation, text-only, 4 slots) |
+| `qwen36` | Qwen3.6-35B-A3B — llama production 04.-11.09.2026. Speed measured, quality not. See below |
+| `flashnext` | Qwen3.8-Flash-Next (llama profile) — production 01.-04.09.2026, kept as the way back (`switch-model.sh flashnext`) |
 | `qwen38` | coding agent, vision, judge — production until 01.09.2026, kept as the way back |
 | `glm47flash` | GLM-4.7-Flash-30B-A3B — measured 04.09.2026 as a second-family sparring partner. 28.9 GiB, depth-correctness clean. See below |
 | `gemma26` | Gemma 4 26B-A4B — measured 04.09.2026. The fastest thing here below 32k and **capped there**, because it loses the middle of a longer context. See below |

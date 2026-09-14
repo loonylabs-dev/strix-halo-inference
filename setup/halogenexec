@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # halogenexec — launch Halogen Flash Server container via rootless podman.
 #
-# Executed by setup/systemd/halogen.service.
+# Executed by setup/systemd/halogen-qwen38flash.service, halogen-qwen38.service, or halogen.service.
 # Halogen Flash Server (vLLM-Flash) provides high-performance inference on
 # AMD Strix Halo (gfx1151) with radix KV caching and OpenAI API compatible endpoints.
 set -euo pipefail
@@ -10,6 +10,16 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
 # shellcheck source=lib/models.sh
 . "$REPO/setup/lib/models.sh"
+
+FLAVOR="${1:-${HALOGEN_FLAVOR:-qwen38flash}}"
+case "$FLAVOR" in
+  qwen38|halogen-qwen38|27b)
+    FLAVOR="qwen38"
+    ;;
+  *)
+    FLAVOR="qwen38flash"
+    ;;
+esac
 
 # 1. Model directory and image — ASKED, not resolved here. Three files used to
 #    carry a copy of this fallback chain and two spelled the image tag out;
@@ -22,11 +32,20 @@ if [ -z "$MODELS_DIR" ] || [ ! -d "$MODELS_DIR" ]; then
   exit 1
 fi
 
-CHECKPOINT_FILE="${HALOGEN_CHECKPOINT_FILE:-$MODELS_DIR/qwen38-flash-next-w4b.hgn}"
-if [ ! -f "$CHECKPOINT_FILE" ]; then
-  echo "halogenexec: checkpoint file not found at $CHECKPOINT_FILE" >&2
-  echo "  Run bash setup/scripts/fetch-halogen.sh" >&2
-  exit 1
+if [ "$FLAVOR" = "qwen38" ]; then
+  CHECKPOINT_FILE="${HALOGEN_CHECKPOINT_FILE:-$(find -L "$MODELS_DIR" -maxdepth 1 -name 'qwen3.8-27b*.hgn' 2>/dev/null | head -1)}"
+  CHECKPOINT_FILE="${CHECKPOINT_FILE:-$MODELS_DIR/qwen3.8-27b-p1w4d-d2.hgn}"
+  if [ ! -f "$CHECKPOINT_FILE" ]; then
+    echo "halogenexec: Qwen3.8-27B checkpoint file not found at $CHECKPOINT_FILE" >&2
+    exit 1
+  fi
+else
+  CHECKPOINT_FILE="${HALOGEN_CHECKPOINT_FILE:-$MODELS_DIR/qwen38-flash-next-w4b.hgn}"
+  if [ ! -f "$CHECKPOINT_FILE" ]; then
+    echo "halogenexec: checkpoint file not found at $CHECKPOINT_FILE" >&2
+    echo "  Run bash setup/scripts/fetch-halogen.sh" >&2
+    exit 1
+  fi
 fi
 
 # Clean up any previously dead or lingering container
@@ -34,7 +53,7 @@ podman rm -f halogen >/dev/null 2>&1 || true
 
 HOST_PORT="${HALOGEN_HOST_PORT:-8080}"
 CONTAINER_PORT=8731
-IMAGE="$(halogen_image)"
+IMAGE="$(halogen_image "$FLAVOR")"
 
 # The sha256 of /halogen/tools/serve_api.py and tool_parse.py in the image
 # the vendored copies were cut from. Written in their headers too; compared
@@ -116,7 +135,50 @@ if [ -f "$PATCHED" ] || [ -f "$PATCHED_TP" ]; then
   fi
 fi
 
-echo "halogenexec: starting Halogen Flash Server from $MODELS_DIR on port $HOST_PORT..."
+SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"
+SLOTS_WANT="${SLOTS_WANT:-4}"
+VISION_ARGS=()
+VISION_WANT="${HALOGEN_VISION_TOWER:-$(local_var HALOGEN_VISION_TOWER 2>/dev/null || true)}"
+if [ -z "$VISION_WANT" ] && [ -f "$MODELS_DIR/qwen38-flash-next-vision.hgn" ]; then
+  VISION_WANT=1
+fi
+if [ -n "$VISION_WANT" ]; then
+  VISION_ARGS+=(-e HALOGEN_VISION_TOWER="$VISION_WANT")
+fi
+
+POOL_WANT="${HALOGEN_KV_POOL_POSITIONS:-$(local_var HALOGEN_KV_POOL_POSITIONS 2>/dev/null || true)}"
+if [ -z "$POOL_WANT" ]; then
+  if [ -n "$VISION_WANT" ]; then
+    POOL_WANT=262144
+  else
+    POOL_WANT=524288
+  fi
+fi
+
+if [ "$FLAVOR" = "qwen38" ]; then
+  SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"
+  SLOTS_WANT="${SLOTS_WANT:-1}"
+  SLOT_CTX="${HALOGEN_SLOT_CTX:-$(local_var HALOGEN_SLOT_CTX)}"
+  SLOT_CTX="${SLOT_CTX:-262144}"
+  DRAFTER_WANT="${HALOGEN_DRAFTER:-2}"
+
+  echo "halogenexec: starting Halogen Server (Qwen3.8-27B) from $MODELS_DIR on port $HOST_PORT (slots: $SLOTS_WANT, slot_ctx: $SLOT_CTX, drafter: $DRAFTER_WANT)..."
+  exec podman run --rm \
+    --name halogen \
+    --device /dev/kfd \
+    --device /dev/dri \
+    --security-opt label=disable \
+    -v "$MODELS_DIR":/models:ro \
+    --net=host \
+    -e HALOGEN_API_PORT="$HOST_PORT" \
+    -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
+    -e HALOGEN_SLOT_CTX="$SLOT_CTX" \
+    -e HALOGEN_DRAFTER="$DRAFTER_WANT" \
+    -e HALOGEN_CHECKPOINT="/models/$(basename "$CHECKPOINT_FILE")" \
+    "$IMAGE"
+fi
+
+echo "halogenexec: starting Halogen Flash Server (Qwen3.8-Flash-Next) from $MODELS_DIR on port $HOST_PORT (slots: $SLOTS_WANT, pool: $POOL_WANT)..."
 exec podman run --rm \
   --name halogen \
   --device /dev/kfd \
@@ -126,7 +188,8 @@ exec podman run --rm \
   "${EXTRA_MOUNTS[@]}" \
   --net=host \
   -e HALOGEN_API_PORT="$HOST_PORT" \
-  -e HALOGEN_KV_SLOTS="${HALOGEN_KV_SLOTS:-1}" \
-  -e HALOGEN_KV_POOL_POSITIONS="${HALOGEN_KV_POOL_POSITIONS:-262144}" \
+  -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
+  -e HALOGEN_KV_POOL_POSITIONS="$POOL_WANT" \
   -e HALOGEN_CHECKPOINT=/models/qwen38-flash-next-w4b.hgn \
+  "${VISION_ARGS[@]}" \
   "$IMAGE" all

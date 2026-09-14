@@ -857,6 +857,24 @@
       "first_seen": "2026-09-12",
       "last_checked": "2026-09-12",
       "note": "Guarded by TOOL_PARSE_BASE_SHA256 in setup/halogenexec. On upstream image bumps, halogenexec refuses to start if the image's tool_parse.py changes, alerting the operator to check whether upstream fixed incremental tool streaming before refreshing the mount."
+    },
+    {
+      "id": "halogen-vision-compaction-stall",
+      "title": "Large KV pool with vision tower triggers Linux kernel memory compaction stalls on Strix Halo",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "slow",
+      "symptom": "High system load (D-state wait), intermittent system freezes, extreme TTFT latency (>60s) and >98,000 compact_stall events in /proc/vmstat during prompt prefill.",
+      "measured": "Measured 12.09.2026: with qwen38-flash-next-vision.hgn active and default POOL_WANT=524288 or 1048576, available 2 MiB contiguous blocks in /proc/buddyinfo dropped below 260. /proc/vmstat recorded >98,000 compact_stall events and processes accumulated minutes of D-state wait while streaming the 47.7 GiB PLE table from disk. Reducing POOL_WANT to 262144 frees ~18-27 GiB RAM (~7.2 GiB KV pool instead of ~25-35 GiB), keeping contiguous high-order pages available and completely eliminating compact_stalls.",
+      "mitigation": "setup/halogenexec dynamically defaults HALOGEN_KV_POOL_POSITIONS to 262144 when HALOGEN_VISION_TOWER is enabled (or vision model is present), leaving 13-15 GiB headroom for kernel page cache.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "mitigated",
+      "first_seen": "2026-09-12",
+      "last_checked": "2026-09-12"
     }
   ]
 }

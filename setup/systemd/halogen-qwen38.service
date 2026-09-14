@@ -1,5 +1,5 @@
 [Unit]
-Description=Halogen Flash Server (vLLM-Flash on Strix Halo gfx1151)
+Description=Halogen Server · Qwen3.8-27B (on Strix Halo gfx1151)
 After=network-online.target
 Wants=network-online.target
 # Mutual exclusion: cannot run alongside any llama-user@ model in 128 GB UMA memory.
@@ -7,14 +7,14 @@ Conflicts=llama-user@qwen38.service llama-user@gemma26.service \
           llama-user@gemma31.service llama-user@laguna.service \
           llama-user@gptoss.service llama-user@batch.service \
           llama-user@flashnext.service llama-user@qwen36.service \
-          llama-user@glm47flash.service halogen-qwen38.service halogen-qwen38flash.service
+          llama-user@glm47flash.service halogen-qwen38flash.service halogen.service
 StartLimitIntervalSec=120
 StartLimitBurst=3
 
 [Service]
 Type=simple
 EnvironmentFile=-%h/.config/llm-stack.env
-ExecStart=%h/.local/lib/llm-stack/halogenexec qwen38flash
+ExecStart=%h/.local/lib/llm-stack/halogenexec qwen38
 ExecStop=/usr/bin/podman stop -t 10 halogen
 ExecStopPost=-/usr/bin/podman rm -f -t 1 halogen
 Restart=on-failure

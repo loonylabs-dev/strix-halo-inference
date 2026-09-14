@@ -136,6 +136,10 @@ link_ "$SRC/systemd/llm-gateway.service" \
       "$HOME/.config/systemd/user/llm-gateway.service"
 link_ "$SRC/systemd/llama-user@.service" \
       "$HOME/.config/systemd/user/llama-user@.service"
+link_ "$SRC/systemd/halogen-qwen38flash.service" \
+      "$HOME/.config/systemd/user/halogen-qwen38flash.service"
+link_ "$SRC/systemd/halogen-qwen38.service" \
+      "$HOME/.config/systemd/user/halogen-qwen38.service"
 link_ "$SRC/systemd/halogen.service" \
       "$HOME/.config/systemd/user/halogen.service"
 link_ "$SRC/systemd/prefix-cleanup.service" \

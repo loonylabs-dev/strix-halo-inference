@@ -73,8 +73,9 @@ model_user_env()  { printf '%s/%s.env\n' "$MODELS_USER_ENV_DIR" "$1"; }
 # which is why the mapping lives here now: one place, asked by everyone.
 model_unit() {
   case "$1" in
-    halogen) printf 'halogen.service\n' ;;
-    *)       printf 'llama-user@%s.service\n' "$1" ;;
+    halogen|halogen-qwen38flash) printf 'halogen-qwen38flash.service\n' ;;
+    halogen-qwen38)              printf 'halogen-qwen38.service\n' ;;
+    *)                           printf 'llama-user@%s.service\n' "$1" ;;
   esac
 }
 
@@ -118,10 +119,20 @@ workload_meta() {       # $1 = workload, $2 = variable, $3 = default
 # reporting the new one. That is the six-places failure at the top of this
 # file, one backend later.
 HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.5.6"
+HALOGEN_27B_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen:0.1.3"
 
 halogen_image() {
-  if [ -n "${HALOGEN_IMAGE:-}" ]; then printf '%s\n' "$HALOGEN_IMAGE"; return 0; fi
-  printf '%s\n' "$(local_var HALOGEN_IMAGE "$HALOGEN_IMAGE_DEFAULT")"
+  local flavor="${1:-halogen-qwen38flash}"
+  case "$flavor" in
+    halogen-qwen38|27b|halogen-27b)
+      if [ -n "${HALOGEN_27B_IMAGE:-}" ]; then printf '%s\n' "$HALOGEN_27B_IMAGE"; return 0; fi
+      printf '%s\n' "$(local_var HALOGEN_27B_IMAGE "$HALOGEN_27B_IMAGE_DEFAULT")"
+      ;;
+    *)
+      if [ -n "${HALOGEN_IMAGE:-}" ]; then printf '%s\n' "$HALOGEN_IMAGE"; return 0; fi
+      printf '%s\n' "$(local_var HALOGEN_IMAGE "$HALOGEN_IMAGE_DEFAULT")"
+      ;;
+  esac
 }
 
 # Where the .hgn bundle lives — the one that EXISTS, or where it SHOULD go.
@@ -158,12 +169,18 @@ halogen_models_dir() {
 
 # --- what is running ------------------------------------------------------
 
-models_active() {       # instances of llama-user@ that are ACTIVE right now
+models_active() {       # instances of llama-user@ or halogen that are ACTIVE right now
   systemctl --user list-units --plain --no-legend --state=active \
       'llama-user@*.service' 2>/dev/null \
     | awk '{print $1}' \
     | sed -n 's/^llama-user@\(.*\)\.service$/\1/p' \
     | sort
+  if systemctl --user is-active halogen-qwen38flash.service >/dev/null 2>&1 \
+     || systemctl --user is-active halogen.service >/dev/null 2>&1; then
+    echo "halogen-qwen38flash"
+  elif systemctl --user is-active halogen-qwen38.service >/dev/null 2>&1; then
+    echo "halogen-qwen38"
+  fi
 }
 
 models_enabled() {      # instances that would come back after a reboot
@@ -192,17 +209,15 @@ models_serving() {
   # production for a backend that is not serving yet. CLAUDE.md carries the
   # rule this function exists for — ask what is running, never what systemd
   # intends.
-  #
-  # Anchored on the interpreter rather than written as a bare `pgrep -f
-  # serve_api.py`: an unanchored pattern also matches the caller's own
-  # `bash -c` line whenever that line happens to contain it, and then this
-  # function reports a backend because somebody grepped for one.
-  #
-  # What it proves: the front-end process is up. Not that the engine behind
-  # it has finished loading — /health is the only thing that answers that,
-  # and it is a network call this function deliberately does not make.
-  if pgrep -f '^python3 .*serve_api\.py' >/dev/null 2>&1; then
-    echo "halogen"
+  if pgrep -f '^python3 .*serve_api\.py' >/dev/null 2>&1 \
+     || podman ps --filter name=halogen --format '{{.Image}}' 2>/dev/null | grep -q "halogen"; then
+    local img
+    img="$(podman ps --filter name=halogen --format '{{.Image}}' 2>/dev/null || true)"
+    if [ -n "$img" ] && echo "$img" | grep -qv "flash-server"; then
+      echo "halogen-qwen38"
+    else
+      echo "halogen-qwen38flash"
+    fi
   fi
 }
 
@@ -216,8 +231,23 @@ models_serving() {
 # or merely parked, and setup/check.sh was calling it a hazard either way.
 backend_uses_slot_store() {
   case "$1" in
-    halogen) return 1 ;;
-    *)       return 0 ;;
+    halogen*) return 1 ;;
+    *)        return 0 ;;
+  esac
+}
+
+# Does this model/backend need the silent-failure watchdog (llama-probe.timer)?
+# llama-server on gfx1151 does — to catch the HIP race that degenerates output
+# into '////'. The container backend (Halogen) has no such defect and serves a
+# dedicated KV pool where rogue probe requests would evict or fragment the
+# resident prompt cache.
+#
+# Profiles in setup/env/*.env can declare MODEL_PROBE=no to opt out. Default
+# is "yes" for llama profiles, and hard "no" for halogen.
+model_probe() {
+  case "$1" in
+    halogen*) printf 'no\n' ;;
+    *)        model_meta "$1" MODEL_PROBE "yes" ;;
   esac
 }
 
@@ -333,7 +363,13 @@ model_meta() {          # $1 = model, $2 = variable, $3 = default
   printf '%s\n' "${v:-${3-}}"
 }
 
-model_title() { model_meta "$1" MODEL_TITLE "(no MODEL_TITLE in $(model_repo_env "$1"))"; }
+model_title() {
+  case "$1" in
+    halogen|halogen-qwen38flash) printf 'Halogen Flash Server · Qwen3.8-Flash-Next\n' ;;
+    halogen-qwen38)              printf 'Halogen Server · Qwen3.8-27B\n' ;;
+    *)                           model_meta "$1" MODEL_TITLE "(no MODEL_TITLE in $(model_repo_env "$1"))" ;;
+  esac
+}
 model_swa()   { model_meta "$1" MODEL_SWA   "unknown"; }
 # "<repo> <pattern>…" or empty. Empty means nobody has written down where
 # this model comes from — get-model.sh says so rather than guessing a repo.
@@ -383,6 +419,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     meta)     model_meta "${2:?model name}" "${3:?variable}" "${4-}" ;;
     bin)      model_bin  "${2:?model name}" ;;
     gguf)     model_gguf "${2:?model name}" ;;
+    probe)    model_probe "${2:?model name}" ;;
     table)
       printf '%-12s %-7s %-6s %-8s %s\n' MODEL SWA BIN STATE TITLE
       while IFS= read -r m; do
@@ -393,7 +430,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
           "${state:-inactive}" "$(model_title "$m")"
       done < <(models_all)
       ;;
-    *) echo "usage: bash setup/lib/models.sh {list|workloads|active|enabled|serving|serving-unit|slots|halogen-image|halogen-models|table|known N|args N|meta N VAR|bin N|gguf N}" >&2
+    *) echo "usage: bash setup/lib/models.sh {list|workloads|active|enabled|serving|serving-unit|slots|halogen-image|halogen-models|table|known N|args N|meta N VAR|bin N|gguf N|probe N}" >&2
        exit 2 ;;
   esac
 fi

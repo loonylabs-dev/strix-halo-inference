@@ -273,6 +273,45 @@ def classify_stall(url, err, streak_path=STREAK_PATH, state=None):
             "%s; %s (streak %d)" % (err, detail, n))
 
 
+def backend_is_halogen(url):
+    """Halogen does not have the gfx1151 HIP race bug ('////') and serves a
+    dedicated KV pool where rogue probe requests would evict or fragment the
+    resident prompt cache."""
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=2) as x:
+            d = json.loads(x.read().decode())
+            if "halogen" in str(d.get("model", "")).lower():
+                return True
+    except Exception:
+        pass
+    try:
+        with urllib.request.urlopen(url + "/slots", timeout=2) as x:
+            pass
+    except urllib.error.HTTPError as he:
+        if he.code == 404:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def resolve_serving_unit():
+    unit = os.environ.get("LLAMA_UNIT", "")
+    if unit:
+        return unit
+    try:
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        models_sh = os.path.join(repo, "setup", "lib", "models.sh")
+        if os.path.isfile(models_sh):
+            out = subprocess.check_output(["bash", models_sh, "serving-unit"],
+                                          stderr=subprocess.DEVNULL).decode().strip()
+            if out:
+                return out.splitlines()[0]
+    except Exception:
+        pass
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--json", action="store_true")
@@ -288,6 +327,17 @@ def main():
     a = ap.parse_args()
 
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Defense in depth: halogen has no HIP race defect and must not be probed.
+    if backend_is_halogen(a.url):
+        msg = "halogen backend active (watchdog only for llama-server HIP race)"
+        if a.json:
+            print(json.dumps({"at": stamp, "verdict": "SKIPPED", "ok": True,
+                              "detail": msg, "answer": ""}))
+        else:
+            print("%s  %-12s %s" % (stamp, "SKIPPED", msg))
+        return 0
+
     text, err = ask_with_patience(a.url, a.grace, timeout=a.timeout)
     if err is not None:
         verdict, ok, detail = classify_stall(a.url, err)
@@ -306,9 +356,11 @@ def main():
     # still loading, and restarting it then would turn a slow start into a
     # loop. WRONG is not a known fault of this machine and might be the model
     # having a bad day — a watchdog that acts on everything acts on noise.
-    if not ok and a.restart and verdict == "DEGENERATE" and UNIT:
-        print("  restarting %s — this is the known gfx1151 signature" % UNIT)
-        subprocess.run(["systemctl", "--user", "restart", UNIT], check=False)
+    if not ok and a.restart and verdict == "DEGENERATE":
+        unit = resolve_serving_unit()
+        if unit:
+            print("  restarting %s — this is the known gfx1151 signature" % unit)
+            subprocess.run(["systemctl", "--user", "restart", unit], check=False)
     return 0 if ok else 1
 
 

@@ -692,21 +692,54 @@ switches.
 
 ---
 
-## The second backend: Halogen Flash Server
+## The container backends: Halogen
 
-Everything above is about `llama-server`. Since 11.09.2026 there is one
-backend that is not: **Halogen Flash Server**, a rootless podman container
-serving Qwen3.8-Flash-Next, reached at the same port and through the same
-gateway.
+Everything above is about `llama-server`. Since 11.09.2026 there is support for
+container backends from Peonist AI, reached at the same port and through the same
+gateway:
+* **`halogen-qwen38flash`** (alias: `halogen`): **Halogen Flash Server** (Peonist AI `halogen-flash-server`),
+  serving Qwen3.8-Flash-Next with optional vision tower and MTP speculation, 4 slots.
+* **`halogen-qwen38`**: **Halogen Server** (Peonist AI `halogen-server`),
+  serving Qwen3.8-27B with DFlash2 speculation (draft depth 2), text-only, 4 slots.
 
-    bash setup/scripts/fetch-halogen.sh     the model bundle, resumable
-    bash setup/switch-model.sh halogen      switch to it
-    bash setup/switch-model.sh qwen36       switch back
+    bash setup/scripts/fetch-halogen.sh --with-vision   # fetch flash-next bundle
+    bash setup/switch-model.sh halogen-qwen38flash      # or: bash setup/switch-model.sh halogen
+    bash setup/switch-model.sh halogen-qwen38           # switch to 27B
+    bash setup/switch-model.sh qwen36                   # switch back to llama
 
 It is deliberately NOT a profile in `setup/env/`. A profile is a command line
-for `llama-server`, and this has none; `models.sh` knows the name, maps it to
-its own unit, and everything else — the store, the preflight, the one-backend
+for `llama-server`, and this has none; `models.sh` knows the names, maps them to
+their own units, and everything else — the store, the preflight, the one-backend
 check — runs the same code for both.
+
+### Multimodal Vision Tower & Memory Tuning
+
+Halogen supports multimodal input through an optional vision projector/encoder:
+`qwen38-flash-next-vision.hgn` (856 MiB).
+
+* **Automatic activation**: If `qwen38-flash-next-vision.hgn` is present in the
+  models directory, `setup/halogenexec` detects it and passes `-e HALOGEN_VISION_TOWER=1`
+  into the container. Both OpenAI-format image parts (base64 data URLs) and Anthropic-format
+  image blocks (translated by `anthropic_bridge.py`) are accepted.
+* **KV pool tuning against kernel compaction stalls**:
+  The vision tower allocates 0.84 GiB weights plus up to 1.14 GiB of worst-case
+  scratch buffer. With Halogen's default KV pool (524k–1M positions), available
+  contiguous 2 MiB blocks on a 128 GiB unified memory machine dropped below 260,
+  triggering catastrophic Linux kernel memory compaction stalls (>98,000 `compact_stall`
+  events and severe D-state stalls). `setup/halogenexec` automatically sets
+  `HALOGEN_KV_POOL_POSITIONS=262144` when vision is enabled, reducing KV memory to
+  ~7.2 GiB and leaving ~13–15 GiB of headroom for the OS and page cache.
+* **N-gram / PLE lookup table on SSD**:
+  Qwen 3.8 Flash-Next holds 68.0 GiB of core model weights locked in RAM/GTT,
+  while its massive **47.7 GiB Predictive Language Embedding (PLE) N-gram table**
+  is kept on NVMe SSD and read on-demand via the file cache during prompt prefill.
+  During prompt prefill, NVMe read throughput spikes while the GPU waits on I/O.
+  Once decode begins, SSD traffic drops to zero and generation runs fully GPU compute-bound
+  at ~40–50 tokens/s. The engine does **not** switch models between text and image turns.
+* **Watchdog probe timer**:
+  Halogen has no gfx1151 HIP race corruption defect. `setup/switch-model.sh`
+  automatically disables `llama-probe.timer` when switching to Halogen, protecting
+  Halogen's resident KV cache from probe eviction.
 
 ### It speaks OpenAI, and the consumer speaks Anthropic
 
@@ -778,11 +811,12 @@ sha256 of the file it was cut from, and **`halogenexec` verifies that hash
 against the image and refuses to start when it differs**. That refusal is the
 retirement condition: the next bump stops the service and says what to do.
 
-### Mutual exclusion
-
-`halogen.service` carries `Conflicts=` naming every `llama-user@` instance —
+#### Mutual exclusion
+ 
+Both `halogen-qwen38flash.service` (and legacy `halogen.service`) and `halogen-qwen38.service`
+carry `Conflicts=` naming every `llama-user@` instance as well as each other —
 the same hand-written list as `llama-user@.service`, and the same hazard if it
-falls behind `setup/env/`. `tests/test_halogen.py` compares it against the
+falls behind `setup/env/`. `tests/test_halogen.py` compares them against the
 registry for exact set equality.
 
 ---

@@ -432,5 +432,32 @@ class TestCheckShDoesNotCallASkippedRoundAPass(unittest.TestCase):
                           "%s exits 0 and checked nothing" % verdict)
 
 
+class TestHalogenIsSkipped(unittest.TestCase):
+    def test_backend_is_halogen_detects_health(self):
+        import io, json
+        from unittest import mock
+        class Resp(io.BytesIO):
+            def __init__(self, d):
+                super().__init__(json.dumps(d).encode())
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with mock.patch("urllib.request.urlopen",
+                        lambda u, timeout=None: Resp({"model": "halogen-qwen3.8-flash-next"})):
+            self.assertTrue(probe.backend_is_halogen("http://fake"))
+
+    def test_backend_is_halogen_detects_slots_404(self):
+        import urllib.error
+        from unittest import mock
+        def fake(u, timeout=None):
+            if "/health" in u:
+                raise OSError("no health")
+            if "/slots" in u:
+                raise urllib.error.HTTPError(u, 404, "Not Found", {}, None)
+            raise OSError("unhandled")
+        with mock.patch("urllib.request.urlopen", fake):
+            self.assertTrue(probe.backend_is_halogen("http://fake"))
+
+
 if __name__ == "__main__":
     unittest.main()

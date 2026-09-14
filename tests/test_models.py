@@ -58,6 +58,10 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(lib("known", "qwen38-typo").returncode, 1)
         self.assertEqual(lib("known", "").returncode, 1)
 
+    def test_model_probe(self):
+        self.assertEqual(lib("probe", "halogen").stdout.strip(), "no")
+        self.assertEqual(lib("probe", "qwen38").stdout.strip(), "yes")
+
     def test_every_profile_declares_its_metadata(self):
         for m in profiles():
             with self.subTest(model=m):
@@ -1095,9 +1099,12 @@ class TestNoModelNamesInCode(unittest.TestCase):
             for n, line in enumerate(text.splitlines(), 1):
                 if line.lstrip().startswith("#"):
                     continue                      # prose is allowed to be concrete
+                # Halogen container flavors (e.g. halogen-qwen38, halogen-qwen38flash)
+                # contain substrings of llama profile names (qwen38) without being that profile.
+                stripped = re.sub(r'halogen-[a-zA-Z0-9_.-]+', '', line)
                 for m in names:
                     with self.subTest(file=rel, line=n, model=m):
-                        self.assertNotIn(m, line,
+                        self.assertNotIn(m, stripped,
                                          "%s:%d hardcodes the model %r: %s"
                                          % (rel, n, m, line.strip()))
 

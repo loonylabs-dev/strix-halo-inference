@@ -4,7 +4,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![GPU](https://img.shields.io/badge/GPU-gfx1151-red)](docs/setup/03-gpu-and-memory.md)
 [![RAM](https://img.shields.io/badge/RAM-128%20GB-orange)](#does-this-fit-your-machine)
-[![backend](https://img.shields.io/badge/backends-llama.cpp%20%C2%B7%20sd.cpp%20%C2%B7%20qwentts.cpp-lightgrey)](setup/patches/README.md)
+[![backend](https://img.shields.io/badge/backends-Halogen%20%C2%B7%20llama.cpp%20%C2%B7%20sd.cpp%20%C2%B7%20qwentts.cpp-lightgrey)](setup/README.md)
 [![python](https://img.shields.io/badge/python-3.10%20%E2%80%93%203.14-blue)](.github/workflows/tests.yml)
 
 **A Strix Halo as a measured inference machine: a local coding agent in
@@ -16,9 +16,10 @@ method beside it.
 ```bash
 bash setup/preflight.sh              # is this repo for your machine?
 bash setup/install.sh                # once — writes ~/.config/llm-stack.env
-bash setup/get-model.sh qwen38       # fetch: resumable, sha256-checked
-bash setup/switch-model.sh qwen38    # serve it
-bash tests/run.sh                    # the gate (1305 tests, ~19 s, no GPU)
+bash setup/switch-model.sh halogen-qwen38flash # (alias: halogen) serve the high-speed Halogen container
+# or: bash setup/switch-model.sh halogen-qwen38  # serve 27B via Halogen
+# or: bash setup/switch-model.sh qwen38         # serve GGUF via llama-server
+bash tests/run.sh                    # the gate (1449 tests, ~20 s, no GPU)
 ```
 
 The name you fetch is the name you serve. There is no `pull` command, because
@@ -41,79 +42,77 @@ Nothing is scaled down to change that — a scaled number is a guess. Not a
 generic stack, on purpose; `preflight.sh` says where you stand before you
 spend an afternoon.
 
-## What you get that `ollama` does not
+## The engines: Turnkey performance on Strix Halo
 
-`ollama` has something answering in five minutes, and that is a real
-advantage. Four things it will not do on this hardware. (The backend here is
-llama.cpp — that is the engine, not the competition. What follows is the
-machine built around it.)
+Instead of fighting ROCm compilation flags or manual container mounts, the
+stack provides turnkey configurations for the fastest inference engines on
+this silicon:
 
-**Tell you what will freeze your machine.** There is no separate VRAM — the
-GPU takes system RAM through GTT, and that allocation is **pinned**. A model
-that does not fit does not page and does not get OOM-killed: it stops the
-machine, takes every process with it, and leaves nothing in any log. That
-happened three times in one day before [`setup/lib/budget.py`](setup/lib/budget.py)
-existed. It now weighs the profile before every start and refuses:
+* **Halogen Flash Server** ([`setup/halogen/`](setup/halogen/)): A rootless
+  container backend running Qwen 3.8 Flash-Next with MTP speculative decoding.
+  The fastest solution on this hardware for daily agent workloads, delivering
+  top token throughput.
+* **llama.cpp** ([`setup/scripts/build-llama.sh`](setup/scripts/build-llama.sh)):
+  Upstream master plus a small curated set of hardware patches
+  ([`setup/patches/`](setup/patches/README.md)) for the broad GGUF model
+  ecosystem.
+
+Switching between them is one command:
+
+```bash
+bash setup/switch-model.sh halogen-qwen38flash # switch to Halogen Flash Server (or: halogen)
+bash setup/switch-model.sh halogen-qwen38      # switch to Halogen Server (27B)
+bash setup/switch-model.sh qwen38              # switch back to llama.cpp
+```
+
+The gateway shields your clients completely: changing the underlying engine
+requires zero configuration changes in your editor or harness.
+
+## The Gateway: Universal interface and instant turns
+
+The LLM gateway ([`setup/gateway/`](setup/gateway/)) sits between your clients
+and the serving engine:
+
+* **Dual-dialect translation:** Speaks Anthropic (`/v1/messages`) and OpenAI
+  (`/v1/chat/completions`) in-process. Claude Code, DeepSeek Harness, Cursor,
+  and scripts talk to whichever backend is running without separate bridge
+  daemons.
+* **True prompt and prefix caching:** Agent prompts often carry 20k–40k tokens
+  of system instructions and tool definitions. The gateway tracks prefix hashes
+  and KV states, turning a ~120-second cold prefill into a **1.3-second**
+  follow-up turn (>90% cache reuse).
+* **Edge-stable streaming:** Incremental token-by-token parameter streaming for
+  tool calls and 15-second SSE keepalive heartbeats prevent Cloudflare Tunnel
+  and proxy dropouts (`500` / `524`) on long generations.
+* **Stable model aliases:** Use `local-low`, `local`, or `local-medium` in your
+  clients. They resolve to the active engine's equivalent mode, so switching
+  models never breaks your client configuration.
+
+## Memory authority: Never freeze the machine
+
+On unified memory architectures like Strix Halo, there is no discrete VRAM.
+The GPU allocates host RAM through GTT, and that allocation is **pinned**.
+A workload that exceeds available memory does not page out and does not get
+OOM-killed: it hard-freezes the entire machine, taking down all processes
+without writing to kernel logs.
+
+[`setup/lib/budget.py`](setup/lib/budget.py) weighs every profile before start
+and actively refuses if it does not fit:
 
 ```
 REFUSING TO START qwen38: it needs about 70.1 GiB and it does not fit.
     the host has 44.2 GiB available, 12 must stay free
 ```
 
-> For the same reason, never start a second model — or a media workload — by
-> hand: `python3 bench/sideserver.py` is the only safe way, and
-> [setup/README.md](setup/README.md) explains the four ceilings before you
-> need them.
+For the same reason, never start a second model — or a media workload — by
+hand: `python3 bench/sideserver.py` is the only safe way, stopping production,
+metering memory ceilings, and putting production back.
 
-**Know the failures that do not announce themselves.** On gfx1151 the
-dangerous defects do not raise. Output degenerates to `////`; a session
-answers from another session's context. No error, no crash, no log line.
-[`setup/defects.json`](setup/defects.json) is that knowledge as data, and
-`python3 setup/lib/defects.py` says whether **your** build and flags are
-exposed, guarded, or unaffected.
+## Not only a language model: Multimodal tenants
 
-**Make a coding agent usable rather than impressive.** The founding
-measurement: Claude Code against a local model cost about **140 seconds per
-turn**, because a sliding-window cache threw the prompt away on every edit.
-With `--swa-full` and a saved prefix it is **1.3 seconds**. The whole chain —
-how a request body is read, which prefix id it produces, when a state may be
-restored — is in [`setup/claude/`](setup/claude/) with the measurements behind
-each step.
-
-**Keep a conversation — across projects, across restarts, across days.** A
-chat front-end holds your history as TEXT and re-reads it every turn. Here a
-conversation is kept as the model's own computed state: written to disk, put
-back into a slot, continued. That is what turns a 40k-token agent session from
-a minute of waiting into a second, and it is the reason a coding agent is
-usable on one box at all. The chain — which prefix id a request produces, when
-a state may be written, when it may be put back, and what happens when two
-consumers want the same slot — is a gateway
-([`setup/gateway/`](setup/gateway/)), a prefix store, and an admission gate
-with priorities. None of that exists in a stack you install in five minutes.
-
-**And it demonstrably works, which is not the same thing.** The state restore
-was SILENTLY DOING NOTHING on this model class: it reported success, `/slots`
-confirmed the tokens were back, and the next request re-processed the whole
-prompt anyway. No error — only a bill. Found on 05.09.2026 because this is
-measured rather than assumed, traced to two code sites four hundred lines
-apart, and fixed in [`setup/patches/`](setup/patches/README.md):
-
-```
-a conversation continued from its file, RAM prompt cache OFF
-    before   3.10 s   cached 0     — the whole prompt again
-    after    0.40 s   cached 2,299 — and the planted needle still correct
-```
-
-Three checks decide that, not one: the reuse, the answer against a **forced
-recomputation** on an erased slot, and a six-digit value planted mid-context —
-because a fix that buys speed and changes answers would be worse than the
-defect. That is the difference this repo is for: not that a feature exists,
-but that somebody checked it does what it says.
-
-## Not only a language model — and not a toolbox
-
-Since 01.09.2026 the same machine renders images, speaks and films. Measured
-on this box, n=3 each, idle machine, every output machine-judged:
+Since 01.09.2026 the same machine renders images, speaks and films under the
+same memory authority. Measured on this box, n=3 each, idle machine, every
+output machine-judged:
 
 | workload | what | cost | licence |
 |---|---|---|---|
@@ -125,38 +124,39 @@ on this box, n=3 each, idle machine, every output machine-judged:
 | `wan21-t2v` | text-to-video, 480p | ~9 min / 2 s clip | Apache 2.0 |
 | `wan22-ti2v` | text-to-video, 5B — faster AND flagged | 288 s / clip, [see its profile](setup/workloads/wan22-ti2v.env) | Apache 2.0 |
 
-Toolbox repos collect start commands. Every workload above is a **tenant of
-the same memory authority** — the freeze story one section up is just as true
-when the bytes pinning GTT come from a diffusion sampler — and lives by the
-same rules:
+Each declares its measured footprint in [`setup/workloads/`](setup/workloads/),
+guarded by `budget.py`. The base install remains torch-free (the ~20-second
+test gate proves it); torch workloads stay contained behind [`media/`](media/README.md).
 
-- **One guard, one fence.** Each declares its measured footprint in
-  [`setup/workloads/`](setup/workloads/), is weighed by `budget.py` before it
-  starts, and runs only through the `sideserver` fence.
-- **Determinism as an instrument.** All seven profiles pin a seed and carry
-  their exact output hash — `bash tests/live_media.sh` re-derives it. A
-  regression is a hash flip, not a statistical argument.
-- **Machine-judged output**, each probe's selftest seen red before its green
-  counted ([bench/](bench/README.md)).
-- **Honest defects.** The 5B video model shows an artifact in dark regions —
-  its profile says so, with the A/B that exonerated flash attention.
-- **The Torch border.** The base install stays torch-free (the 16-second
-  gate proves it); torch tenants live behind [`media/`](media/README.md).
+## Why not a generic runner (like `ollama`)?
 
-And not a model benchmark: others do that at more scale than a home-grown
-battery survives. Measured here is the STACK — what fits, what it costs, and
-whether the output stays CORRECT — which nobody else measures for this
-hardware.
+Generic runners get an endpoint running quickly, but they are built for
+standard discrete GPUs or generic CPU fallback. On unified-memory APUs like
+Strix Halo, that leaves crucial gaps:
 
-## Not a fork
+| Capability | Generic runner (`ollama` etc.) | This stack |
+|---|---|---|
+| **Silicon target** | Generic CPU / CUDA | Tailored & measured for Strix Halo gfx1151 (128 GB UMA) |
+| **Engine choice** | Single internal runtime | Fastest engine per task: Halogen (MTP) or patched llama.cpp |
+| **Multi-dialect gateway** | OpenAI only | In-process OpenAI ↔ Anthropic translation (Claude Code & DSH) |
+| **Prefix & state caching** | In-memory only per run | Persistent across restarts, disk reload, instant follow-up turns |
+| **Streaming stability** | Buffered tool payloads | Incremental argument streaming & SSE heartbeats against proxy timeouts |
+| **Memory safety** | System OOM (hard-freezes Strix Halo) | Strict GTT budgeting (`budget.py`) across LLMs, Diffusion, TTS & Video |
 
-The backend is llama.cpp **master plus a short list of patches**. The list,
-with the defect and the measurement behind each, lives in
-[`setup/patches/`](setup/patches/README.md); a patch here is a debt being
-worked off, not a feature, and the build script refuses a binary that
-silently lost one. The weights are standard GGUF from public repositories,
-and because the base is master, upstream improvements arrive at the next
-build — not at a fork's next release.
+## We measure, not claim
+
+Nothing in this repository is based on estimates or marketing claims:
+
+* **Every flag is measured:** Speeds, context windows, and KV costs carry
+  their date and measurement method directly beside them in the profile
+  comments.
+* **Defects as testable data:** Silent hardware corruptions (e.g. `////`
+  degeneration) and upstream bugs are recorded as data in
+  [`setup/defects.json`](setup/defects.json). `python3 setup/lib/defects.py`
+  verifies whether your running build is affected.
+* **Rigorous test gate:** `bash tests/run.sh` runs 1449 tests in ~20 seconds
+  without needing a GPU, verifying parser integrity, dialect conversions,
+  budget calculations, and guardrails before anything touches production.
 
 ## Where to start
 

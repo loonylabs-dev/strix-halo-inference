@@ -40,7 +40,7 @@ def main():
         print("Nothing is serving, or two things are — refusing to guess "
               "which unit to stop and put back.", flush=True)
         return 1
-    if stop_unit == "halogen.service":
+    if stop_unit.startswith("halogen"):
         print("halogen is already serving. This runner stops production and "
               "starts its own container; run it against a llama backend, or "
               "measure the running one directly.", flush=True)

@@ -101,7 +101,7 @@ def serving_backend():
     names = [n for n in (r.stdout or "").split() if n]
     if not names:
         return None
-    return "halogen" if names == ["halogen"] else "llama"
+    return "halogen" if names and names[0].startswith("halogen") else "llama"
 
 
 def applies(defect, cmdline, gpu=None, backend=None):

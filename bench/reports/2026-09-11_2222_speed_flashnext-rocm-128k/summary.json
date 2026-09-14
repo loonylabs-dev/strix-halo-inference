@@ -1,0 +1,30 @@
+{
+ "label": "flashnext-rocm-128k",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-09-11 22:22:20",
+ "gtt_gib": 91.86,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "workload": "prose",
+   "depth_n": 145690,
+   "prompt_n": 145690,
+   "cache_n": 0,
+   "cached_pct": 0.0,
+   "pp_tps": 117.5,
+   "predicted_n": 128,
+   "tg_tps": 7.7,
+   "draft_n": 78,
+   "draft_accepted": 54,
+   "draft_accept_pct": 69.2,
+   "wall_s": 1256.24,
+   "copied_pct": 4.1,
+   "reps": 1,
+   "reps_ok": 1,
+   "tg_min": 7.7,
+   "tg_max": 7.7,
+   "asked": 131072
+  }
+ ]
+}

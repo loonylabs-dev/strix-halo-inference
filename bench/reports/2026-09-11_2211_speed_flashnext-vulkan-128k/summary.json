@@ -1,0 +1,30 @@
+{
+ "label": "flashnext-vulkan-128k",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-09-11 22:11:49",
+ "gtt_gib": 85.1,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "workload": "prose",
+   "depth_n": 145690,
+   "prompt_n": 145690,
+   "cache_n": 0,
+   "cached_pct": 0.0,
+   "pp_tps": 259.8,
+   "predicted_n": 128,
+   "tg_tps": 17.0,
+   "draft_n": null,
+   "draft_accepted": null,
+   "draft_accept_pct": null,
+   "wall_s": 568.31,
+   "copied_pct": 4.6,
+   "reps": 1,
+   "reps_ok": 1,
+   "tg_min": 17.0,
+   "tg_max": 17.0,
+   "asked": 131072
+  }
+ ]
+}

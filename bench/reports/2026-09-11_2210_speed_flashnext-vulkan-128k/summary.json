@@ -1,0 +1,16 @@
+{
+ "label": "flashnext-vulkan-128k",
+ "url": "http://127.0.0.1:8081",
+ "started": "2026-09-11 22:10:38",
+ "gtt_gib": 83.79,
+ "ctx": null,
+ "argv": [],
+ "depths": [
+  {
+   "error": "HTTP Error 400: Bad Request",
+   "workload": "prose",
+   "reps": 1,
+   "asked": 131072
+  }
+ ]
+}

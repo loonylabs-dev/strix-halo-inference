@@ -594,7 +594,7 @@ The stack offers two complementary vision paths:
    - **Endpoint**: `/v1/chat/completions` (OpenAI format) or `/v1/messages` (Anthropic format).
    - **Model name**: `qwen3-vl-4b` or `vision`.
    - **Concurrency**: Governed by `VISION_GATE`, running in parallel with Halogen GPU coding turns with zero mutual blocking.
-   - **Lifecycle**: Starts automatically on-demand and stops after 60 minutes of inactivity to release RAM.
+   - **Lifecycle**: Starts automatically on-demand and stops after 10 minutes of inactivity (`VISION_IDLE_TIMEOUT=600`) to release RAM.
 
 ## What you should not expect
 

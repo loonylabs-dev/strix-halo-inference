@@ -93,7 +93,7 @@ def env(name, old=None, default=None):
 
 LLAMA        = os.environ.get("LLAMA_URL", "http://127.0.0.1:8080")
 VISION_URL   = os.environ.get("VISION_URL", "http://127.0.0.1:8082")
-VISION_IDLE_TIMEOUT = int(os.environ.get("VISION_IDLE_TIMEOUT", "3600"))
+VISION_IDLE_TIMEOUT = int(os.environ.get("VISION_IDLE_TIMEOUT", "600"))
 VISION_MODELS = {
     "qwen3-vl-4b",
     "qwen3vl-4b",

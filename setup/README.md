@@ -753,7 +753,7 @@ For external tools (e.g. Unity Asset Inventory, automated batch image tagging, o
 
 * **Hardware allocation & isolation**: Runs `Qwen3VL-4B-Instruct-Q4_K_M.gguf` via `setup/visionexec` on port 8082, pinned strictly to **CCD1 (cores 8–15)** via `AllowedCPUs=8-15` in `setup/systemd/llama-vision.service` with `Nice=10` and `CPUWeight=20`. This bounds CPU memory bandwidth usage and leaves CCD0 (cores 0–7) and the shared UMA memory bus completely unthrottled for the GPU.
 * **Gateway bypass gate**: In `setup/gateway/gateway.py`, vision requests (`model: "qwen3-vl-4b"` or `vision`) bypass Halogen's `GATE.enter()` queue and acquire a dedicated `VISION_GATE = asyncio.Semaphore(1)`. A 15-second image analysis never blocks GPU coding turns, and GPU generation never delays vision tasks.
-* **On-demand lifecycle**: Automatically started by the gateway on the first incoming vision request (<100ms when pages are in page cache, ~2.8s cold from NVMe), and automatically stopped after 60 minutes of inactivity (`VISION_IDLE_TIMEOUT=3600`) to return all 5.7 GiB RSS back to the Linux page cache.
+* **On-demand lifecycle**: Automatically started by the gateway on the first incoming vision request (<100ms when pages are in page cache, ~2.8s cold from NVMe), and automatically stopped after 10 minutes of inactivity (`VISION_IDLE_TIMEOUT=600`) to return all 5.7 GiB RSS back to the Linux page cache.
 
 ### It speaks OpenAI, and the consumer speaks Anthropic
 

@@ -82,7 +82,7 @@ and the serving engine:
   and KV states, turning a ~120-second cold prefill into a **1.3-second**
   follow-up turn (>90% cache reuse).
 * **Edge-stable streaming:** Incremental token-by-token parameter streaming for
-  tool calls and 15-second SSE keepalive heartbeats prevent Cloudflare Tunnel
+  tool calls and 10-second SSE keepalive heartbeats prevent Cloudflare Tunnel
   and proxy dropouts (`500` / `524`) on long generations.
 * **Stable model aliases:** Use `local-low`, `local`, or `local-medium` in your
   clients. They resolve to the active engine's equivalent mode, so switching
@@ -91,7 +91,7 @@ and the serving engine:
   the primary GPU model. Runs on 8 dedicated Zen 5 CPU cores (CCD1: cores 8–15)
   via `llama-vision.service` with an independent admission gate (`VISION_GATE`),
   protecting Halogen GPU decoding from memory bus contention. Auto-starts on
-  demand and stops after 60 minutes of inactivity to reclaim RAM for the Linux
+  demand and stops after 10 minutes of inactivity (`VISION_IDLE_TIMEOUT=600`) to reclaim RAM for the Linux
   page cache. Fully compatible with Unity Asset Inventory, DeepSeek Harness,
   and OpenAI multimodal clients.
 

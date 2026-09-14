@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# visionexec — launch Qwen3-VL on CPU for Strix Halo.
+#
+# Executed by setup/systemd/llama-vision.service.
+# Provides OpenAI-compatible vision inference on CPU isolated from GPU memory.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=lib/models.sh
+. "$REPO/setup/lib/models.sh"
+
+MODELS_DIR="$(models_dir)"
+if [ -z "$MODELS_DIR" ] || [ ! -d "$MODELS_DIR" ]; then
+  echo "visionexec: no models directory found." >&2
+  exit 1
+fi
+
+MODEL_FILE="${VISION_MODEL_FILE:-$MODELS_DIR/Qwen3VL-4B-Instruct-Q4_K_M.gguf}"
+MMPROJ_FILE="${VISION_MMPROJ_FILE:-$MODELS_DIR/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf}"
+
+if [ ! -f "$MODEL_FILE" ]; then
+  echo "visionexec: model file not found at $MODEL_FILE" >&2
+  exit 1
+fi
+
+if [ ! -f "$MMPROJ_FILE" ]; then
+  echo "visionexec: mmproj file not found at $MMPROJ_FILE" >&2
+  exit 1
+fi
+
+HOST_PORT="${VISION_PORT:-8082}"
+LLAMA_BIN="${VISION_BIN:-$HOME/llama.cpp/build-rocm-patched/bin/llama-server}"
+
+if [ ! -x "$LLAMA_BIN" ]; then
+  LLAMA_BIN="$(find "$HOME/llama.cpp" -name "llama-server" 2>/dev/null | head -1)"
+fi
+
+if [ -z "$LLAMA_BIN" ] || [ ! -x "$LLAMA_BIN" ]; then
+  echo "visionexec: llama-server binary not found." >&2
+  exit 1
+fi
+
+THREADS="${VISION_THREADS:-8}"
+CTX="${VISION_CTX:-8192}"
+
+exec "$LLAMA_BIN" \
+  -m "$MODEL_FILE" \
+  --mmproj "$MMPROJ_FILE" \
+  --alias "${VISION_MODEL_ALIAS:-qwen3-vl-4b,vision}" \
+  --device none \
+  --mmproj-device none \
+  -t "$THREADS" \
+  -np 1 \
+  -c "$CTX" \
+  --image-min-tokens 1024 \
+  --port "$HOST_PORT"

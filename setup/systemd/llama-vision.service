@@ -1,0 +1,20 @@
+[Unit]
+Description=Qwen3-VL 4B Vision Server (CPU on Strix Halo)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-%h/.config/llm-stack.env
+ExecStart=%h/.local/lib/llm-stack/visionexec
+Restart=on-failure
+RestartSec=3
+# Isolation & protections:
+AllowedCPUs=8-15
+Nice=10
+CPUWeight=20
+MemoryHigh=7G
+MemoryMax=8G
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,95 @@
+[
+  {
+    "model": "2B",
+    "rss_gib": 3.2,
+    "load_s": 2.01,
+    "benchmarks": [
+      {
+        "image": "2D Pixelart",
+        "wall_s": 14.8,
+        "tokens_out": 256,
+        "tokens_in": 1174,
+        "tps": 17.3,
+        "content": "1. Stimmung (Atmosphäre):  \nDie Szene vermittelt eine industrielle, aber auch kreative und möglicherweise bedrohliche Atmosphäre. Es ist ein düsteres, industriell anmutendes Umfeld, das durch die sichtbaren Schäden und die Emissionen der Industrieanlage aufgewirkt wird. Die Stimmung ist somit bedrohlich und künstlerisch.\n\n2. Primäre Farbpalette:  \nDie Farbpalette ist überwiegend dunkel und kühn. Die Hauptfarben sind Grau, Schwarz, Blau, Orange und Rot. Die Farben sind kräftig und kontrastreich, was die visuelle Wirkung verstärkt.\n\n3. Stil (z.B. Pixelart, Low-Poly, Stylized, Realistisch, Hand-Painted):  \nDer Stil ist pixelartig und stilisiert. Die Darstellung ist in einem klaren, blockartigen Pixel-Design gehalten, das eine deutliche Unterscheidung zwischen den Elementen und die Umgebung betont.\n\n4. Erkannte Objekte / Assets:  \n- Industrieanlage mit"
+      },
+      {
+        "image": "3D Low-Poly",
+        "wall_s": 14.62,
+        "tokens_out": 256,
+        "tokens_in": 1157,
+        "tps": 17.5,
+        "content": "1. Stimmung (Atmosphäre):  \nDie Stimmung ist neutral und sachlich, mit einem leichten, freundlichen Ton. Die Figur wirkt ruhig und ist in einer einfachen, klaren Darstellung gehalten, was eine entspannte und leicht humorvolle Atmosphäre vermittelt.\n\n2. Primäre Farbpalette:  \nDie Hauptfarben sind Grau, Gelb und Schwarz. Die Farbgebung ist klar und kontrastreich, wobei die helle Gelb- und Schwarztöne die Hauptfarben darstellen.\n\n3. Stil (z.B. Pixelart, Low-Poly, Stylized, Realistisch, Hand-Painted):  \nDer Stil ist Low-Poly. Die Formen sind einfach und geometrisch, mit klaren, flächigen Oberflächen und einer begrenzten Textur. Es handelt sich um eine stilisierte, nicht realistische Darstellung.\n\n4. Erkannte Objekte / Assets:  \nDas Asset ist ein niedrig dimensionierter Vogel, vermutlich eine Art Ente oder Ei, mit einem einfachen, geometrischen Design. Es ist ein stilisiert"
+      },
+      {
+        "image": "3D Realistic",
+        "wall_s": 21.57,
+        "tokens_out": 256,
+        "tokens_in": 1773,
+        "tps": 11.9,
+        "content": "1. Stimmung (Atmosphäre):  \nDie Szene vermittelt eine ruhige, leere und sachliche Atmosphäre eines leeren Klassenzimmers. Es wirkt wie ein leerer, gut ausgestatteter Raum, der für eine Pause oder eine Pause in der Schule geeignet ist.\n\n2. Primäre Farbpalette:  \nDie Farbpalette besteht aus einem klaren Blau für die Wände, einem warmen Orange für die Fenster, einem neutralen Grau für die Tische und Stühle sowie einem hellen Holzton für den Boden. Es gibt auch eine leichte Beleuchtung durch die Fenster, die eine natürliche Lichtquelle darstellen.\n\n3. Stil (z.B. Pixelart, Low-Poly, Stylized, Realistisch, Hand-Painted):  \nDer Stil ist realistisch mit einem leichten, digitalen und stilisierten Flair. Die Darstellung ist klar und präzise, aber nicht übermäßig stilisiert. Es handelt sich um eine digitale Darstellung, die eine realistische und saubere Ästhetik vermittelt.\n\n4. Erkannte Objekte /"
+      }
+    ]
+  },
+  {
+    "model": "4B",
+    "rss_gib": 5.71,
+    "load_s": 5.02,
+    "benchmarks": [
+      {
+        "image": "2D Pixelart",
+        "wall_s": 17.77,
+        "tokens_out": 212,
+        "tokens_in": 1174,
+        "tps": 11.9,
+        "content": "- **Stimmung (Atmosphäre)**: Industrielle, abgelegte Umgebung mit natürlichen Elementen – kontrastreich, leicht dystopisch durch Schadstoffe und Abwasser.\n- **Primäre Farbpalette**: Grau, Blau, Orange, Grün, Rot – klar definierte, pixelbasierte Farben mit starkem Kontrast.\n- **Stil**: Pixelart – kantig, blockhaft, 8-Bit/16-Bit Ästhetik, typisch für Retro-Spiele.\n- **Erkannte Objekte / Assets**:\n  - Industrielle Anlage mit Rauchstack\n  - Abwasserrohr mit rotem Sensor\n  - Wasserfläche\n  - Lava- oder Schadstoffquelle (orange Fläche)\n  - Bäume, Gras, Gebäude im Hintergrund\n  - Pixelart-Textur für Erde, Stein, Wasser und Lava"
+      },
+      {
+        "image": "3D Low-Poly",
+        "wall_s": 13.84,
+        "tokens_out": 141,
+        "tokens_in": 1157,
+        "tps": 10.2,
+        "content": "- **Stimmung (Atmosphäre):** Neutral, minimalistisch, funktional – wie ein Standard-Asset für Spiele oder Simulationen.\n- **Primäre Farbpalette:** Grau (Körper), Gelb (Kiefer, Füße), Schwarz (Auge).\n- **Stil:** Low-Poly, geometrisch vereinfacht, 3D-Modell mit flachen Facetten.\n- **Erkannte Objekte / Assets:** Entweder ein Ente- oder Entenbaby-Modell (mit hexagonalen Augen und simplifizierten Flügeln), isoliert auf weißem Hintergrund."
+      },
+      {
+        "image": "3D Realistic",
+        "wall_s": 24.25,
+        "tokens_out": 224,
+        "tokens_in": 1773,
+        "tps": 9.2,
+        "content": "- **Stimmung (Atmosphäre)**: Ruhe, ordentlich, leer, funktional – typisch für eine leere Schule oder Klassenzimmer vor Unterricht.\n- **Primäre Farbpalette**: Hellblau (Wände), Holzton (Boden), Grau/Schwarz (Tische, Stühle), Orange (Fenster), Weiß (Decke, Fensterrahmen).\n- **Stil**: Realistisch (3D-Rendering, glatte Texturen, korrekte Lichtreflexionen, z.B. LuxRender-Logo).\n- **Erkannte Objekte / Assets**:\n  - Tische mit Streifenmuster\n  - Stühle mit Metallgestell\n  - Fenster mit orangefarbenen Rahmen\n  - Tafel mit „LuxRender“-Logo\n  - Deckenleuchten (moderne, längliche Design)\n  - Wandbänke\n  - Schiebetüren (im Hintergrund)"
+      }
+    ]
+  },
+  {
+    "model": "8B",
+    "rss_gib": 9.82,
+    "load_s": 3.51,
+    "benchmarks": [
+      {
+        "image": "2D Pixelart",
+        "wall_s": 52.79,
+        "tokens_out": 206,
+        "tokens_in": 1174,
+        "tps": 3.9,
+        "content": "- Stimmung: Industriell, technisch, unterirdisch, mit Elementen von Abenteuer und Ressourcenexploitation.\n- Primäre Farbpalette: Grau (Stein, Rohr), Blau (Wasser), Orange (Lava), Rot (Maschine), Grün (Pflanzen), Schwarz (Schatten).\n- Stil: Pixelart, klar strukturiert, blockig, typisch für 2D-Top-Down- oder Dungeon-Crawler-Spiele.\n- Erkannte Objekte / Assets:\n  - Unterirdischer Rohrkanal\n  - Maschine mit rotem Gehäuse und blauem Kern\n  - Wasserfläche\n  - Lavaquelle\n  - Stein- und Erdschichten\n  - Oberirdische Landschaft: Fabrik, Fahrzeug, Bäume, Gebäude\n  - Pixelartige Partikel (Dampf, Wassertröpfchen)"
+      },
+      {
+        "image": "3D Low-Poly",
+        "wall_s": 43.58,
+        "tokens_out": 73,
+        "tokens_in": 1157,
+        "tps": 1.7,
+        "content": "- Stimmung: Nüchtern, minimalistisch, leicht cartoonhaft  \n- Primäre Farbpalette: Grau, Gelb, Schwarz  \n- Stil: Low-Poly, stilisiert, geometrisch  \n- Erkannte Objekte: Ente (Duck), 3D-Modell, einfache Texturierung"
+      },
+      {
+        "image": "3D Realistic",
+        "wall_s": 92.57,
+        "tokens_out": 140,
+        "tokens_in": 1773,
+        "tps": 1.5,
+        "content": "- Stimmung: Leere, ruhige Schulatmosphäre; klinisch und funktional.\n- Primäre Farbpalette: Blau (Wände), Holzbraun (Boden), Grau/Silber (Möbel), Orange (Fensterläden).\n- Stil: Realistisch mit leicht stilisierter, 3D-Modellierung; glatte Oberflächen, realistische Beleuchtung.\n- Erkannte Objekte: Schulbänke, Stühle, Tafel, Fenster, Deckenleuchten, Holzboden, Fensterläden."
+      }
+    ]
+  }
+]

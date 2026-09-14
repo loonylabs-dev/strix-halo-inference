@@ -721,25 +721,39 @@ Halogen supports multimodal input through an optional vision projector/encoder:
   models directory, `setup/halogenexec` detects it and passes `-e HALOGEN_VISION_TOWER=1`
   into the container. Both OpenAI-format image parts (base64 data URLs) and Anthropic-format
   image blocks (translated by `anthropic_bridge.py`) are accepted.
-* **KV pool tuning against kernel compaction stalls**:
+* **KV pool and prefill arena tuning against kernel compaction stalls & multi-session caching**:
   The vision tower allocates 0.84 GiB weights plus up to 1.14 GiB of worst-case
-  scratch buffer. With Halogen's default KV pool (524k–1M positions), available
-  contiguous 2 MiB blocks on a 128 GiB unified memory machine dropped below 260,
-  triggering catastrophic Linux kernel memory compaction stalls (>98,000 `compact_stall`
-  events and severe D-state stalls). `setup/halogenexec` automatically sets
-  `HALOGEN_KV_POOL_POSITIONS=262144` when vision is enabled, reducing KV memory to
-  ~7.2 GiB and leaving ~13–15 GiB of headroom for the OS and page cache.
-* **N-gram / PLE lookup table on SSD**:
-  Qwen 3.8 Flash-Next holds 68.0 GiB of core model weights locked in RAM/GTT,
-  while its massive **47.7 GiB Predictive Language Embedding (PLE) N-gram table**
-  is kept on NVMe SSD and read on-demand via the file cache during prompt prefill.
-  During prompt prefill, NVMe read throughput spikes while the GPU waits on I/O.
-  Once decode begins, SSD traffic drops to zero and generation runs fully GPU compute-bound
-  at ~40–50 tokens/s. The engine does **not** switch models between text and image turns.
+  scratch buffer. While 1M positions (28.8 GiB KV cache) caused severe Linux kernel
+  memory compaction stalls on 128 GiB UMA (>98,000 `compact_stall` events), dropping
+  to 262k positions caused deep concurrent sessions (e.g. 112k coding context + 71k
+  background inspector) to mutually evict each other's KV cache, triggering 2–5 minute
+  cold re-prefills. `setup/halogenexec` defaults to `HALOGEN_KV_POOL_POSITIONS=524288`
+  (14.4 GiB KV cache across 4 slots), comfortably caching multiple deep sessions
+  concurrently. In addition, `setup/halogenexec` defaults `HALOGEN_MAX_TOK=16384`
+  (8.4 GiB prefill arena vs 20.6 GiB at 32k), saving 12.2 GiB of contiguous 2 MiB hugepages.
+  This allows working memory (26.6 GiB) to fit cleanly into free physical memory (34.4 GiB)
+  with >6.5 GiB headroom, starting up in 16 seconds flat with 0 compaction stalls while
+  leaving >14 GiB of free headroom for the OS and page cache.
+* **N-gram / PLE lookup table caching**:
+  Qwen 3.8 Flash-Next holds core model weights locked in GTT, while its massive
+  **47.7 GiB Predictive Language Embedding (PLE) N-gram table** is mapped via page cache
+  from `/mnt/shared/halogen-models/qwen38-flash-next-w4b.hgn`.
+  With 512k KV cache and the vision tower active, ~62.4 GiB of RAM remains for the Linux
+  page cache, allowing the full 47.7 GiB PLE table to be held in memory.
+  Once sessions are warm in the KV pool, turns prefill in ~0.07s without NVMe re-reads,
+  and decode runs at ~45–50 tokens/s.
 * **Watchdog probe timer**:
   Halogen has no gfx1151 HIP race corruption defect. `setup/switch-model.sh`
   automatically disables `llama-probe.timer` when switching to Halogen, protecting
   Halogen's resident KV cache from probe eviction.
+
+### Dedicated CPU Vision Sidecar (Qwen3-VL 4B)
+
+For external tools (e.g. Unity Asset Inventory, automated batch image tagging, or DSH sub-plugins) that require dedicated image-to-text inference without consuming GPU memory or blocking agent coding sessions:
+
+* **Hardware allocation & isolation**: Runs `Qwen3VL-4B-Instruct-Q4_K_M.gguf` via `setup/visionexec` on port 8082, pinned strictly to **CCD1 (cores 8–15)** via `AllowedCPUs=8-15` in `setup/systemd/llama-vision.service` with `Nice=10` and `CPUWeight=20`. This bounds CPU memory bandwidth usage and leaves CCD0 (cores 0–7) and the shared UMA memory bus completely unthrottled for the GPU.
+* **Gateway bypass gate**: In `setup/gateway/gateway.py`, vision requests (`model: "qwen3-vl-4b"` or `vision`) bypass Halogen's `GATE.enter()` queue and acquire a dedicated `VISION_GATE = asyncio.Semaphore(1)`. A 15-second image analysis never blocks GPU coding turns, and GPU generation never delays vision tasks.
+* **On-demand lifecycle**: Automatically started by the gateway on the first incoming vision request (<100ms when pages are in page cache, ~2.8s cold from NVMe), and automatically stopped after 10 minutes of inactivity (`VISION_IDLE_TIMEOUT=600`) to return all 5.7 GiB RSS back to the Linux page cache.
 
 ### It speaks OpenAI, and the consumer speaks Anthropic
 

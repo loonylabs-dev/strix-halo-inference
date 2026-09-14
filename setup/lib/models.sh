@@ -198,7 +198,7 @@ models_serving() {
   local pid
   for pid in $(pgrep -x llama-server 2>/dev/null); do
     tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null \
-      | awk '$0=="--alias"{getline; print; exit}'
+      | awk 'BEGIN{p="8080"} $0=="--port"{getline; p=$0} $0=="--alias"{getline; a=$0} END{if (p=="8080" && a!="") print a}'
   done | sort -u
   # The container backend has no --alias to read and no llama-server process
   # to find, so the question is asked of ITS process instead.

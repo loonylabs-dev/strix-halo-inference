@@ -957,7 +957,8 @@ class TestModesComeFromTheProfile(GatewayOnTheWire):
         self.assertEqual(offered, ["qwen38", "qwen38-none",
                                    "qwen38-low", "qwen38-medium",
                                    "local", "local-none",
-                                   "local-low", "local-medium"])
+                                   "local-low", "local-medium",
+                                   "qwen3-vl-4b", "vision"])
 
     async def test_the_old_blob_still_works_where_no_profile_declares_modes(self):
         """Migration: a profile that has not been given MODES yet must keep
@@ -3246,6 +3247,129 @@ class TestStreamingHeartbeat(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(b"data: done\n\n", written)
         finally:
             GW.STREAM_KEEPALIVE_INTERVAL = old_interval
+
+    async def test_forward_translate_stream_forwards_upstream_comments_as_pings(self):
+        """When translate_stream is active (Anthropic client against OpenAI backend),
+        upstream SSE comments (': keepalive\\n\\n' or ':\\n\\n') emitted during a slow
+        prefill must be translated into Anthropic ping events ('event: ping\\ndata: {\\\"type\\\": \\\"ping\\\"}\\n\\n')
+        so Cloudflare and Claude Code do not time out."""
+        import asyncio
+        from aiohttp import web, StreamReader
+        import anthropic_bridge as AB
+
+        class DummyProtocol:
+            connected = True
+            _reading_paused = False
+            def resume_writing(self): pass
+            def pause_writing(self): pass
+
+        class FakeClientResponse:
+            def __init__(self):
+                self.status = 200
+                self.headers = {"content-type": "text/event-stream"}
+                self.content = StreamReader(DummyProtocol(), limit=2**16)
+                # Upstream sends keepalives during prefill, then a chunk
+                self.content.feed_data(b": keepalive\n\n")
+                self.content.feed_data(b": keepalive\n\n")
+                chunk_json = json.dumps({
+                    "id": "chatcmpl-1",
+                    "object": "chat.completion.chunk",
+                    "choices": [{"delta": {"content": "Hi"}, "finish_reason": None}]
+                }).encode("utf-8")
+                self.content.feed_data(b"data: " + chunk_json + b"\n\n")
+                self.content.feed_data(b"data: [DONE]\n\n")
+                self.content.feed_eof()
+
+        class FakeCtx:
+            async def __aenter__(self):
+                return FakeClientResponse()
+            async def __aexit__(self, *a):
+                pass
+
+        class FakeReq:
+            method = "POST"
+            path_qs = "/v1/messages"
+            headers = {}
+            remote = "127.0.0.1"
+
+        written = []
+
+        class MockStreamResponse:
+            def __init__(self, status=200, headers=None):
+                self.status = status
+                self.headers = headers or {}
+            async def prepare(self, r):
+                pass
+            async def write(self, data):
+                written.append(data)
+            async def write_eof(self):
+                pass
+
+        translator = AB.StreamTranslator(model_name="halogen")
+        with mock.patch("aiohttp.ClientSession.request", lambda s, *a, **k: FakeCtx()), \
+             mock.patch("aiohttp.web.StreamResponse", MockStreamResponse):
+            body = b'{"model": "qwen", "stream": true}'
+            resp = await GW.forward(FakeReq(), body, None, translate_stream=translator)
+            pings = [w for w in written if b"event: ping" in w]
+            self.assertGreaterEqual(len(pings), 2, "upstream keepalive comments were translated to ping events")
+
+
+
+class TestVisionRouting(GatewayOnTheWire):
+    """Vision requests bypass GATE.enter() and forward to VISION_URL."""
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.vision_seen = []
+        async def vllama(request):
+            self.vision_seen.append((request.method, request.path_qs, await request.read()))
+            if request.path == "/health":
+                return web.json_response({"status": "ok"})
+            return web.json_response({
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "choices": [{"message": {"role": "assistant", "content": "A 2D pixel art mining scene"}}]
+            })
+        vapp = web.Application()
+        vapp.router.add_route("*", "/{tail:.*}", vllama)
+        self.vserver = TestServer(vapp)
+        await self.vserver.start_server()
+        self.backup_vision = {
+            "VISION_URL": GW.VISION_URL,
+            "VISION_IDLE_TIMEOUT": GW.VISION_IDLE_TIMEOUT,
+        }
+        GW.VISION_URL = str(self.vserver.make_url("")).rstrip("/")
+        GW.VISION_IDLE_TIMEOUT = 0
+
+    async def asyncTearDown(self):
+        for k, v in self.backup_vision.items():
+            setattr(GW, k, v)
+        await self.vserver.close()
+        await super().asyncTearDown()
+
+    async def test_vision_routing_routes_to_vision_server(self):
+        payload = {
+            "model": "qwen3-vl-4b",
+            "messages": [{"role": "user", "content": "What is in this image?"}]
+        }
+        r = await self.fetch("/v1/chat/completions", payload=payload)
+        self.assertEqual(r.status, 200)
+        data = await r.json()
+        self.assertIn("pixel art", data["choices"][0]["message"]["content"])
+        inference_reqs = [req for req in self.vision_seen if req[1] != "/health"]
+        self.assertEqual(len(inference_reqs), 1)
+        self.assertEqual(len(self.seen), 0)
+        forwarded_body = json.loads(inference_reqs[0][2].decode("utf-8"))
+        self.assertEqual(forwarded_body["model"], "qwen3-vl-4b")
+
+    async def test_vision_gate_does_not_block_main_gate(self):
+        payload = {
+            "model": "vision",
+            "messages": [{"role": "user", "content": "Describe style"}]
+        }
+        r = await self.fetch("/v1/chat/completions", payload=payload)
+        self.assertEqual(r.status, 200)
+        self.assertEqual(GW.GATE.depth(), 0)
+        self.assertEqual(GW.GATE.free, 2)
 
 
 if __name__ == "__main__":

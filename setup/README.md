@@ -839,6 +839,16 @@ in 346 tokens. The trace records `stop_reason` and `max_tokens` so that a long
 request can be read: `tool_calls`/`stop` is a model that finished, `length` is
 a cap that cut it off.
 
+The EFFORT MAP itself is unchanged by the 0.12.3 upgrade — byte-identical
+between 0.8.1 and 0.12.3, checked 22.09.2026, so the behaviour described above
+still holds. What DID change is that a second bound now sits under the
+budget: 0.11.0's answer room keeps `max(1024, 15% of max_tokens)` for the
+answer and cuts the think budget to what is left, so this repo's
+`HALOGEN_MAX_THINKING_TOKENS=26000` is the effective cap only above a
+`max_tokens` of about 30,600 — see *What arrived between 0.8.1 and 0.12.3*
+below. Re-check the map on every bump rather than assuming it; it is two lines
+of `diff` against the base file.
+
 ### The patched front-end, and the check that keeps it honest
 
 `setup/halogen/serve_api.py` is a VENDORED copy of one file out of the image,

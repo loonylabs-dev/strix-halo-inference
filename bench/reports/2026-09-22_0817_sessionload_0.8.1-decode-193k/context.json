@@ -1,0 +1,82 @@
+{
+  "label": "0.8.1-decode-193k",
+  "started": "2026-09-22 08:11:09",
+  "platform_profile": "performance",
+  "mode": "pingpong",
+  "sessions": 1,
+  "turns": 4,
+  "doc_tokens_requested": "200000",
+  "max_tokens": 1200,
+  "salt": "ab2609",
+  "server": {
+    "version": {
+      "api": "0.8.1",
+      "engine": "0.8.1",
+      "match": true
+    },
+    "context": 262144,
+    "slot_ctx": 262144,
+    "slots": 4,
+    "kv_pool_positions": 524288,
+    "indexer_budget": null,
+    "rope_scaling": null,
+    "prompt_cache": {
+      "enabled": true,
+      "cap_mb": 110,
+      "mode": 2,
+      "snapshot_align": 0,
+      "bitwise_identical_to_cold": false
+    },
+    "drafter_default": "mtp",
+    "thinking_answer_room": null,
+    "chat_template": null
+  },
+  "cache_before": {
+    "entries": 0,
+    "bytes": 0,
+    "last_entry_bytes": 0,
+    "max_entries": 24,
+    "hits": 0,
+    "misses": 0,
+    "stores": 0,
+    "evicted": 0,
+    "prompt_tokens_saved": 0,
+    "store_ms_total": 0.0,
+    "restore_ms_total": 0.0,
+    "last_store_ms": 0.0,
+    "last_restore_ms": 0.0,
+    "refused": 0,
+    "rows_copied": 0,
+    "rows_copied_ms": 0.0,
+    "superseded": 0,
+    "hit_rate": null
+  },
+  "reservation_positions": 201200,
+  "reservation_pool_share_pct": 38.4,
+  "doc_tokens": [
+    200000
+  ],
+  "wall_total_s": 354.0,
+  "platform_profile_end": "performance",
+  "conditions_held": true,
+  "cache_after": {
+    "entries": 2,
+    "bytes": 232779304,
+    "last_entry_bytes": 116389652,
+    "max_entries": 24,
+    "hits": 3,
+    "misses": 1,
+    "stores": 4,
+    "evicted": 0,
+    "prompt_tokens_saved": 581742,
+    "store_ms_total": 99.4,
+    "restore_ms_total": 10.7,
+    "last_store_ms": 0.0,
+    "last_restore_ms": 0.0,
+    "refused": 0,
+    "rows_copied": 0,
+    "rows_copied_ms": 0.0,
+    "superseded": 2,
+    "hit_rate": 0.75
+  }
+}

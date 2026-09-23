@@ -1,0 +1,35 @@
+[
+  {
+    "session": 0,
+    "turn": 0,
+    "wall_s": 226.461,
+    "prompt_tokens": 192875,
+    "completion_tokens": 1057,
+    "finish_reason": "stop",
+    "prompt_ms": 194649.1,
+    "predicted_ms": 31577.4,
+    "cached_tokens": null
+  },
+  {
+    "session": 0,
+    "turn": 1,
+    "wall_s": 21.433,
+    "prompt_tokens": 194012,
+    "completion_tokens": 1057,
+    "finish_reason": "stop",
+    "prompt_ms": 2534.6,
+    "predicted_ms": 18644.1,
+    "cached_tokens": 192875
+  },
+  {
+    "session": 0,
+    "turn": 2,
+    "wall_s": 20.753,
+    "prompt_tokens": 195149,
+    "completion_tokens": 1057,
+    "finish_reason": "stop",
+    "prompt_ms": 2744.4,
+    "predicted_ms": 17744.3,
+    "cached_tokens": 194012
+  }
+]

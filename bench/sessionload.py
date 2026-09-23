@@ -303,19 +303,37 @@ def main():
           f"{context['platform_profile']}")
 
     if a.long_answer:
-        # One question, repeated: every turn asks for the same long piece of
-        # writing, so every turn generates about the same number of tokens and
-        # the per-turn rates are comparable to each other. Asking about the
-        # DOCUMENT rather than for free invention keeps the answer grounded in
-        # the context that is under test — a model writing from nothing would
-        # decode at the same rate whatever the KV size, which would measure
-        # nothing.
+        # MEASURED 22.09.2026, AND THE FIRST VERSION OF THIS WAS WRONG. It asked
+        # the SAME long question every turn, and from turn two the previous
+        # answer sits in the history — so Prompt Lookup Decoding quotes it back.
+        # The rates read 33.5 / 56.7 / 59.6 tok/s across three turns with PLD
+        # rounds going 18 -> 243 -> 251 and commit/round 1.49 -> 3.18 -> 3.44.
+        # That is a self-citation benchmark, not a decode benchmark.
+        #
+        # Two things follow. The questions differ per turn, so no answer is a
+        # draft source for the next. And they ask for something the DOCUMENT
+        # cannot supply — the document is random words and numbers, so prose
+        # about a general subject cannot be n-gram-matched out of it, which
+        # leaves the decode path measuring decode.
+        #
+        # PLD is not cheating and this is not switching it off: on real coding
+        # work, where an answer legitimately repeats context, those 56-59 tok/s
+        # are the rate the operator gets. But a figure that MIXES the two
+        # answers neither question, so this mode isolates the floor and the
+        # served log (bench/logstats.py) reports the real mixture.
         QUESTIONS[:] = [
-            "Describe in detail, in at least 800 words of flowing prose, what "
-            "kind of data the text above contains: the structure of a record "
-            "line, which parts of it vary and which repeat, what the numeric "
-            "fields look like, and what someone would need to know to parse "
-            "it. Do not list, write continuous prose."
+            "Ignore the text above entirely. Write at least 700 words of "
+            "flowing prose explaining how a water lock raises a boat between "
+            "two canal levels. Do not use lists.",
+            "Ignore the text above entirely. Write at least 700 words of "
+            "flowing prose explaining how sourdough fermentation differs from "
+            "baker's yeast. Do not use lists.",
+            "Ignore the text above entirely. Write at least 700 words of "
+            "flowing prose explaining why a steel bridge needs expansion "
+            "joints. Do not use lists.",
+            "Ignore the text above entirely. Write at least 700 words of "
+            "flowing prose explaining how noise-cancelling headphones work. "
+            "Do not use lists.",
         ]
     sizes = [int(x) for x in str(a.doc_tokens).split(",")]
     if len(sizes) == 1:

@@ -1,0 +1,17 @@
+=== sessionload: 0.8.1-decode-193k ===
+server {"api": "0.8.1", "engine": "0.8.1", "match": true}, pool 524288, slots 4, slot_ctx 262144
+1 sessions x 4 turns, mode pingpong, max_tokens 1200, platform_profile performance
+documents built: [410082] chars (~[200000] tokens requested)
+reservation ~201200 positions of 524288 = 38.4% of the pool  (under 100%: the pool holds every session at once, so eviction is NOT under test)
+  s0 t0: 232.34s  prompt 192843
+  s0 t1:  41.00s  prompt 193852
+  s0 t2:  40.61s  prompt 195068
+  s0 t3:  40.06s  prompt 196221
+
+wall 354.0s, 4 turns, 0 errors
+turn 1 (cold): [232.343]
+turns 2+: n=3 p50=40.61s p90=41.00s max=41.00s
+
+report: /mnt/shared/Development/inference-stack/bench/reports/2026-09-22_0817_sessionload_0.8.1-decode-193k
+Read the server's own finish lines for prefill and cached share:
+  podman logs halogen 2>&1 | python3 bench/logstats.py --log - --label '0.8.1-decode-193k'

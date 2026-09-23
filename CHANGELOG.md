@@ -89,9 +89,16 @@ their dates are not the days the work was done; the dates in the text are.
     **5 of 15** follow-up turns lost their cache (p90 187.5 s), on 0.12.3
     **none** (p90 1.20 s); 1191 s against 466 s for the same work. What 0.12.3
     does instead is visible in the log three times as `moved … (no loss)` in 20
-    to 67 ms. Cold prefill is unchanged between the releases within 2%, and the
-    flat band (90% of served turns) was already at p50 1.45 s / p99 1.54 s — the
-    upgrade buys reliability under contention, not speed.
+    to 67 ms.
+
+    **And decode at depth is 10.6% faster**, measured 22.09.2026 separately
+    because the run above had 2-to-12-token answers and could not see it: at
+    193k of context, four turns each, 30.0 tok/s on 0.8.1 against 33.2 on 0.12.3
+    — 33.3 s against 30.1 s for a 1,000-token answer. Cold prefill is 2% apart,
+    which one pair of runs cannot distinguish. The flat band (90% of served
+    turns) was already at p50 1.45 s / p99 1.54 s and is untouched, so the
+    upgrade buys reliability under contention plus a tenth of the token rate on
+    deep sessions — not throughput on short turns.
 
     On 0.8.1 the loss was **invisible**: no log line, and `/cache` has no pool
     object before 0.11.5. A turn that cost 187 s instead of 1.2 s looked like a

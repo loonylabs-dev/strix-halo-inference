@@ -1,0 +1,31 @@
+=== concurrent: 0.8.1-C-maxtok8000 ===
+server {"api": "0.8.1", "engine": "0.8.1", "match": true}, pool 524288, slots 4, slot_ctx 262144
+3 sessions x 6 turns, mode pingpong, max_tokens 8000, platform_profile performance
+documents built: [410082, 389551, 164070] chars (~[200000, 190000, 80000] tokens requested)
+reservation ~494000 positions of 524288 = 94.2% of the pool  (under 100%: the pool holds every session at once, so eviction is NOT under test)
+  s0 t0: 198.18s  prompt 192824
+  s1 t0: 187.21s  prompt 182948
+  s2 t0:  74.32s  prompt 76934
+  s0 t1:   1.37s  prompt 192862
+  s1 t1: 187.48s  prompt 182986
+  s2 t1:  74.45s  prompt 76972
+  s0 t2:   1.20s  prompt 192902
+  s1 t2:   1.17s  prompt 183026
+  s2 t2:   1.05s  prompt 77012
+  s0 t3:   1.03s  prompt 192933
+  s1 t3:   0.99s  prompt 183057
+  s2 t3:   0.85s  prompt 77042
+  s0 t4: 197.68s  prompt 192962
+  s1 t4: 186.80s  prompt 183086
+  s2 t4:  74.28s  prompt 77071
+  s0 t5:   1.06s  prompt 192993
+  s1 t5:   0.96s  prompt 183117
+  s2 t5:   0.83s  prompt 77102
+
+wall 1190.9s, 18 turns, 0 errors
+turn 1 (cold): [198.179, 187.213, 74.321]
+turns 2+: n=15 p50=1.17s p90=187.48s max=197.68s
+
+report: /mnt/shared/Development/inference-stack/bench/reports/2026-09-21_1602_concurrent_0.8.1-C-maxtok8000
+Read the server's own finish lines for prefill and cached share:
+  podman logs halogen 2>&1 | python3 bench/logstats.py --log - --label '0.8.1-C-maxtok8000'

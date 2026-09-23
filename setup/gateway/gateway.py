@@ -1724,6 +1724,73 @@ def resolve_slug(model, served, modes):
 # they are this model's tokens, not a general truth.
 CONTAINER_STOPS = ("<|im_end|>", "<|endoftext|>")
 
+# CLAMP_DEEP_PROMPT_CHARS / CLAMP_MAX_TOKENS — a clamp that only fires where it
+# can do any good. Both 0 = off, which is the default and stays it.
+#
+# THE FIRST VERSION OF THIS, on 21.09.2026, clamped on max_tokens ALONE and was
+# switched off within the hour. The operator's objection retired it: regular
+# requests here legitimately ask for 16-32k of output, and on a shallow prompt
+# that reservation is 34k of a 524288 pool — harmless. A context-free clamp
+# would have cut real answers to buy cache room that was never short. That is
+# the same silent-truncation failure this file argues against two paragraphs
+# down, committed by the guard meant to prevent it.
+#
+# So the gate is the PROMPT, and it is measured in CHARACTERS rather than
+# estimated in tokens. A token estimate would need a chars-per-token constant,
+# and that constant is not a property of this gateway: the synthetic documents
+# in bench/sessionload.py run about 2.1 chars a token, ordinary prose and code
+# nearer 3.5-4. A clamp whose threshold silently means something different per
+# content type is worse than none. Characters are what the gateway can actually
+# count.
+#
+# WHEN IT IS WORTH SETTING, with this host's pool of 524288 and the measurement
+# in bench/reports/2026-09-21_1630_halogen-0.8.1-vs-0.12.3/ANALYSIS.md:
+#   two deep sessions at 193k-230k prompt tokens with 32000 output each reserve
+#     86% to 99.9% of the pool — it FITS, and nothing should be clamped.
+#   add a third session, even a small one, to two at 230k and it is 110% — every
+#     turn then re-prefills its whole prompt (p50 184 s against 0.95 s).
+# So this is for the operator who knows a third session is coming and would
+# rather have a shorter answer than a re-prefill. It is not a default.
+CLAMP_DEEP_PROMPT_CHARS = int(os.environ.get("CLAMP_DEEP_PROMPT_CHARS", 0) or 0)
+
+# CLAMP_MAX_TOKENS — the ceiling applied ONLY to a request whose prompt is at
+# or over CLAMP_DEEP_PROMPT_CHARS. Without that threshold set it does nothing,
+# which is what makes the pair safe: a shallow request is never touched however
+# large its budget.
+#
+# A Halogen KV reservation is prompt PLUS max_tokens, reserved whether or not
+# it is used, and Claude Code sends max_tokens=32000 for answers of a few
+# hundred tokens. Measured 21.09.2026 on this machine
+# (bench/reports/2026-09-21_1630_halogen-0.8.1-vs-0.12.3/ANALYSIS.md), three
+# sessions of 193k / 183k / 77k prompt tokens taking turns against a 524288
+# pool:
+#
+#   max_tokens 32000 -> 675k positions reserved (129% of the pool): every
+#     follow-up turn a full re-prefill, p50 184 s, cache hit rate 0.0, 32
+#     entries evicted, and the server saying "kv pool: no room for 225024
+#     positions; forgot the region at 0" at each one.
+#   max_tokens  8000 -> 494k (94%): follow-up turns p50 0.95 s, hit rate 0.83
+#     (every follow-up turn), 0 evictions, all three regions held.
+#
+# 194x a turn from this one number, and no release can substitute for it: at
+# 129% the 0.11.5/0.11.7 relocation counters all read 0, because no placement
+# fits three regions into a pool that holds two. The rule is arithmetic —
+# sum over live sessions of (prompt + max_tokens) <= HALOGEN_KV_POOL_POSITIONS
+# — so 8000 is not a magic constant, it is what fit THAT session mix.
+# setup/defects.json: halogen-kv-reservation-is-prompt-plus-max-tokens.
+#
+# OFF BY DEFAULT, AND LOUD WHEN ON. This repo has paid for a silent clamp
+# once: the upstream front end used to do max_tokens = min(max_tokens, cap),
+# and a benchmark run lost its results to it — 16,384 asked, exactly 4,096
+# returned, no error and no field saying the server had reduced the request,
+# so it read as the MODEL stopping rather than the SERVER truncating
+# (the note is still in serve_api.py, and `finish_reason: length` is the same
+# value in both cases, which is why it could not be diagnosed from the
+# response). Hence: a log line per clamp, `max_tokens_clamped_from` on the
+# payload so the trace carries it, and no default that a bench side server
+# would inherit — the same reasoning as HALOGEN_FIT_TO_ROOM being per-unit.
+CLAMP_MAX_TOKENS = int(os.environ.get("CLAMP_MAX_TOKENS", 0) or 0)
+
 
 def container_extras(p):
     """What every request to the container backend carries, in place."""
@@ -1737,7 +1804,55 @@ def container_extras(p):
         if tok not in stops:
             stops.append(tok)
     p["stop"] = stops
+    # The reservation clamp. Three conditions, all required:
+    #   - both settings are on (either at 0 disables the pair),
+    #   - the PROMPT is at or over the threshold — a shallow request keeps its
+    #     whole budget however large, which is the objection that retired the
+    #     first version of this,
+    #   - the request actually SENT a budget. Absent means the server's own
+    #     default applies, and putting a number there would invent a limit
+    #     nobody asked for.
+    cap = CLAMP_MAX_TOKENS
+    if cap > 0 and CLAMP_DEEP_PROMPT_CHARS > 0:
+        want = p.get("max_tokens")
+        chars = prompt_chars(p)
+        if (isinstance(want, int) and want > cap
+                and chars >= CLAMP_DEEP_PROMPT_CHARS):
+            p["max_tokens"] = cap
+            # Rides along in the payload so the trace carries it. Checked
+            # against the running 0.12.3 on 21.09.2026: the server accepts the
+            # unknown field and ignores it (a request carrying it answered
+            # normally), which is what makes this the cheap place to put it
+            # rather than a second channel into the trace.
+            p["max_tokens_clamped_from"] = want
+            log("CLAMP       max_tokens %d -> %d on a %d-char prompt "
+                "(CLAMP_DEEP_PROMPT_CHARS=%d; the KV reservation is prompt + "
+                "max_tokens)" % (want, cap, chars, CLAMP_DEEP_PROMPT_CHARS))
     return p
+
+
+def prompt_chars(p):
+    """Characters of prompt this request carries — messages and plain prompt.
+
+    Counted, not estimated in tokens: see the note on CLAMP_DEEP_PROMPT_CHARS
+    for why a chars-per-token constant has no business being in this file.
+    Image parts are skipped: a base64 payload is enormous in characters and
+    costs about a thousand tokens, so counting it would make every vision turn
+    look like a deep prompt.
+    """
+    n = 0
+    for m in (p.get("messages") or []):
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, str):
+            n += len(c)
+        elif isinstance(c, list):
+            for part in c:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    n += len(part.get("text") or "")
+    prompt = p.get("prompt")
+    if isinstance(prompt, str):
+        n += len(prompt)
+    return n
 
 
 def inject_model_kwargs(p, table=None, served=None, modes=None):

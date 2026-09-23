@@ -1,0 +1,31 @@
+=== concurrent: 0.12.3-B-overbooked ===
+server {"api": "0.12.3", "engine": "0.12.3", "match": true}, pool 524288, slots 4, slot_ctx 262144
+3 sessions x 6 turns, mode pingpong, max_tokens 32000, platform_profile performance
+documents built: [410082, 389551, 164070] chars (~[200000, 190000, 80000] tokens requested)
+reservation ~566000 positions of 524288 = 108.0% of the pool  <-- OVERBOOKED, this is the eviction case
+  s0 t0: 194.32s  prompt 192824
+  s1 t0: 183.32s  prompt 182948
+  s2 t0:  73.61s  prompt 76934
+  s0 t1: 194.22s  prompt 192862
+  s1 t1: 183.94s  prompt 182986
+  s2 t1:  73.82s  prompt 76972
+  s0 t2: 194.10s  prompt 192902
+  s1 t2: 184.39s  prompt 183026
+  s2 t2:  73.91s  prompt 77012
+  s0 t3: 194.56s  prompt 192933
+  s1 t3: 184.28s  prompt 183057
+  s2 t3:  73.90s  prompt 77042
+  s0 t4: 194.74s  prompt 192962
+  s1 t4: 184.14s  prompt 183086
+  s2 t4:  73.75s  prompt 77071
+  s0 t5: 194.25s  prompt 192993
+  s1 t5: 183.90s  prompt 183117
+  s2 t5:  73.72s  prompt 77102
+
+wall 2712.9s, 18 turns, 0 errors
+turn 1 (cold): [194.318, 183.32, 73.607]
+turns 2+: n=15 p50=184.14s p90=194.56s max=194.74s
+
+report: /mnt/shared/Development/inference-stack/bench/reports/2026-09-21_1525_concurrent_0.12.3-B-overbooked
+Read the server's own finish lines for prefill and cached share:
+  podman logs halogen 2>&1 | python3 bench/logstats.py --log - --label '0.12.3-B-overbooked'

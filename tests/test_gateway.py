@@ -114,6 +114,133 @@ class TestMidSystemToUser(unittest.TestCase):
         self.assertFalse(GW.MID_SYSTEM_TO_USER)
 
 
+class TestMaxTokensClamp(unittest.TestCase):
+    """CLAMP_MAX_TOKENS: bound the KV RESERVATION a request makes.
+
+    Measured 21.09.2026 (bench/reports/2026-09-21_1630_halogen-0.8.1-vs-0.12.3):
+    a Halogen KV reservation is prompt PLUS max_tokens, and Claude Code sends
+    32000 while using a few hundred. Three sessions of 193k/183k/77k prompt
+    tokens therefore reserve 675k positions of a 524288 pool and evict each
+    other on every turn — follow-up turns at p50 184 s, cache hit rate 0.0. The
+    same prompts with max_tokens 8000 reserve 94% of the pool and run at p50
+    0.95 s with every follow-up turn a cache hit. 194x, from this one number.
+
+    WHY IT IS LOUD, AND WHY IT IS OFF BY DEFAULT. This repo has already paid for
+    a silent clamp: an earlier version of the upstream front end did
+    `max_tokens = min(max_tokens, cap)` and a benchmark run lost its results to
+    it — asking for 16,384 returned exactly 4,096 with no error and no field
+    saying the server had reduced the request, so the output looked like the
+    MODEL stopping rather than the SERVER truncating (the note still stands in
+    serve_api.py). So: off unless set, one log line per clamp, the clamped value
+    visible in the trace, and never a default that a bench side server would
+    inherit.
+    """
+
+    DEEP = [{"role": "user", "content": "x" * 400_000}]
+    SHALLOW = [{"role": "user", "content": "write me a long module"}]
+
+    def setUp(self):
+        self._cap = GW.CLAMP_MAX_TOKENS
+        self._deep = GW.CLAMP_DEEP_PROMPT_CHARS
+
+    def tearDown(self):
+        GW.CLAMP_MAX_TOKENS = self._cap
+        GW.CLAMP_DEEP_PROMPT_CHARS = self._deep
+
+    def arm(self, cap=8000, chars=300_000):
+        GW.CLAMP_MAX_TOKENS = cap
+        GW.CLAMP_DEEP_PROMPT_CHARS = chars
+
+    def test_both_settings_are_off_by_default(self):
+        """A side server, and anything else that does not set them, is
+        untouched. The same argument as HALOGEN_FIT_TO_ROOM's."""
+        self.assertEqual(self._cap, 0)
+        self.assertEqual(self._deep, 0)
+
+    def test_a_SHALLOW_prompt_keeps_its_whole_budget(self):
+        """THE REGRESSION TEST FOR THE FIRST VERSION OF THIS CLAMP.
+
+        Written 21.09.2026 after the operator pointed out that regular requests
+        here ask for 16-32k of output. On a shallow prompt that reservation is
+        about 34k of a 524288 pool — nothing is short, and clamping it would cut
+        a real answer to buy room that was never needed. The first version
+        clamped on max_tokens alone and would have done exactly that.
+        """
+        self.arm()
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.SHALLOW})
+        self.assertEqual(p["max_tokens"], 32000)
+        self.assertNotIn("max_tokens_clamped_from", p)
+
+    def test_a_deep_prompt_is_clamped_and_says_what_it_clamped(self):
+        self.arm()
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP})
+        self.assertEqual(p["max_tokens"], 8000)
+        self.assertEqual(p["max_tokens_clamped_from"], 32000,
+                         "a clamp that leaves no trace is the silent "
+                         "truncation this setting's docstring argues against")
+
+    def test_the_threshold_alone_does_nothing_without_a_cap(self):
+        GW.CLAMP_MAX_TOKENS = 0
+        GW.CLAMP_DEEP_PROMPT_CHARS = 300_000
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP})
+        self.assertEqual(p["max_tokens"], 32000)
+
+    def test_the_cap_alone_does_nothing_without_a_threshold(self):
+        """Which is what makes the pair safe: forgetting the threshold cannot
+        turn this into the context-free clamp it used to be."""
+        GW.CLAMP_MAX_TOKENS = 8000
+        GW.CLAMP_DEEP_PROMPT_CHARS = 0
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP})
+        self.assertEqual(p["max_tokens"], 32000)
+
+    def test_a_budget_under_the_cap_is_untouched(self):
+        self.arm()
+        p = GW.container_extras({"max_tokens": 2000, "messages": self.DEEP})
+        self.assertEqual(p["max_tokens"], 2000)
+        self.assertNotIn("max_tokens_clamped_from", p)
+
+    def test_a_request_without_a_budget_is_untouched(self):
+        """No max_tokens means the server's own default applies, and clamping a
+        value the request never sent would invent a limit nobody asked for."""
+        self.arm()
+        p = GW.container_extras({"messages": self.DEEP})
+        self.assertNotIn("max_tokens", p)
+
+    def test_an_image_payload_does_not_make_a_turn_look_deep(self):
+        """A base64 image is enormous in characters and about a thousand tokens.
+        Counting it would clamp every vision turn."""
+        self.arm()
+        p = GW.container_extras({
+            "max_tokens": 32000,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "what is this?"},
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64," + "A" * 500_000}},
+            ]}]})
+        self.assertEqual(p["max_tokens"], 32000)
+
+    def test_prompt_chars_counts_messages_and_text_parts(self):
+        self.assertEqual(GW.prompt_chars({"messages": [
+            {"role": "user", "content": "abc"},
+            {"role": "assistant", "content": "de"},
+            {"role": "user", "content": [{"type": "text", "text": "fgh"}]},
+        ]}), 8)
+        self.assertEqual(GW.prompt_chars({"prompt": "xyz"}), 3)
+        self.assertEqual(GW.prompt_chars({}), 0)
+
+    def test_the_stop_tokens_still_arrive(self):
+        """container_extras has one other job, and the clamp must not cost it."""
+        self.arm()
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP})
+        # Positive control: an empty CONTAINER_STOPS would make the loop below
+        # assert nothing at all, which is what tests/test_vacuity.py exists to
+        # catch — and did catch, on the first version of this test.
+        self.assertEqual(len(GW.CONTAINER_STOPS), 2)
+        self.assertEqual(p["max_tokens"], 8000)
+        for tok in GW.CONTAINER_STOPS:
+            self.assertIn(tok, p["stop"])
+
+
 class TestModelKwargs(unittest.TestCase):
     """One loaded model, several thinking modes: the map fills
     chat_template_kwargs by model name. If it ever overwrote what a request

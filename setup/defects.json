@@ -932,6 +932,24 @@
       ],
       "first_seen": "2026-09-12",
       "last_checked": "2026-09-21"
+    },
+    {
+      "id": "halogen-kv-reservation-is-prompt-plus-max-tokens",
+      "title": "A KV reservation is prompt PLUS max_tokens, so an unused output budget evicts other sessions",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "slow",
+      "symptom": "Two or three deep sessions taking turns each re-prefill their whole prompt on every turn: a turn that should cost about a second costs minutes, and the answer itself is correct so nothing looks broken. On 0.12.3 the server names it at every occurrence ('kv pool: no room for N positions; forgot the region at A ... the least recently used'); on 0.8.1 there is NO log line at all and /cache has no pool object, so the turn simply looks slow.",
+      "measured": "Measured 21.09.2026 on this machine with bench/sessionload.py, identical documents (fixed salt) and thinking off, against 0.12.3 with HALOGEN_KV_POOL_POSITIONS=524288. Three sessions of 193k / 183k / 77k prompt tokens, six turns each, round robin. At max_tokens=32000 the reservation is 3 x (prompt + 32000) = about 675k positions of 524288 (129%): follow-up turns ran at p50 184 s, the cache hit rate was 0.0, 32 entries were evicted, and only 2 of 3 regions were held. At max_tokens=8000 the same prompts reserve about 494k (94%): follow-up turns ran at p50 0.95 s (p90 1.20 s), hit rate 0.83 (every follow-up turn), 0 evictions, 3 of 3 regions held. That is 194x per follow-up turn and 2713 s against 466 s for the whole run, from one setting. The reservation, not the release, decides it: in the 129% run 0.11.5's and 0.11.7's counters (moved, relocated, packed, cold_resorts) all read 0, because no placement can fit three regions into a pool that holds two. Report: bench/reports/2026-09-21_1630_halogen-0.8.1-vs-0.12.3/ANALYSIS.md.",
+      "mitigation": "Keep the sum of live reservations under the pool: sum over live sessions of (prompt + max_tokens) <= HALOGEN_KV_POOL_POSITIONS. WHAT THAT MEANS FOR THE SHAPE THIS HOST ACTUALLY RUNS, established with the operator 21.09.2026: the normal case is TWO deep sessions (a main session and its subagent), and two at 193k-230k prompt tokens with 32000 output each reserve 86% to 99.9% of a 524288 pool — it FITS and nothing needs clamping. A third deep session is rare here and usually small, and that is the case that breaks: two at 230k plus any third is 110%. So there is no clamp in the normal path and none is wanted. The gateway offers CLAMP_DEEP_PROMPT_CHARS + CLAMP_MAX_TOKENS for the operator who knows a third is coming and prefers a shorter answer to a re-prefill; both default to 0 and either at 0 disables the pair. It is gated on the PROMPT SIZE IN CHARACTERS, not on max_tokens: the first version of it clamped on max_tokens alone and was switched off within the hour, because regular requests here legitimately ask for 16-32k of output and on a shallow prompt that reservation is 34k of the pool — harmless, and clamping it would cut a real answer to buy room that was never short. Characters rather than estimated tokens because a chars-per-token constant is content-dependent (about 2.1 for synthetic records, 3.5-4 for prose and code) and a threshold that silently means something different per content type is worse than none. Raising the pool is the WRONG fix and this repo has the measurement: 786432 positions leaves 5.6 GiB of host RAM, the 47.7 GiB PLE table falls out of the page cache, and that produced six watchdog shutdowns (see halogen-pagecache-starvation-watchdog-kill).",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "open as a SIZING rule rather than a bug: the server does exactly what it says, and upstream states the rule in its own README (0.11.7: three conversations need pool >= sum of (prompt + max_tokens)). What was missing until 21.09.2026 was the arithmetic somewhere a reader would find it. NOT mitigated by an automatic clamp, deliberately: the shape this host runs fits the pool, and the one measurement that matters for an operator is now VISIBLE instead — 0.12.3 names every eviction in the log where 0.8.1 named none.",
+      "first_seen": "2026-09-21",
+      "last_checked": "2026-09-21"
     }
   ]
 }

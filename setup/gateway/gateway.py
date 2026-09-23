@@ -1831,6 +1831,60 @@ def container_extras(p):
     return p
 
 
+# Below this many recomputed tokens a turn is doing its own new work, not
+# repeating somebody else's. 20000 is above any plausible single follow-up turn
+# (a Claude Code turn adds a tool result and a question) and far below the
+# 180k-193k a lost deep session re-reads, so the two cannot be confused. Not a
+# measured optimum — the gap between the two cases is two orders of magnitude,
+# so the exact line does not matter.
+CACHE_LOSS_MIN_RECOMPUTE = int(
+    os.environ.get("CACHE_LOSS_MIN_RECOMPUTE", 20000) or 20000)
+
+
+def cache_loss_note(ident, reuse, ledger, threshold=None):
+    """-> a line to log when a conversation that WAS cached re-prefills, else None.
+
+    Why this exists at all. Measured 21.09.2026: in a three-session run on
+    Halogen 0.8.1, five of fifteen follow-up turns silently re-prefilled their
+    whole prompt — 187 s where the cached turn costs 1.2 s — and there was no
+    line anywhere. `/cache` grew its pool object in upstream 0.11.5 and the
+    eviction log in 0.11.0, so before those releases the event was invisible and
+    the symptom looked like a slow model. 0.12.3 names it server-side now; this
+    names it from the gateway, which is where the operator is looking, and keeps
+    doing so if the backend is ever rolled back.
+
+    It reads two things the gateway already has: its own prefix ledger, which
+    says this conversation has been served from cache BEFORE (`reused_sum`), and
+    the server's reuse counters for this turn. A prefix with no history is cold
+    by construction and says nothing — crying wolf on every new session would
+    make the line worthless.
+
+    Deliberately NOT a clamp and NOT an error. The underlying arithmetic is
+    `sum over live sessions of (prompt + max_tokens) <= pool`, and which term to
+    give up — a session, its depth, or its output budget — is the operator's
+    call, not this function's.
+    """
+    if not reuse or not ledger:
+        return None
+    try:
+        reused, computed = int(reuse[0]), int(reuse[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if computed < (CACHE_LOSS_MIN_RECOMPUTE if threshold is None else threshold):
+        return None
+    # Never cached before: this is a first read, not a loss.
+    if (ledger.get("reused_sum") or 0) <= 0:
+        return None
+    return (
+        "LOST CACHE  prefix=%s recomputed %d tokens that were cached before "
+        "(reused %d). Another conversation took the KV pool room this one held: "
+        "a reservation is prompt + max_tokens PER LIVE SESSION, and their sum "
+        "has passed the pool. Fewer sessions, shallower ones, or a smaller "
+        "max_tokens is the lever — setup/defects.json: "
+        "halogen-kv-reservation-is-prompt-plus-max-tokens"
+        % (ident, computed, reused))
+
+
 def prompt_chars(p):
     """Characters of prompt this request carries — messages and plain prompt.
 
@@ -2671,6 +2725,12 @@ async def handler(req):
                     SEEN.pop(ident, None)
                 if SEEN.get(ident) != before:
                     save_seen()
+            # The HISTORY, captured before this turn is folded into it. Taken
+            # here rather than read back after, because `reused_sum` below is
+            # cumulative: a first turn that reused twelve tokens would otherwise
+            # look like a conversation with a reuse history, and the lost-cache
+            # note would fire on every new session. Nearly shipped that way.
+            history_reused = (PREFIXES.get(ident) or {}).get("reused_sum", 0)
             if ident and reuse:
                 e = PREFIXES.setdefault(ident, {
                     "head": head, "requests": 0, "cold": 0, "warm": 0,
@@ -2697,6 +2757,14 @@ async def handler(req):
                 % (ip, PRIORITY_NAME[prio], who, ident, took,
                    "" if not reuse else
                    "  reused=%d computed=%d" % reuse))
+            # After DONE, not instead of it: the two answer different questions
+            # and the DONE line is what the log is read for. `history_reused`
+            # was captured above, before this turn was added to the ledger —
+            # see the note there for why that distinction is load-bearing.
+            loss = cache_loss_note(ident, reuse,
+                                   {"reused_sum": history_reused})
+            if loss:
+                log(loss)
             TRACE.record(
                 "request",
                 summary={"who": who, "zone": PRIORITY_NAME[prio],

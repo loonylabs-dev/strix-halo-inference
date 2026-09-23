@@ -241,6 +241,90 @@ class TestMaxTokensClamp(unittest.TestCase):
             self.assertIn(tok, p["stop"])
 
 
+class TestCacheLossNote(unittest.TestCase):
+    """A conversation that loses its KV region re-prefills, and until 0.12.3 not
+    even the server said so. This says so from the gateway's side.
+
+    Measured 21.09.2026: on 0.8.1 five of fifteen follow-up turns in a
+    three-session run silently re-prefilled — 187 s where the cached turn costs
+    1.2 s — with no line anywhere, because `/cache` has no pool object before
+    upstream 0.11.5 and the eviction log arrived in 0.11.0. The operator could
+    not tell that from a slow model. The gateway has both halves of the answer
+    already: its own prefix ledger knows this conversation was warm before, and
+    the server's reuse counters say what this turn actually recomputed.
+
+    Deliberately NOT a clamp. The fix for the underlying arithmetic is fewer or
+    shallower sessions, or a smaller output budget, and which of those to give
+    up is the operator's call — this only makes the moment visible.
+    """
+
+    LEDGER_WARM = {"reused_sum": 150_000, "requests": 4}
+    LEDGER_NEW = {"reused_sum": 0, "requests": 0}
+
+    def test_a_warm_prefix_that_recomputes_everything_is_reported(self):
+        note = GW.cache_loss_note("abc123", (12, 180_000), self.LEDGER_WARM)
+        self.assertIsNotNone(note)
+        self.assertIn("180000", note.replace(",", ""),
+                      "the note has to carry HOW MUCH was recomputed — that is "
+                      "the number an operator acts on")
+
+    def test_a_first_visit_is_not_a_loss(self):
+        """The first turn of a conversation is cold by construction, and calling
+        that a lost cache would cry wolf on every new session."""
+        self.assertIsNone(
+            GW.cache_loss_note("abc123", (0, 180_000), self.LEDGER_NEW))
+
+    def test_a_warm_turn_is_silent(self):
+        self.assertIsNone(
+            GW.cache_loss_note("abc123", (179_000, 900), self.LEDGER_WARM))
+
+    def test_a_small_recompute_is_silent(self):
+        """A few hundred tokens is a follow-up's own new text, not a loss."""
+        self.assertIsNone(
+            GW.cache_loss_note("abc123", (179_000, 400), self.LEDGER_WARM))
+
+    def test_no_ledger_and_no_counters_are_silent(self):
+        self.assertIsNone(GW.cache_loss_note("abc123", None, self.LEDGER_WARM))
+        self.assertIsNone(GW.cache_loss_note("abc123", (0, 180_000), None))
+
+    def test_the_caller_reads_the_history_before_folding_this_turn_into_it(self):
+        """The bug this function nearly shipped with, and the unit tests above
+        could not see it: the ledger's `reused_sum` is CUMULATIVE and is updated
+        earlier in the same block. Passing the updated ledger would make a first
+        turn that reused twelve tokens look like a conversation with a reuse
+        history, and the note would fire on every new session.
+
+        Checked structurally, on the source, because the alternative is driving
+        a full request through the stub server to observe a log line. That is a
+        weaker test than an integration test would be and it is worth saying so:
+        it verifies the ORDER of two statements, not the behaviour. It would not
+        catch someone passing a differently-wrong value.
+        """
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(
+            encoding="utf-8")
+        capture = src.index("history_reused = ")
+        fold = src.index('e["reused_sum"] = e.get("reused_sum", 0) + reuse[0]')
+        call = src.index("loss = cache_loss_note(")
+        self.assertLess(capture, fold,
+                        "history_reused is captured AFTER this turn was added "
+                        "to reused_sum, so it is not the history any more")
+        self.assertLess(fold, call)
+        self.assertIn('cache_loss_note(ident, reuse,\n'
+                      '                                   {"reused_sum": '
+                      'history_reused})', src,
+                      "the call no longer passes the captured history")
+
+    def test_the_note_names_the_cause_and_the_lever(self):
+        note = GW.cache_loss_note("abc123", (12, 180_000), self.LEDGER_WARM)
+        low = note.lower()
+        self.assertIn("pool", low,
+                      "an operator reading this needs to know it is the KV "
+                      "pool and not the model")
+        self.assertIn("max_tokens", low,
+                      "and that the reservation includes the output budget, "
+                      "which is the half they can actually change")
+
+
 class TestModelKwargs(unittest.TestCase):
     """One loaded model, several thinking modes: the map fills
     chat_template_kwargs by model name. If it ever overwrote what a request

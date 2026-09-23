@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.8.1
-#             image digest sha256:d444524bffb6f487650cb1c29e3dae67fcebf0c6a22abe5a6342f0e4315567e0
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.12.3
+#             image digest sha256:0a49060de34eba6ab762196d4f109a5dab476e10a21841e641c0194346dd5c7d
 #   base file /halogen/tools/serve_api.py
-#   BASE_SHA256 = 018c899b43e496bb27c082a7ffe2f1da17d898144e1f5832607d797478d55cb6
+#   BASE_SHA256 = 7bb0fdac8730afff7d6aa0f24a43b667335bcdd51d3bcfef628fb40873ad994b
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -14,18 +14,22 @@
 # change to this one file — the shape of defect this repository keeps
 # finding, and the reason setup/patches/ exists for llama.cpp.
 #
-# WHAT IS CHANGED — four hunks against the base above. Hunks 1-3 are the
-# vendored end-token fix this file has carried since 0.6.x; hunk 4 is
-# repository policy, added 14.09.2026 and NOT an upstream behaviour.
+# WHAT IS CHANGED — four changes in five places against the base above.
+# Changes 1-3 are the vendored end-token fix this file has carried since
+# 0.6.x; change 4 is repository policy, added 14.09.2026 and NOT an upstream
+# behaviour. (The 0.8.1 header said "four hunks" and the diff showed five
+# code hunks plus the header; the count is stated both ways here so the next
+# reader does not have to re-derive it.)
 #
 #   1. get_eos_ids()  The model has TWO end tokens, <|im_end|> (248046) and
-#      <|endoftext|> (248044), and the base registered only tok.eos_token_id.
-#      A generation that emitted the other one was not stopped: it decoded on
-#      to max_tokens and repeated itself. Filed as halogen-second-eos-token-
-#      unregistered in setup/defects.json.
+#      <|endoftext|> (248044), and the base registers only tok.eos_token_id
+#      and <|im_end|>. A generation that emitted the other one was not
+#      stopped: it decoded on to max_tokens and repeated itself. Filed as
+#      halogen-second-eos-token-unregistered in setup/defects.json.
 #   2. the same function takes the request's stop STRINGS and registers the
 #      ones that are single tokens as EOS ids, so a client's stop list is
-#      honoured by the engine rather than only by the text matcher.
+#      honoured by the engine rather than only by the text matcher. Applied
+#      at the generate() call as req_eos.
 #   3. app.state bindings: exposes app.state.run and app.state.serve for tests.
 #   4. the fit-to-room gate (FIT_TO_ROOM / FIT_TO_ROOM_FLOOR, and the clamp in
 #      serve()): a max_tokens that does not fit the window the prompt left is
@@ -36,10 +40,30 @@
 #      survives a rebuild and a switch-model to the 27B) — and the shared
 #      template and the bench side servers deliberately do not.
 #
-# RETIREMENT: hunks 1-3 go when an image ships them — check the upstream
-# changelog on every bump. Hunk 4 goes only if upstream ships an equivalent
-# clamp; until then it stays even on an image whose other hunks have landed.
-# The mount check refuses the start when the base hash moves, and says so.
+# RE-CUT 21.09.2026, 0.8.1 -> 0.12.3 (base file 4180 -> 4827 lines). Every
+# retirement condition was checked against the 0.12.3 FILE, not the changelog:
+#   * changes 1-2: still needed. 0.12.3 carries the same two-line form the
+#     0.8.1 base had, and the string <|endoftext|> does not occur anywhere in
+#     the base file. The upstream defect stands.
+#   * change 3: still needed. `app.state.` does not occur in the base file.
+#   * change 4: still needed, and its surroundings MOVED. 0.12.1 split the
+#     refusal in two — a new `room <= 0` branch names the overrun instead of a
+#     negative room, and names HALOGEN_CTX / HALOGEN_ROPE_YARN as the levers.
+#     That branch is left untouched on purpose: there is no room to clamp to.
+#     The clamp now sits in the `want > room` branch only, which is reached
+#     only with room >= 1.
+#   * checked for overlap with the two clamps upstream grew meanwhile:
+#     0.11.0's answer room (answer_room(), bounds the think block) and
+#     0.11.5's KV-pool clamp (cuts a turn to the positions its region has
+#     left, reported as room_from through `timings`). Neither looks at the
+#     context window, both run after this gate, and lowering `want` here is
+#     what feeds answer_room() — the same coupling 0.11.5 states for its own.
+#
+# RETIREMENT: changes 1-3 go when an image ships them — check the upstream
+# changelog AND the base file on every bump. Change 4 goes only if upstream
+# ships an equivalent context-window clamp; until then it stays even on an
+# image whose other changes have landed. The mount check refuses the start
+# when the base hash moves, and says so.
 # ===========================================================================
 """serve_api.py — the OpenAI-compatible front-end.
 
@@ -73,9 +97,9 @@ import sys
 import time
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -130,6 +154,10 @@ VIS_MAX_PIXELS = int(os.environ.get("HALOGEN_VISION_MAX_PIXELS", 2560 * 1440))
 # this front-end compares; see version_status().
 API_VERSION = (os.environ.get("HALOGEN_IMAGE_VERSION") or "unknown").strip() \
     or "unknown"
+# The prompt cache's THIRD saved place, the start of the last user message
+# (see render_prompt). `HALOGEN_CACHE_SNAP3=0` sends no such hint;
+# the engine reads the same variable and ignores the hint on its side.
+SNAP3_ON = os.environ.get("HALOGEN_CACHE_SNAP3", "1").strip() != "0"
 # Resolved from the tokenizer at startup, never hardcoded: the id is 248056 on
 # this checkpoint and a literal would be one more fork leftover waiting to
 # happen.
@@ -473,6 +501,10 @@ KEEPALIVE_S = float(os.environ.get("HALOGEN_KEEPALIVE_TIMEOUT", 300.0))
 # invisible to every SSE parser and resets every inactivity timer, so one
 # goes out whenever nothing else has for this many seconds. 0 disables it.
 SSE_KEEPALIVE_S = float(os.environ.get("HALOGEN_SSE_KEEPALIVE_S", 10.0))
+# 0.11.9: the request line prints a prefill rate only over this many processed
+# tokens (about one sixteenth of a chunk; below it the figure is the chunk's
+# fixed cost, not a speed). Not a flag: nothing a deployment would tune.
+PREFILL_RATE_MIN_TOKENS = 2048
 
 
 def schema_text(rf):
@@ -583,7 +615,7 @@ class Metrics:
         self.draft_accepted += int(t.get("draft_n_accepted", 0))
         self.structured_requests += 1 if structured else 0
 
-    def render(self, processing, deferred, kv_reserved, kv_pool):
+    def render(self, processing, deferred, kv_reserved, kv_pool, kv_used=0):
         """The Prometheus text exposition, and the bucket resets."""
         b_ps = (self.b_prompt_tokens / self.b_prompt_seconds
                 if self.b_prompt_seconds > 0 and self.b_prompt_tokens > 0 else 0.0)
@@ -602,9 +634,13 @@ class Metrics:
             ("gauge", "llamacpp:requests_deferred", "Number of requests deferred.", deferred),
         ]
         if kv_pool:
+            # 0.11.5 (issue #73): the engine's own occupancy (positions held
+            # in every region of its pool, busy and held, as of the last
+            # request line or /cache read), not the front end's queue. The
+            # queue's reservation keeps a name of its own below.
             rows += [
-                ("gauge", "llamacpp:kv_cache_tokens", "KV-cache tokens (positions reserved by the requests in flight: prompt + max_tokens each).", kv_reserved),
-                ("gauge", "llamacpp:kv_cache_usage_ratio", "KV-cache usage. 1 means 100 percent usage. (reserved positions over the pool)", min(1.0, kv_reserved / kv_pool)),
+                ("gauge", "llamacpp:kv_cache_tokens", "KV-cache tokens (positions the engine's pool holds, busy and held regions).", kv_used),
+                ("gauge", "llamacpp:kv_cache_usage_ratio", "KV-cache usage. 1 means 100 percent usage. (positions held over the pool)", min(1.0, kv_used / kv_pool)),
             ]
         rows += [
             ("counter", "halogen:requests_total", "Requests completed.", self.requests),
@@ -613,6 +649,11 @@ class Metrics:
             ("counter", "halogen:draft_tokens_accepted_total", "Of those, accepted.", self.draft_accepted),
             ("counter", "halogen:structured_requests_total", "Requests decoded under a JSON schema.", self.structured_requests),
         ]
+        if kv_pool:
+            rows += [
+                ("gauge", "halogen:kv_pool_positions", "The KV pool, in positions.", kv_pool),
+                ("gauge", "halogen:kv_pool_reserved_tokens", "Positions the requests holding a front-end slot asked for (prompt + max_tokens each), admitted or not.", kv_reserved),
+            ]
         out = []
         for kind, name, help_, value in rows:
             out.append("# HELP %s %s" % (name, help_))
@@ -697,8 +738,22 @@ class Engine:
         self.tokenizer = None   # 0.8.0: bound by build_app, for VOCAB
         self.metrics = Metrics()   # 0.8.0: the /metrics totals
         self.reserved = {}         # slot key -> positions the request holds (prompt + max_tokens)
+        # 0.11.5 (issue #73): the KV pool's occupancy as the ENGINE reports it
+        # (positions held in every region over the pool), from the last D line
+        # or CSTAT seen; /metrics reads it without a round trip. Before this
+        # `kv_cache_tokens` was `reserved` summed, what the front end's queue
+        # had asked for, which read 913k against a 655k pool in #74's log.
+        self.pool_used = 0
+        self.pool_positions = 0
         self._live = (True, 0.0, "")   # last probe_live result
         self._live_at = None           # when it was taken (monotonic)
+        # 0.11.9: the last CSTAT reply parsed and when (monotonic). The
+        # engine answers CSTAT between rounds, so a /cache during a long
+        # cold prefill (one 32k chunk is ~22 s) outlived the 10 s wait and
+        # the route returned a 500 with the engine perfectly healthy. Now it
+        # returns these, marked stale with their age.
+        self._cstat_last = None
+        self._cstat_at = None
 
     async def connect(self):
         async with self.clock:
@@ -962,7 +1017,21 @@ class Engine:
                         # (constrained decoding) once this front
                         # end has sent it the vocabulary. 0 = HALOGEN_GRAMMAR=0;
                         # absent = an engine older than structured output.
-                        "grammar": len(p) >= 22 and p[21] == "1"}
+                        "grammar": len(p) >= 22 and p[21] == "1",
+                        # 0.9.0: composable context. `composable` on/off, its
+                        # unit floor and seam in tokens, its host byte budget,
+                        # the store's fingerprint. Absent = an engine older
+                        # than the feature = off.
+                        "composable": len(p) >= 23 and p[22] == "1",
+                        "cc_floor": int(p[23]) if len(p) >= 24 else 0,
+                        "cc_seam": int(p[24]) if len(p) >= 25 else 0,
+                        "cc_bytes": int(p[25]) if len(p) >= 26 else 0,
+                        "cc_fingerprint": p[26] if len(p) >= 27 else "-",
+                        # 0.9.1 (issue #57): the QSA indexer budget the
+                        # engine runs, in tokens (HALOGEN_INDEXER_BUDGET;
+                        # the checkpoint's 2048 is the default). Absent = an
+                        # engine older than the lever = the checkpoint's.
+                        "indexer_budget": int(p[27]) if len(p) >= 28 else 2048}
         except Exception:
             pass
         return {"mtp": False, "draft_head": False, "default": 0,
@@ -1004,7 +1073,24 @@ class Engine:
             d["pld_accepted"] = int(parts[13])  # accepted (inside commit)
         if len(parts) >= 15:            # 0.7.0, #45: the chain tokens those
             d["pld_drafted"] = int(parts[14])   # rounds proposed (1..K each)
+        if len(parts) >= 16:            # 0.9.0: prompt chunks composed instead
+            d["n_composed"] = int(parts[15])   # of prefilled (tokens in n_cached)
+        if len(parts) >= 20:            # 0.11.5 (#73, #74): the max_tokens this
+            d["room_from"] = int(parts[16])    # turn was clamped FROM (-1: not)
+            d["max_tokens"] = int(parts[17])   # and ran with; the pool's occupancy
+            d["pool_used"] = int(parts[18])    # as the request ends (0 0 unpooled)
+            d["pool_positions"] = int(parts[19])
+        if len(parts) >= 22:            # 0.12.2: the THINK budget fired and
+            d["think_forced"] = int(parts[20])  # closed the block (1), and the
+            d["think_seen"] = int(parts[21])    # generated tokens inside it then
         return d
+
+    def _note_pool(self, d):
+        """0.11.5: remember the engine's pool occupancy from a D line or a
+        CSTAT, for /metrics and the request line."""
+        if d.get("pool_positions"):
+            self.pool_used = int(d["pool_used"])
+            self.pool_positions = int(d["pool_positions"])
 
     async def _gen_batched(self, req, line):
         """One of many concurrent generations over the shared socket.
@@ -1044,7 +1130,9 @@ class Engine:
                     if parts[2] == "error":
                         raise HTTPException(400, engine_refusal(parts))
                     finished = True
-                    yield None, self._done_dict(parts), None
+                    d = self._done_dict(parts)
+                    self._note_pool(d)
+                    yield None, d, None
                     return
         finally:
             self.streams.pop(req, None)
@@ -1067,7 +1155,8 @@ class Engine:
 
     async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                        penalty="", snap=0, snap2=0, images=None, schema=None,
-                       after=None, escape=(), think=None):   # noqa: E301
+                       after=None, escape=(), think=None, seg=None,
+                       snap3=0):   # noqa: E301
         """Yields (token_id, None) per token, then (None, done_dict).
 
         `drafter` is the trailing wire field (0 serial / 1 MTP); None omits
@@ -1112,6 +1201,12 @@ class Engine:
                 # things resume from it. Mode 2 only; the engine ignores it
                 # otherwise.
                 + (f" SNAP2 {snap2}" if snap2 else "")
+                # SNAP3 k: the THIRD place, the start of the last user
+                # message, so a new question behind the same document
+                # (or any harness that replaces its last message instead of
+                # extending it) resumes from there. Mode 2 only; an engine
+                # that predates it ignores the keyword.
+                + (f" SNAP3 {snap3}" if snap3 else "")
                 # IMG <count> <first_tok> <H> <W> ... : the engine checks this
                 # against the VIMG lines it received and REFUSES a mismatch.
                 # A dropped image must not become a prompt prefilled with the
@@ -1136,6 +1231,11 @@ class Engine:
                 # engine closes the think block itself at the budget.
                 + ((" THINK %d %d %d " % (think[0], think[1], len(think[2])))
                    + " ".join(str(t) for t in think[2]) if think else "")
+                # 0.9.0: the message boundaries, so composable context can cut
+                # its units at them. Sent only when the engine reports the
+                # feature on, so an engine without it never sees the field.
+                + ((" SEG %d " % len(seg)) + " ".join(str(x) for x in seg)
+                   if seg and self.info.get("composable") else "")
                 + "\n")
         if self.n_slots > 1:
             async for item in self._gen_batched(req, line):
@@ -1193,7 +1293,9 @@ class Engine:
                 self.active = None
                 if parts[2] == "error":
                     raise HTTPException(400, engine_refusal(parts))
-                yield None, self._done_dict(parts), None
+                d = self._done_dict(parts)
+                self._note_pool(d)
+                yield None, d, None
                 return
 
     async def cache_stats(self):
@@ -1205,10 +1307,26 @@ class Engine:
             # NEVER read self.r here: _demux() owns it. Two coroutines reading
             # one stream is how a CSTAT reply ends up spliced into some
             # request's token sequence.
+            # 0.11.9: a reply that arrived after an earlier call gave up is
+            # still in the queue; drop it, or this call would read the old
+            # reply and leave its own for the next.
+            while not self.cstat.empty():
+                self.cstat.get_nowait()
             async with self.wlock:
                 self.w.write(b"CSTAT\n")
                 await self.w.drain()
-            p = await asyncio.wait_for(self.cstat.get(), timeout=10)
+            try:
+                p = await asyncio.wait_for(self.cstat.get(), timeout=10)
+            except asyncio.TimeoutError:
+                # The engine is inside a call (a long cold prefill answers
+                # nothing on this stream until its round ends). Not an
+                # error: the last counters, with their age.
+                if self._cstat_last is None:
+                    raise HTTPException(503, "the engine is inside a long request and has not "
+                                        "reported its cache counters yet; try again in a moment")
+                d = dict(self._cstat_last)
+                d["stale_s"] = round(time.monotonic() - self._cstat_at, 1)
+                return d
         else:
             async with self.slots:
                 self.w.write(b"CSTAT\n")
@@ -1247,6 +1365,85 @@ class Engine:
             # not under `evicted`, because nothing a later request could
             # have hit was lost.
             d["superseded"] = int(p[17])
+        if len(p) >= 24:
+            # 0.9.0: composable context's counters (all 0 when the flag is
+            # off): chunks resident, their host bytes, stored, composed,
+            # evicted, tokens composed.
+            d["composable_context"] = {
+                "chunks": int(p[18]), "bytes": int(p[19]),
+                "stored": int(p[20]), "composed": int(p[21]),
+                "evicted": int(p[22]), "composed_tokens": int(p[23])}
+        if len(p) >= 37:
+            # 0.10.0: the disk tier (HALOGEN_CACHE_DIR; every field 0 and
+            # `on` false when unset): records and lineages on disk, bytes
+            # held against the budget, hits served from disk, misses that
+            # consulted it, records persisted, branches (a second
+            # continuation of one prefix), lineages evicted for the budget,
+            # stores skipped, restore time and bytes.
+            d["disk"] = {
+                "on": p[24] == "1", "records": int(p[25]), "lineages": int(p[26]),
+                "bytes": int(p[27]), "budget_bytes": int(p[28]),
+                "hits": int(p[29]), "misses": int(p[30]), "persisted": int(p[31]),
+                "branches": int(p[32]), "evicted": int(p[33]), "skipped": int(p[34]),
+                "restore_ms_total": float(p[35]), "restored_bytes": int(p[36])}
+        if len(p) >= 39:
+            # 0.11.3: snapshots taken mid-call by the tap (cache mode 2 no
+            # longer splits the prefill at a snapshot point; a store at the
+            # end of a call is not one), and hits on a whole-prompt entry (an
+            # exact repeat of a request: nothing is forwarded, the answer is
+            # the first answer's).
+            d["tapped"] = int(p[37])
+            d["full_hits"] = int(p[38])
+        if len(p) >= 43:
+            # 0.11.4 (issue #68): the KV pool's no-room path. A request the
+            # pool cannot place yet waits at the head of the queue for a
+            # busy region to retire (`waiting_for_room` 1, `waiting_s` how
+            # long); `relocated` counts turns whose conversation's own rows
+            # were moved into a span that its old region's space is part of
+            # (since 0.11.7 the first thing tried when the region cannot
+            # grow, before any other conversation is forgotten, issue #75;
+            # on 0.11.4-0.11.6 the last resort after every other region was
+            # forgotten); `cold_resorts` counts turns that forgot their own
+            # rows because the move would have overlapped (0.11.4-0.11.6;
+            # the copy is overlap-safe since 0.11.7 and the counter stays
+            # at 0). Before 0.11.4 that request waited forever with /health
+            # reading healthy.
+            d["pool"] = {"waiting_for_room": int(p[39]),
+                         "waiting_s": float(p[40]),
+                         "relocated": int(p[41]),
+                         "cold_resorts": int(p[42])}
+        if len(p) >= 49:
+            # 0.11.5 (issues #73, #74): the pool's OCCUPANCY, the engine's
+            # own figure: `positions` is the pool, `used` the positions held
+            # in every region, split into regions a slot is bound to (`busy`)
+            # and regions an entry keeps after its request retired (`held`:
+            # a warm conversation, not a full pool). `room_clamped` counts
+            # turns that ran in the room their region had left because it
+            # could not grow (max_tokens clamped, `timings` says from what);
+            # `moved` counts hit regions moved to the request's fresh span
+            # rather than copied and left behind. Since 0.11.7 (issue #75)
+            # the clamp comes after both kinds of move: a harness whose
+            # turns use their budget had them cut at the room left where a
+            # copy of milliseconds keeps the whole budget.
+            d["pool"].update(positions=int(p[44]), used=int(p[43]),
+                             busy_regions=int(p[45]), held_regions=int(p[46]),
+                             room_clamped=int(p[47]), moved=int(p[48]))
+            self._note_pool({"pool_used": p[43], "pool_positions": p[44]})
+        if len(p) >= 50:
+            # 0.11.7 (issue #75): `packed` counts held regions moved aside
+            # (up against the next busy region, their rows copied) so a
+            # conversation's region could grow in place instead of another
+            # conversation being forgotten.
+            d["pool"]["packed"] = int(p[49])
+        if len(p) >= 51:
+            # 0.11.9: entries dropped so a follow-up could take its region
+            # over (the FULL entries past the hit, 0.11.8, issue #75). They
+            # went through `evicted` in 0.11.8; nothing a later request could
+            # have hit was lost, so they are their own count now and
+            # `evicted` is back to entries forgotten for room.
+            d["dropped"] = int(p[50])
+        self._cstat_last = dict(d)
+        self._cstat_at = time.monotonic()
         return d
 
     async def abort(self):
@@ -1418,7 +1615,134 @@ DEFAULTS = {
     "enable_thinking": _env_bool("HALOGEN_ENABLE_THINKING"),
     # 0.8.1 (issue #56): the thinking budget's default, see ChatReq.
     "max_thinking_tokens": _env_number("HALOGEN_MAX_THINKING_TOKENS", 1, 1 << 30, int),
+    # 0.11.0: THE ANSWER ROOM. Thinking and the answer share
+    # max_tokens on this wire, and every agent harness read for 0.11.0 sends no
+    # thinking control at all, so the template's xhigh runs under whatever
+    # cap the harness set for the ANSWER: Pi caps a compaction at 13,107 and
+    # discards it on finish_reason length, hermes persists nothing from a
+    # length stop, Cline logs "output_budget_consumed_by_reasoning". The
+    # think block is closed (the same forced close as max_thinking_tokens)
+    # when this many tokens of the budget remain, so a capped request ends
+    # with content. Unset = max(1024, 15% of the budget); 0 = off (the
+    # 0.10.x behaviour); N = exactly N tokens. A request's own
+    # max_thinking_tokens still wins when it is smaller.
+    "thinking_answer_room": _env_number("HALOGEN_THINKING_ANSWER_ROOM", 0, 1 << 30, int),
 }
+
+
+def answer_room(max_tokens):
+    """Tokens of `max_tokens` kept for the answer: the operator's number, or
+    the policy; 0 when the rule is off."""
+    r = DEFAULTS["thinking_answer_room"]
+    if r is None:
+        return max(1024, int(max_tokens) * 15 // 100)
+    return int(r)
+
+
+# 0.12.2: THE CHAT TEMPLATE IS PROBED, NOT TRUSTED. Everything above
+# about thinking (`enable_thinking`, `reasoning_effort: none`, the budget, the
+# answer room, the ThinkSplit) assumes the template Qwen ships: with
+# `enable_thinking=False` it writes the empty block `<think>\n\n</think>` into
+# the prompt, with it on it leaves the opener `<think>\n` for the model to
+# fill. The front end renders whatever `/tokenizer` mounts. A template
+# without that branch (a hand-mounted directory from another repo: cygnal's
+# HF write-up, "no way to disable thinking") accepts every thinking control
+# and renders thinking regardless, and until now nothing in the log or on
+# the wire said so. The probe renders the two shapes once at startup and
+# refuses to serve on a template that does not tell them apart; the
+# operator who means it sets HALOGEN_TEMPLATE_UNCHECKED=1 and gets the same
+# sentence as a warning. The startup line and /health name the template
+# (the path that carries the rendered text, and its sha256), so a report can
+# say which one loaded.
+TEMPLATE_UNCHECKED = _env_bool("HALOGEN_TEMPLATE_UNCHECKED") is True
+THINK_EMPTY_BLOCK = "<think>\n\n</think>"
+
+
+def probe_template(tok, where):
+    """-> dict(path, sha256, probe, thinking_control, why): the template's
+    identity and whether its `enable_thinking` branch does what the thinking
+    controls assume. `where` is the --tokenizer argument (a directory, or a
+    hub id: then the path is the id and "embedded")."""
+    import hashlib
+    text = getattr(tok, "chat_template", None)
+    if not isinstance(text, str) or not text:
+        return {"path": str(where), "sha256": "", "probe": "failed",
+                "thinking_control": False,
+                "why": f"the tokenizer at {where} carries no chat template"}
+    sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    path = f"{where} (embedded)"
+    if os.path.isdir(where):
+        for cand in ("chat_template.jinja", "tokenizer_config.json"):
+            f = os.path.join(where, cand)
+            if not os.path.isfile(f):
+                continue
+            try:
+                raw = open(f, encoding="utf-8").read()
+                if cand.endswith(".json"):
+                    raw = json.loads(raw).get("chat_template")
+            except (OSError, ValueError):
+                continue
+            if raw == text:
+                path = f
+                break
+    msgs = [{"role": "user", "content": "hi"}]
+
+    def render(on):
+        return tok.apply_chat_template(msgs, tokenize=False,
+                                       add_generation_prompt=True,
+                                       enable_thinking=on)
+    try:
+        off, on = render(False), render(True)
+    except Exception as e:   # a template that raises on the kwarg
+        return {"path": path, "sha256": sha, "probe": "failed",
+                "thinking_control": False,
+                "why": f"the chat template at {path} failed to render with "
+                       f"enable_thinking ({type(e).__name__}: {e})"}
+    why = None
+    if off == on:
+        why = (f"the chat template at {path} renders the same prompt with "
+               f"enable_thinking false and true, so it has no thinking "
+               f"control: enable_thinking, reasoning_effort \"none\" and "
+               f"HALOGEN_ENABLE_THINKING=0 would be accepted and ignored")
+    elif THINK_EMPTY_BLOCK not in off:
+        why = (f"the chat template at {path} does not write the empty think "
+               f"block ({THINK_EMPTY_BLOCK!r}) with enable_thinking false, "
+               f"so a thinking-off reply would be misfiled as reasoning")
+    elif "</think>" in on:
+        why = (f"the chat template at {path} closes the think block in the "
+               f"prompt with enable_thinking true, so the model would never "
+               f"think and the reply would be misfiled as content")
+    return {"path": path, "sha256": sha,
+            "probe": "passed" if why is None else "failed",
+            "thinking_control": why is None, "why": why}
+
+
+def template_line(info):
+    """The startup line for the probe's result."""
+    return (f"serve_api: chat template {info['path']} sha256 "
+            f"{info['sha256'][:16]}, thinking control probe "
+            f"{'passed' if info['probe'] == 'passed' else 'FAILED'}"
+            + (f" (HALOGEN_TEMPLATE_UNCHECKED=1, serving anyway)"
+               if info["probe"] != "passed" and TEMPLATE_UNCHECKED else ""))
+
+
+def check_template_or_exit(tok, where):
+    """Run the probe; print its line; on a failure print the sentence and
+    exit 1 unless HALOGEN_TEMPLATE_UNCHECKED=1. -> the info dict, with
+    `probe` rewritten to "unchecked" when the operator overrode a failure."""
+    info = probe_template(tok, where)
+    if info["probe"] != "passed":
+        print(f"serve_api: {info['why']}", flush=True)
+        if not TEMPLATE_UNCHECKED:
+            print("serve_api: refusing to start on this chat template; mount "
+                  "the tokenizer directory from the weights repo, or set "
+                  "HALOGEN_TEMPLATE_UNCHECKED=1 to serve it anyway",
+                  flush=True)
+            print(template_line(info), flush=True)
+            raise SystemExit(1)
+        info["probe"] = "unchecked"
+    print(template_line(info), flush=True)
+    return info
 # The built-in budgets when HALOGEN_MAX_TOKENS_DEFAULT is unset. Chat and
 # Responses share one (the model reasons before it answers, and a budget too
 # small removes the answer rather than shortening it, see ChatReq); the
@@ -1442,6 +1766,15 @@ COMPLETION_MAX_TOKENS = DEFAULTS["max_tokens"] or 128
 # any bench side server: a budget quietly shrunk under a benchmark is exactly
 # the failure this file already documents (the old clamp that lost a run's
 # results). Only a unit whose operator wants thin tail output sets it.
+#
+# NOT the same thing as either clamp upstream grew while this gate was
+# vendored, and the three do not overlap (checked against 0.12.3 on
+# 21.09.2026): 0.11.0's answer room (`answer_room()`) bounds the THINK block
+# inside a budget that fits, and 0.11.5's pool clamp cuts a turn to the
+# positions its KV region has left, reporting `room_from` through `timings`.
+# This gate is the only one that looks at the CONTEXT WINDOW, and it runs
+# before both. Lowering `want` here lowers what answer_room() is computed
+# from, which is what 0.11.5 does for its own clamp as well.
 FIT_TO_ROOM = bool(_env_bool("HALOGEN_FIT_TO_ROOM"))
 # Below this remaining room the clamp gives up and the hard refusal stays:
 # a budget of a few dozen tokens is the silent-truncation case this file
@@ -1472,7 +1805,8 @@ def defaults_summary():
              "frequency_penalty": "HALOGEN_FREQUENCY_PENALTY",
              "reasoning_effort": "HALOGEN_REASONING_EFFORT",
              "enable_thinking": "HALOGEN_ENABLE_THINKING",
-             "max_thinking_tokens": "HALOGEN_MAX_THINKING_TOKENS"}
+             "max_thinking_tokens": "HALOGEN_MAX_THINKING_TOKENS",
+             "thinking_answer_room": "HALOGEN_THINKING_ANSWER_ROOM"}
     return {names[k]: v for k, v in DEFAULTS.items() if v is not None}
 
 
@@ -1577,6 +1911,23 @@ class ChatReq(BaseModel):
     max_thinking_tokens: int | None = None
     enable_thinking: bool | None = None
     preserve_thinking: bool | None = None
+    # 0.11.0: THE OTHER NAMES FOR THE THINKING CONTROLS. A read of
+    # seven agent harnesses found that none sends a thinking control to an
+    # OpenAI-compatible server it was not told about, and that the ones that
+    # can send a BUDGET each spell it their own way: `thinking_token_budget`
+    # (vLLM), `thinking_budget` (Qwen/DashScope/SGLang), `thinking_budget_tokens`
+    # (llama.cpp), all three Pi's `compat.thinkingTokenBudgetField`;
+    # `reasoning: {enabled, effort, max_tokens}` (OpenRouter's object, which
+    # hermes-agent and aider send); `thinking: {type: enabled|disabled,
+    # budget_tokens}` (Anthropic's, which aider sends to every non-OpenRouter
+    # model and Kimi/Moonshot use for the off switch). All fold into the three
+    # fields above in _fold_thinking_aliases, same discipline as the budget
+    # names: agreeing duplicates fine, disagreement a 400, never a silent drop.
+    thinking_budget_tokens: int | None = None
+    thinking_budget: int | None = None
+    thinking_token_budget: int | None = None
+    reasoning: dict | None = None
+    thinking: dict | str | None = None
     tools: list[dict] | None = None
     # an earlier change. 'auto' (default) | 'none' | 'required' |
     # {"type": "function", "function": {"name": ...}}.
@@ -1659,6 +2010,66 @@ class ChatReq(BaseModel):
                         f"{nested!r} in chat_template_kwargs; they are the "
                         f"same control under two names, send one")
             setattr(self, k, nested)
+        return self
+
+    @model_validator(mode="after")
+    def _fold_thinking_aliases(self):
+        """Fold the ecosystem's names for the thinking controls (see the
+        field comments) into `max_thinking_tokens`, `reasoning_effort` and
+        `enable_thinking`. A value the caller sent under any name must land
+        or be refused; two names with two values are a 400."""
+        def take(field, name, value):
+            if value is None:
+                return
+            cur = getattr(self, field)
+            if cur is not None and cur != value:
+                raise ValueError(
+                    f"conflicting {field}: {cur!r} and {value!r} (as {name}); "
+                    f"they are the same control under two names, send one")
+            setattr(self, field, value)
+        for name in ("thinking_budget_tokens", "thinking_budget", "thinking_token_budget"):
+            v = getattr(self, name)
+            if v is not None:
+                if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                    raise ValueError(f"{name} must be a whole number >= 1")
+                take("max_thinking_tokens", name, v)
+        r = self.reasoning
+        if r is not None:
+            if not isinstance(r, dict):
+                raise ValueError("reasoning must be an object "
+                                 "({enabled, effort, max_tokens})")
+            if r.get("effort") is not None:
+                if not isinstance(r["effort"], str):
+                    raise ValueError("reasoning.effort must be a string")
+                take("reasoning_effort", "reasoning.effort", r["effort"])
+            if r.get("max_tokens") is not None:
+                v = r["max_tokens"]
+                if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                    raise ValueError("reasoning.max_tokens must be a whole number >= 1")
+                take("max_thinking_tokens", "reasoning.max_tokens", v)
+            if r.get("enabled") is not None:
+                if not isinstance(r["enabled"], bool):
+                    raise ValueError("reasoning.enabled must be true or false")
+                take("enable_thinking", "reasoning.enabled", r["enabled"])
+        t = self.thinking
+        if t is not None:
+            if isinstance(t, str):
+                # Pi's "string-thinking" format: the level itself
+                take("reasoning_effort", "thinking", t)
+            elif isinstance(t, dict):
+                ty = t.get("type")
+                if ty is not None:
+                    if ty not in ("enabled", "disabled", "adaptive"):
+                        raise ValueError("thinking.type must be enabled, disabled or adaptive")
+                    if ty != "adaptive":
+                        take("enable_thinking", "thinking.type", ty == "enabled")
+                if t.get("budget_tokens") is not None:
+                    v = t["budget_tokens"]
+                    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+                        raise ValueError("thinking.budget_tokens must be a whole number >= 1")
+                    take("max_thinking_tokens", "thinking.budget_tokens", v)
+            else:
+                raise ValueError("thinking must be an object ({type, budget_tokens}) or a level")
         return self
     # an earlier change: IMPLEMENTED. temperature 0 (the default) is greedy and keeps
     # the speculative fast path; anything above 0 samples and is routed to
@@ -2167,7 +2578,8 @@ class ThinkSplit:
                 self.full[i + len(self.MARK):].lstrip("\n"))
 
 
-def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
+def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
+              template=None):
     engine.tokenizer = tok   # 0.8.0: the VOCAB line is built from it
     app = FastAPI(title="halogen")
 
@@ -2417,8 +2829,18 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
 
     async def run(ids, max_tokens, stops, drafter=None, sample=None,
                   penalty="", snap=0, snap2=0, images=None, schema=None,
-                  after=None, escape=(), think=None):
+                  after=None, escape=(), think=None, seg=None, snap3=0,
+                  think_on=None, think_src=None):
         """Drives the engine and incrementally detokenizes.
+
+        0.12.2: `think_on` is the template's state for this request (True /
+        False on the chat and Responses wires, None on a raw prompt) and
+        `think_src` names what set the THINK clause the engine was sent
+        ("answer_room" or "max_thinking_tokens", None when none rode). Both
+        exist so the request line can say `think on|off` and, when the
+        engine reports that the budget fired, `closed at N by ...`; the D
+        line's `think_forced` is annotated with the source here, where it
+        is known, so `usage()` can name it too.
 
         Public issue #13, reported with measurements and a patch by
         @rosstang, independently confirmed by @hvico). This loop used to
@@ -2485,11 +2907,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                                 snap=snap, snap2=snap2,
                                                 images=images, schema=schema,
                                                 after=after, escape=escape,
-                                                think=think):
+                                                think=think, seg=seg,
+                                                snap3=snap3):
             if lp is not None:
                 lps.append(lp)
             if d is not None:
                 done = d
+                if think_src and d.get("think_forced"):
+                    d["think_closed_by"] = think_src
                 if d.get("reason") != "error":
                     engine.metrics.record(timings(d), structured=bool(schema))
                 # The serving ledger an earlier change asked for: what real traffic
@@ -2549,11 +2974,46 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # rate keeps its numeric shape in every case that does.
                 rate = (f"{d['n_gen'] / dt:.2f} t/s"
                         if dt > 0 and d["n_gen"] > 1 else "n/a")
+                # 0.11.5 (issues #73, #74; HF discussion 7): the cached share
+                # of the prompt, the prefill rate over the tokens actually
+                # processed (the `timings` figure), the pool's occupancy as
+                # the engine reports it, and the clamp when the turn ran in
+                # the room its region had left. bench-serving.py's LEDGER
+                # regex admits the share; the rest is after what it reads.
+                c = d.get("n_cached")
+                pn = d["n_prompt"]
+                cached_s = (f" ({c} cached, {100.0 * c / pn:.1f}%)" if c and pn else
+                            f" ({c} cached)" if c else "")
+                pf_s = d["prefill_ms"] / 1000
+                pf_n = max(0, pn - (c or 0))
+                # 0.11.9: `= N t/s` only when the prefill was long enough for
+                # the rate to mean speed. A warm follow-up processes a few
+                # hundred tokens in a second, and that quotient (257 tokens in
+                # 1.20 s = 214 t/s) read as a slow prefill in two reports
+                # (#73, #74) when it was one prefill chunk's fixed cost.
+                # Below the threshold the line says what was processed and
+                # leaves the rate out; `timings` is unchanged.
+                pf_rate = (f" = {pf_n / pf_s:.0f} t/s" if pf_s > 0 and pf_n >= PREFILL_RATE_MIN_TOKENS
+                           else f" ({pf_n} new)" if pf_n > 0 else "")
+                pool_s = (f" | pool {d['pool_used']}/{d['pool_positions']}"
+                          f" {100.0 * d['pool_used'] / d['pool_positions']:.0f}%"
+                          if d.get("pool_positions") else "")
+                clamp_s = (f" | max_tokens clamped {d['room_from']} -> {d['max_tokens']}"
+                           if d.get("room_from", -1) >= 0 else "")
+                # 0.12.2: whether this request's prompt opened a think
+                # block, and whether the engine closed it for the caller. A
+                # foreign chat template that ignores `enable_thinking` and
+                # the answer room's close at 1,024 tokens both read here;
+                # before this neither was visible in any line or field.
+                think_s = ("" if think_on is None else
+                           f" | think {'on' if think_on else 'off'}"
+                           + (f", closed at {d.get('think_seen', 0)} by "
+                              f"{'answer room' if think_src == 'answer_room' else think_src}"
+                              if d.get("think_closed_by") else ""))
                 print(f"serve_api: {name} {d['n_gen']} tok in {dt:.2f}s = "
                       f"{rate} | {spec}"
-                      f"prompt {d['n_prompt']}"
-                      f"{f' ({c} cached)' if (c := d.get('n_cached')) else ''}"
-                      f", prefill {d['prefill_ms'] / 1000:.2f}s"
+                      f"prompt {pn}{cached_s}"
+                      f", prefill {pf_s:.2f}s{pf_rate}"
                       # detok us/token is a CANARY, not a stat: this loop
                       # decodes the WHOLE token list every step, so its cost
                       # is O(n^2) and this figure climbs with output length
@@ -2566,13 +3026,18 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                       # changes meaning with concurrency, sse is a constant.
                       f" | detok {prof['detok'] / max(prof['n'], 1) * 1e6:.0f}us/tok"
                       # Issue #22, the other half: how many of this request's
-                      # tokens were produced beside other streams (one row of
-                      # a batched step, or a serial rest stretch), where the
-                      # per-stream rate is the README's concurrency table and
-                      # not the single-stream figure.
-                      + (f" | {shared} tok beside other streams" if shared
+                      # tokens were produced with the drafter's head OFF: as
+                      # one row of a batched step beside other streams, or in
+                      # the adaptive policy's serial rest stretch on a lone stream. The field
+                      # is the engine's `serial_steps`. Until 0.12.3 the label
+                      # said "beside other streams", which lied on a lone
+                      # stream (#84's log: every line carried it with one
+                      # client). Where it is other streams, the per-stream
+                      # rate is the README's concurrency table and not the
+                      # single-stream figure.
+                      + (f" | {shared} tok with the head off" if shared
                          else "")
-                      + pld,
+                      + pld + pool_s + clamp_s + think_s,
                       flush=True)
                 break
             # time spent WAITING on the engine == everything since we last
@@ -2690,7 +3155,17 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # 0.7.0, #44: OpenAI's own field for the reasoning share of the
         # output, set by the route once it knows the template's state.
         if "n_reasoning" in d:
-            u["completion_tokens_details"] = {"reasoning_tokens": d["n_reasoning"]}
+            det = {"reasoning_tokens": d["n_reasoning"]}
+            # 0.12.2: when the SERVER closed the think block (the
+            # answer room, or the request's own max_thinking_tokens) the
+            # caller is told so, and at which token. Absent when the model
+            # closed it, and on a request that did not think. cygnal's
+            # "~1,049 hidden tokens" was the answer room's close at 1,024
+            # under a 2,048 budget, with nothing on the wire saying so.
+            if d.get("think_closed_by"):
+                det["reasoning_closed_at"] = int(d.get("think_seen", 0))
+                det["reasoning_closed_by"] = d["think_closed_by"]
+            u["completion_tokens_details"] = det
         return u
 
     def responses_usage(d, n_prompt):
@@ -2741,6 +3216,13 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
              "predicted_per_second": round(gn / (dms / 1000.0), 3) if dms > 0 else 0.0}
         if "n_cached" in d:
             t["cache_n"] = cached
+        if int(d.get("room_from", -1)) >= 0:
+            # 0.11.5 (issue #74): this turn ran in the room its region had
+            # left (the region could not grow); max_tokens was clamped from
+            # this to what the request actually had. `finish_reason: length`
+            # on such a turn is this clamp, not the budget the client sent.
+            t["max_tokens_clamped_from"] = int(d["room_from"])
+            t["max_tokens_clamped_to"] = int(d["max_tokens"])
         if "rounds" in d:
             pld_r = int(d.get("pld_rounds", 0))
             pld_a = int(d.get("pld_accepted", 0))
@@ -3037,14 +3519,26 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # text.delta` events, no `encrypted_content`), and, when the request
         # asked for a reasoning summary, the SAME text again as the item's
         # `summary_text` with `response.reasoning_summary_*` events. There is
-        # no separate summarizer; the summary is the reasoning. Both are
-        # sent because they reach different readers: Codex renders summaries
-        # by default and raw content only with `show_raw_agent_reasoning`
-        # (its source, codex-rs/protocol legacy_events.rs), and the request
-        # recorded from the real CLI asks for `{"summary": "auto"}`; an SDK
-        # client reads `content`. The text is trimmed the way the chat route trims
-        # `reasoning_content`, so the item's final text equals what the
-        # non-streamed body carries.
+        # no separate summarizer; the summary is the reasoning. The ITEM
+        # carries both because they reach different readers: Codex renders
+        # summaries by default and raw content only with
+        # `show_raw_agent_reasoning` (its source, codex-rs/protocol
+        # legacy_events.rs), and the request recorded from the real CLI asks
+        # for `{"summary": "auto"}`; an SDK client reads `content`. The text
+        # is trimmed the way the chat route trims `reasoning_content`, so the
+        # item's final text equals what the non-streamed body carries.
+        #
+        # 0.11.3, issue #67 (@UtkuKaynak): the DELTAS go out on ONE stream,
+        # the one the request asked for. 0.7.0 streamed the same text as
+        # `reasoning_text.delta` AND, with a summary asked, as
+        # `reasoning_summary_text.delta`, and a client that follows the
+        # published stream (oh-my-pi's provider, pi's) appends both kinds of
+        # delta to one thinking block -- the raw kind exists for servers that
+        # stream thinking INSTEAD of summaries -- so every word rendered
+        # twice. With a summary asked only the summary events stream (and
+        # its `.done`); without one, only the raw ones. The item on
+        # `output_item.done` and in the final body is unchanged: a client
+        # that finalizes from it takes `summary` first, then `content`.
         rs_id = "rs_" + rid.split("_", 1)[-1]
         rs_open = False
         rs_index = None
@@ -3070,13 +3564,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         def reasoning_delta(rd):
             nonlocal rs_text
             rs_text += rd
-            out = ev("response.reasoning_text.delta", item_id=rs_id,
-                     output_index=rs_index, content_index=0, delta=rd)
-            if want_summary:
-                out += ev("response.reasoning_summary_text.delta",
+            if want_summary:   # #67: one stream, the one asked for
+                return ev("response.reasoning_summary_text.delta",
                           item_id=rs_id, output_index=rs_index,
                           summary_index=0, delta=rd)
-            return out
+            return ev("response.reasoning_text.delta", item_id=rs_id,
+                      output_index=rs_index, content_index=0, delta=rd)
 
         def close_reasoning():
             nonlocal rs_open
@@ -3087,16 +3580,17 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     "content": [{"type": "reasoning_text", "text": rs_text}],
                     "encrypted_content": None}
             done_items.append((rs_index, item))
-            out = ev("response.reasoning_text.done", item_id=rs_id,
-                     output_index=rs_index, content_index=0, text=rs_text)
-            if want_summary:
-                out += ev("response.reasoning_summary_text.done",
-                          item_id=rs_id, output_index=rs_index,
-                          summary_index=0, text=rs_text)
+            if want_summary:   # #67: the summary stream's close, not both
+                out = ev("response.reasoning_summary_text.done",
+                         item_id=rs_id, output_index=rs_index,
+                         summary_index=0, text=rs_text)
                 out += ev("response.reasoning_summary_part.done",
                           item_id=rs_id, output_index=rs_index,
                           summary_index=0,
                           part={"type": "summary_text", "text": rs_text})
+            else:
+                out = ev("response.reasoning_text.done", item_id=rs_id,
+                         output_index=rs_index, content_index=0, text=rs_text)
             out += ev("response.output_item.done", output_index=rs_index,
                       item=item)
             return out
@@ -3251,6 +3745,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                                   "original_context": 262144}
                                  if (engine.info.get("rope_factor") or 1.0) > 1.0
                                  else None),
+                # 0.9.1 (issue #57): the QSA indexer budget in tokens per
+                # query. The checkpoint's value is 2048; a server started
+                # with HALOGEN_INDEXER_BUDGET attends a larger top-k, which
+                # changes what the model reads at every depth past it.
+                "indexer_budget": engine.info.get("indexer_budget", 2048),
                 # Whether this server accepts images, on which routes, and
                 # when it does not, WHY. A client cannot otherwise tell an
                 # image-capable server from one that will answer its
@@ -3266,6 +3765,15 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # from the file HALOGEN_GGUF_CACHE wrote. The MTP head is the
                 # engine's own on every one of them.
                 "checkpoint_format": engine.info.get("checkpoint_format", "hgn"),
+                # 0.12.2: WHICH CHAT TEMPLATE RENDERS THE PROMPTS, and
+                # whether its thinking control works (probe_template). The
+                # front end renders whatever /tokenizer mounts; a report of
+                # "thinking cannot be turned off" is answered by this field
+                # before anything else. `probe` is passed, or unchecked
+                # (HALOGEN_TEMPLATE_UNCHECKED=1 over a failure).
+                "chat_template": ({k: template[k] for k in
+                                   ("path", "sha256", "probe", "thinking_control")}
+                                  if template else None),
                 # Whether the engine's loop is TURNING, asked rather than
                 # assumed: PONG on a queued connection is the one signal a
                 # listen backlog cannot fake.
@@ -3338,13 +3846,17 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     # replays the boundaries a cold run would have used and the
                     # warm answer is bitwise the cold one. Mode 2 snapshots at
                     # every request end and gives that up for a follow-up turn
-                    # that costs a second or two at any prompt length. In mode
-                    # 2 the alignment is meaningless — the snapshot is wherever
-                    # the last request stopped — so it is reported as 0 rather
-                    # than as the chunk, which would read as a guarantee.
+                    # that costs a second or two at any prompt length. Mode 2
+                    # reported 0 through 0.11.2 (the snapshot was wherever the
+                    # request's stable prefix ended); since 0.11.3 the engine
+                    # reports the grid its mid-call snapshots land on (64), and
+                    # an older engine still sends the chunk here, so the mode-2
+                    # value is taken only when it is that small.
                     "snapshot_align":
                         engine.info.get("cache_align", 0)
-                        if engine.info.get("cache_mode", 1) == 1 else 0,
+                        if engine.info.get("cache_mode", 1) == 1
+                        else (engine.info.get("cache_align", 0)
+                              if 0 < engine.info.get("cache_align", 0) <= 256 else 0),
                     # Read from the mode the engine reports, which is the
                     # only thing that decides it. Deriving this from anything
                     # else (a hardcoded limit, or "is the prefill chunked")
@@ -3354,6 +3866,25 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                         bool(engine.info.get("cache_mb"))
                         and engine.info.get("cache_mode", 1) == 1,
                 },
+                # 0.9.0: composable context. Opt-in; when on, message units at
+                # or above the floor are composed at any later offset behind
+                # the same system prompt (a harness compaction re-prefills
+                # only the summary and the new turn). NOT the prompt cache:
+                # a composed answer is about one quantization step from the
+                # prefilled one (about one quantization step), reported here so no reader
+                # mistakes it for the exact cache. Off = the field is absent
+                # from the engine or the flag is 0.
+                "composable_context": (
+                    {"enabled": True,
+                     "unit_floor_tokens": engine.info.get("cc_floor"),
+                     "seam_tokens": engine.info.get("cc_seam"),
+                     "store_bytes": engine.info.get("cc_bytes"),
+                     "fingerprint": engine.info.get("cc_fingerprint"),
+                     "bitwise_identical_to_prefill": False,
+                     "note": "opt-in; composed context is ~one quantization "
+                             "step from a full prefill, not the exact prompt "
+                             "cache"}
+                    if engine.info.get("composable") else {"enabled": False}),
                 # an earlier change. The wire format is Qwen's XML-in-XML, NOT the
                 # JSON-in-<tool_call> shape the name usually implies, and the
                 # parser needs each tool's JSON Schema to type its arguments
@@ -3382,7 +3913,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                     "argument_types_need_schema": True,
                 },
                 "supported": ["reasoning_effort", "enable_thinking",
-                              "preserve_thinking", "tools", "tool_choice",
+                              "preserve_thinking", "max_thinking_tokens",
+                              "thinking_budget_tokens", "thinking_budget",
+                              "thinking_token_budget", "reasoning", "thinking",
+                              "tools", "tool_choice",
                               "parallel_tool_calls", "stop",
                               "max_tokens", "max_completion_tokens",
                               "max_output_tokens", "stream", "stream_options"],
@@ -3414,6 +3948,15 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 # 0.8.1 (#56): the thinking budget's server default, None =
                 # no budget; a request's max_thinking_tokens wins.
                 "max_thinking_tokens_default": DEFAULTS["max_thinking_tokens"],
+                # 0.11.0: what the answer room is; a number, or the
+                # policy in words; 0 = off
+                "thinking_answer_room": (DEFAULTS["thinking_answer_room"]
+                                         if DEFAULTS["thinking_answer_room"] is not None
+                                         else "max(1024, 15% of max_tokens)"),
+                "thinking_control_aliases": ["thinking_budget_tokens", "thinking_budget",
+                                             "thinking_token_budget",
+                                             "reasoning.{enabled,effort,max_tokens}",
+                                             "thinking.{type,budget_tokens}"],
                 # PUBLIC ISSUE #30: what the operator set as the default for
                 # a field a request leaves out, keyed by the variable, so a
                 # client can see the server's policy rather than infer it
@@ -3546,7 +4089,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         kv_pool = int(engine.info.get("kv_pool") or 0) or (
             int(engine.info.get("kv_slots", 1)) * int(engine.info.get("slot_ctx") or 0))
         body = engine.metrics.render(len(engine.inflight), engine.waiting,
-                                     sum(engine.reserved.values()), kv_pool)
+                                     sum(engine.reserved.values()), kv_pool,
+                                     engine.pool_used)
         return PlainTextResponse(body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.get("/cache")
@@ -3559,6 +4103,26 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             raise HTTPException(501, "this engine reports no prompt cache")
         total = st["hits"] + st["misses"]
         st["hit_rate"] = round(st["hits"] / total, 4) if total else None
+        # 0.11.5 (issue #73): the hit rate in TOKENS, prompt tokens the cache
+        # covered over every prompt token seen, summed from the request
+        # lines since this process started (`hit_rate` counts requests).
+        m = engine.metrics
+        seen = m.prompt_tokens + m.cache_tokens
+        st["token_hit_rate"] = round(m.cache_tokens / seen, 4) if seen else None
+        if "pool" in st:
+            u, p_ = st["pool"].get("used"), st["pool"].get("positions")
+            st["pool"]["usage_ratio"] = round(u / p_, 4) if p_ else None
+        # The places this front end asks the engine to save at, in
+        # prompt order, under the default cache mode (mode 1 saves on its
+        # own chunk grid and ignores them): the end of the system block
+        # (with a system message), the start of the last user message
+        # (HALOGEN_CACHE_SNAP3, when the request has more than one user
+        # turn), the end of the rendered history. The engine also keeps a
+        # whole-prompt entry for an exact repeat (`full_hits`).
+        if engine.info.get("cache_mode", 1) >= 2:
+            st["snapshot_places"] = (["system_end"]
+                                     + (["last_user_start"] if SNAP3_ON else [])
+                                     + ["history_end"])
         return st
 
     @app.get("/v1/models")
@@ -3606,6 +4170,17 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 if b > cut:
                     break
             return 0
+        # 0.9.0: the message boundaries, for composable context's units. Every
+        # <|im_start|> after the first opens a message; the boundary is the
+        # token count of everything before it, found the same way snap2 is
+        # (the opener is a special token the tokenizer never merges across).
+        seg = []
+        c = text.find("<|im_start|>", 1)
+        while c > 0:
+            b = boundary_at(c)
+            if b > 0 and (not seg or b > seg[-1]):
+                seg.append(b)
+            c = text.find("<|im_start|>", c + 1)
         snap = boundary_at(len(stable)) if text.startswith(stable) else 0
         # The SECOND point: the end of the system block. Requests that share
         # a system prompt and ask different things cannot use the history
@@ -3623,7 +4198,30 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 snap2 = boundary_at(cut)
             if snap and snap2 >= snap:
                 snap2 = 0
-        return ids, snap, snap2
+        # The THIRD point: the start of the LAST user message. A
+        # client that keeps a document in one message and asks a new
+        # question in the next (`[doc][q1]`, then `[doc][q2]`) matched
+        # neither place above: the history point is the end of q1, the
+        # system point is behind the document, so every new question
+        # re-prefilled the document and only an exact repeat hit. The
+        # boundary is the last `<|im_start|>user` of the render, found the
+        # same way; only when the last message is a user message, and only
+        # when that opener is not the first user opener (a one-message
+        # prompt has nothing behind it: with a system message its start is
+        # the system point already, without one it is the end of the
+        # template's own effort line). Strictly between the other two.
+        # HALOGEN_CACHE_SNAP3=0 turns the hint off (the engine honours the
+        # same variable; the front end's is what /cache reports).
+        snap3 = 0
+        if (SNAP3_ON and msgs and isinstance(msgs[-1], dict)
+                and msgs[-1].get("role") == "user"):
+            first = text.find("<|im_start|>user")
+            cut = text.rfind("<|im_start|>user")
+            if first > 0 and cut > first:
+                snap3 = boundary_at(cut)
+            if snap3 and (snap3 <= snap2 or (snap and snap3 >= snap)):
+                snap3 = 0
+        return ids, snap, snap2, seg, snap3
 
     def version_status():
         """This front-end's release beside the engine's, and whether they agree.
@@ -3691,7 +4289,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         return imgs
 
     def render_with_images(msgs, kw, imgs):
-        """-> (ids, snap, snap2, wire_imgs). ONE renderer for BOTH wires.
+        """-> (ids, snap, snap2, wire_imgs, seg, snap3). ONE renderer for BOTH wires.
 
         /v1/responses shipped without this and dropped every image, because
         the expansion lived inline in the chat handler and the second wire
@@ -3699,7 +4297,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         one copy that gets forgotten.
         """
         try:
-            ids, snap, snap2 = render_prompt(msgs, kw)
+            ids, snap, snap2, seg, snap3 = render_prompt(msgs, kw)
         except HTTPException:
             raise
         except Exception as e:                      # template raise_exception
@@ -3708,19 +4306,33 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # Issue #39: a mentioned placeholder becomes text BEFORE the pads
         # are counted against the images, so a mention beside a real image
         # does not read as an extra image.
-        ids, snap, snap2, _ = textify_pad_mentions(ids, snap, snap2, len(imgs))
+        # The third point is shifted by the same pass on the same
+        # (original) ids; the two passes keep their two-point shape, which
+        # smoke-mention.py pins against the image's own module.
+        ids0 = ids
+        ids, snap, snap2, _ = textify_pad_mentions(ids0, snap, snap2, len(imgs))
+        if snap3:
+            snap3 = textify_pad_mentions(ids0, snap3, 0, len(imgs))[1]
         if not imgs:
-            return ids, snap, snap2, None
-        ids, snap, snap2, placed = expand_image_pads(ids, snap, snap2, imgs)
+            return ids, snap, snap2, None, seg, snap3
+        # 0.9.0: image expansion shifts every token position after each pad,
+        # so the pre-expansion seg is stale; composable context refuses image
+        # requests anyway, so send none for them (the engine ignores SEG when
+        # a request carries images).
+        ids1 = ids
+        ids, snap, snap2, placed = expand_image_pads(ids1, snap, snap2, imgs)
+        if snap3:
+            snap3 = expand_image_pads(ids1, snap3, 0, imgs)[1]
         return ids, snap, snap2, [(f, h, w, imgs[i][2])
-                                  for i, (f, h, w) in enumerate(placed)]
+                                  for i, (f, h, w) in enumerate(placed)], [], snap3
 
     async def serve(ids, max_tokens, stops, stream, chat, prefix,
                     thinking=True, drafter=None, tools=None, parallel=True,
                     sample=None, penalty="",
                     pre="", forced=False, include_usage=False, snap=0,
                     snap2=0, wire="chat", images=None, want_summary=False,
-                    schema=None, think_budget=None):
+                    schema=None, think_budget=None, seg=None, snap3=0,
+                    http_request=None):
         # 0.8.0: the schema rides the GEN line; the engine constrains
         # only after the thinking block (the </think> token, when the request
         # thinks) and lets a request with tools open a tool call instead of
@@ -3738,8 +4350,24 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # itself writes after the block, so the answer starts where it
         # always does.
         think = None
+        think_src = None   # 0.12.2: which of the two set the budget sent
         if think_budget and thinking and chat and THINK_END_ID is not None:
             think = (int(think_budget), THINK_END_ID, THINK_CLOSE_IDS)
+            think_src = "max_thinking_tokens"
+        # 0.11.0: the answer room. The block closes when `room` tokens
+        # of the budget remain, unless the request's own budget is smaller.
+        # A budget at or below the room leaves one token of thinking: the
+        # close sentence and the answer are what the caller gets.
+        if thinking and chat and THINK_END_ID is not None:
+            room = answer_room(max_tokens)
+            if room > 0:
+                cap = max(1, int(max_tokens) - room)
+                if think is None or think[0] > cap:
+                    think = (cap, THINK_END_ID, THINK_CLOSE_IDS)
+                    think_src = "answer_room"
+        # The request line's `think on|off` (0.12.2): the template's state
+        # on the two chat-shaped wires; a raw prompt has none.
+        think_on = bool(thinking) if chat else None
         # batch-1: QUEUE rather than reject. Reasoning defaults to xhigh, so
         # one request routinely runs minutes at ~10 t/s; failing every other
         # caller instantly for that whole window made the endpoint look dead
@@ -3776,6 +4404,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         # are two copies of one number and they have already drifted once.
         limit = engine.info.get("ctx") or ctx
         room = limit - len(ids)
+        if room <= 0:
+            # the prompt alone is over the context: name the overrun, not a
+            # negative room (a 1M report read "leaving room for -778714")
+            raise HTTPException(
+                400, f"the prompt does not fit: it is {len(ids)} tokens and "
+                     f"the context is {limit}, {-room} tokens over. Shorten "
+                     f"the prompt, or raise the context (HALOGEN_CTX, and "
+                     f"HALOGEN_ROPE_YARN for more than the native 262144).")
         if want > room:
             # Default: a refusal that names the numbers — the error the
             # client CAN read. With HALOGEN_FIT_TO_ROOM=1 (the interactive
@@ -3786,6 +4422,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             # stderr so the operator can watch the tail run thin. Below the
             # floor the prompt has taken the window and there is no honest
             # answer left to clamp to, so the refusal stays even when gated on.
+            #
+            # The `room <= 0` case above is NOT clampable and is deliberately
+            # left to upstream: there is no room to clamp to, and 0.12.1's
+            # message already names both levers. This branch is only ever
+            # reached with room >= 1.
             if FIT_TO_ROOM and room >= FIT_TO_ROOM_FLOOR:
                 print(f"serve_api: fit-to-room clamped max_tokens {want} -> "
                       f"{room} (prompt={len(ids)} ctx={limit})",
@@ -3847,7 +4488,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 try:
                     gen = guarded(run(ids, max_tokens, stops, drafter, sample,
                                       penalty, snap, snap2, images, schema,
-                                      after, escape, think))
+                                      after, escape, think, seg, snap3=snap3,
+                                      think_on=think_on, think_src=think_src))
                     # The Responses wire is a different SERIALIZATION of the
                     # same generation. Everything that matters for safety --
                     # the slot semaphore, the abort on hangup, the inflight
@@ -3926,13 +4568,38 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             return StreamingResponse(body(), media_type="text/event-stream")
         try:
             text, done = "", None
-            async for delta, d in run(ids, max_tokens, stops, drafter,
-                                      sample, penalty, snap, snap2, images,
-                                      schema, after, escape, think):
-                if d is not None:
-                    done = d
-                    break
-                text += delta
+            # 0.10.2 (issue #58): THE NON-STREAMING ARM WATCHES THE SOCKET.
+            # The streaming arm is cancelled by the framework when the client
+            # goes away (the body generator is closed, its `finally` sends
+            # the engine the abort), but a plain request handler is never
+            # told: it awaited the whole generation into a buffer nobody
+            # would read, holding the slot and its KV reservation until EOS,
+            # max_tokens or the thinking budget (the reporter's `in_flight: 1`
+            # for 150 s after the client had exited). Polling the connection
+            # once per token is a non-blocking receive; on a disconnect the
+            # generator is closed exactly as the streaming arm's is, which is
+            # what sends the abort, and the reply nobody reads is a 499.
+            gen = run(ids, max_tokens, stops, drafter, sample, penalty, snap,
+                      snap2, images, schema, after, escape, think, seg,
+                      snap3=snap3, think_on=think_on, think_src=think_src)
+            gone, n_tok = False, 0
+            try:
+                async for delta, d in gen:
+                    if d is not None:
+                        done = d
+                        break
+                    text += delta
+                    n_tok += 1
+                    if http_request is not None and await http_request.is_disconnected():
+                        gone = True
+                        break
+            finally:
+                await gen.aclose()
+            if gone:
+                print("serve_api: client disconnected mid-request (non-streaming), "
+                      "%d token(s) generated and dropped; the generation is cancelled"
+                      % n_tok, flush=True)
+                return Response(status_code=499)
         finally:
             # Same shape as the streaming arm above, and for the same reason.
             try:
@@ -4033,13 +4700,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                 "timings": timings(done)}
 
     @app.post("/v1/completions")
-    async def completions(req: CompletionReq):
+    async def completions(req: CompletionReq, http_request: Request):
         ids = tok(req.prompt, add_special_tokens=False)["input_ids"]
         # No image path on this route, so every placeholder is a mention.
         ids, _, _, _ = textify_pad_mentions(list(ids))
         check_sampling(req)
         return await serve(ids, req.max_tokens, stop_list(req.stop),
                            req.stream, False, "cmpl",
+                           http_request=http_request,
                            drafter=drafter_for(req),
                            sample=sample_spec(req),
                            penalty=penalty_spec(req),
@@ -4047,7 +4715,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            schema=schema_for(req))
 
     @app.post("/v1/chat/completions")
-    async def chat_completions(req: ChatReq):
+    async def chat_completions(req: ChatReq, http_request: Request):
         # FIRST, before the template and the tokenizer. This call was missing
         # entirely: /v1/completions had it and chat did not, so on the endpoint
         # everyone actually uses, presence_penalty / frequency_penalty /
@@ -4082,11 +4750,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         except ValueError as e:
             raise HTTPException(400, str(e))
         imgs = collect_images(msgs)
-        ids, snap, snap2, wire_imgs = render_with_images(msgs, kw, imgs)
+        ids, snap, snap2, wire_imgs, seg, snap3 = render_with_images(msgs, kw, imgs)
         if pre:
             ids += tok(pre, add_special_tokens=False)["input_ids"]
         return await serve(ids, req.max_tokens, stop_list(req.stop),
                            req.stream, True, "chatcmpl",
+                           http_request=http_request,
                            thinking=thinking,
                            think_budget=server_default(req, "max_thinking_tokens"),
                            drafter=drafter_for(req),
@@ -4097,10 +4766,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            pre=pre, forced=bool(pre),
                            include_usage=wants_usage(req), snap=snap,
                            snap2=snap2, images=wire_imgs,
-                           schema=schema_for(req))
+                           schema=schema_for(req), seg=seg, snap3=snap3)
 
     @app.post("/v1/responses")
-    async def responses(req: ResponsesReq):
+    async def responses(req: ResponsesReq, http_request: Request):
         """OpenAI Responses API, for clients that dropped Chat Completions.
 
         The Codex CLI is the reason this exists: it speaks only this wire, so
@@ -4125,18 +4794,26 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
         if isinstance(tc, dict) and tc.get("type") == "function" \
                 and "function" not in tc:
             tc = {"type": "function", "function": {"name": tc.get("name")}}
-        effort = (req.reasoning or {}).get("effort")
+        # 0.11.0: the whole `reasoning` object rides onto the shim,
+        # whose validator folds `effort`, `max_tokens` and `enabled` (the
+        # OpenRouter shape) as it does on the chat route; the top-level
+        # budget names too.
         shim = ChatReq(model=req.model, messages=[{"role": "user",
                                                    "content": ""}],
                        max_tokens=req.max_output_tokens or CHAT_MAX_TOKENS,
                        stream=req.stream, tools=chat_tools, tool_choice=tc,
                        parallel_tool_calls=req.parallel_tool_calls,
-                       reasoning_effort=effort, drafter=req.drafter,
+                       reasoning=req.reasoning if isinstance(req.reasoning, dict) else None,
+                       drafter=req.drafter,
                        # 0.8.1 (#56): the Responses wire has no field for a
                        # thinking budget; a top-level `max_thinking_tokens`
                        # is accepted (the model allows extra fields) and the
                        # server default applies otherwise.
                        max_thinking_tokens=getattr(req, "max_thinking_tokens", None),
+                       thinking_budget_tokens=getattr(req, "thinking_budget_tokens", None),
+                       thinking_budget=getattr(req, "thinking_budget", None),
+                       thinking_token_budget=getattr(req, "thinking_token_budget", None),
+                       thinking=getattr(req, "thinking", None),
                        temperature=req.temperature, top_p=req.top_p,
                        # Issue #14: the Responses spelling of
                        # response_format is `text.format`. Carried onto the
@@ -4164,11 +4841,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
             raise HTTPException(400, "input is empty: /v1/responses needs at "
                                      "least one non-system turn")
         imgs = collect_images(msgs)
-        ids, snap, snap2, wire_imgs = render_with_images(msgs, kw, imgs)
+        ids, snap, snap2, wire_imgs, seg, snap3 = render_with_images(msgs, kw, imgs)
         if pre:
             ids += tok(pre, add_special_tokens=False)["input_ids"]
         return await serve(ids, shim.max_tokens, stop_list(None),
                            req.stream, True, "resp",
+                           http_request=http_request,
                            thinking=thinking,
                            think_budget=server_default(shim, "max_thinking_tokens"),
                            drafter=drafter_for(shim),
@@ -4178,7 +4856,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600):
                            parallel=req.parallel_tool_calls is not False,
                            pre=pre, forced=bool(pre),
                            snap=snap, snap2=snap2, wire="responses",
-                           images=wire_imgs,
+                           images=wire_imgs, seg=seg, snap3=snap3,
                            # #44: a client that asks for a reasoning summary
                            # (Codex sends {"summary": "auto"}, recorded from the
                            # real CLI) gets the reasoning text as the summary too
@@ -4227,19 +4905,26 @@ def main():
         print("serve_api: request defaults "
               + (", ".join(f"{k}={v}" for k, v in d.items()) if d
                  else "none set (built-in)"), flush=True)
+        # 0.12.2: the chat template is probed HERE too, so a mount
+        # without a thinking control is refused in the second this
+        # pre-flight takes, not after the engine has pinned the checkpoint.
+        from transformers import AutoTokenizer
+        check_template_or_exit(AutoTokenizer.from_pretrained(args.tokenizer),
+                               args.tokenizer)
         return
 
     import uvicorn
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(args.tokenizer)
+    template = check_template_or_exit(tok, args.tokenizer)   # 0.12.2
     if vis_resolve_token(tok) is None:
         print("serve_api: no <|image_pad|> in this tokenizer; image requests "
               "will be refused", flush=True)
     host, _, port = args.engine.partition(":")
     engine = Engine(host, int(port))
     app = build_app(tok, engine, args.context, args.max_tokens_cap,
-                    args.queue_timeout)
+                    args.queue_timeout, template=template)
 
     @app.on_event("startup")
     async def _connect():

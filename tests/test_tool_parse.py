@@ -1,7 +1,13 @@
-"""test_tool_parse — offline tests for setup/halogen/tool_parse.py.
+"""test_tool_parse — offline tests for the image's tools/tool_parse.py.
 
 Verifies incremental tool argument streaming, parameter JSON construction,
 marker holdback safety, and protocol compatibility without needing GPU or container.
+
+The file under test is UPSTREAM's, read from tests/fixtures/halogen/ — this
+repo stopped vendoring and mounting it on 21.09.2026 (its header says why).
+So these are not tests of our own code: they are the regression guard that
+says whether an image bump moved the tool-call behaviour our Anthropic bridge
+depends on, before that bump reaches production.
 """
 import json
 import pathlib
@@ -13,19 +19,23 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import common
 
 REPO = common.REPO
-TP = common.load("setup/halogen/tool_parse.py", "tool_parse_patched")
+TP = common.load("tests/fixtures/halogen/tool_parse.py", "tool_parse_image")
 
 
 class TestToolParseHeaderAndBaseSha(unittest.TestCase):
-    """The vendored copy must name its origin image and base sha256."""
+    """The fixture must name the image it was cut from, and its sha256.
 
-    PATH = REPO / "setup" / "halogen" / "tool_parse.py"
+    Without this the offline suite can silently test one release's
+    tool-call parsing while another release serves.
+    """
+
+    PATH = REPO / "tests" / "fixtures" / "halogen" / "tool_parse.py"
 
     def test_it_names_the_image_it_was_cut_from(self):
         head = self.PATH.read_text(encoding="utf-8")[:4000]
         self.assertRegex(
             head, r"halogen-flash-server:\d+\.\d+\.\d+",
-            "the vendored tool_parse.py does not say which image tag it patches")
+            "the tool_parse fixture does not say which image it was cut from")
         self.assertRegex(
             head, r"BASE_SHA256\s*[:=]\s*[0-9a-f]{64}",
             "without the base file's hash nothing can notice that the image "
@@ -33,8 +43,35 @@ class TestToolParseHeaderAndBaseSha(unittest.TestCase):
         m = re.search(r"BASE_SHA256\s*[:=]\s*([0-9a-f]{64})", head)
         self.assertEqual(
             m.group(1),
-            "8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4",
-            "BASE_SHA256 does not match the cut copy in the pinned image")
+            "e2359e39e7dbfab90cc36a3dd7839d520eb86d5be45b18196ebd3d4e6d7cec12",
+            "BASE_SHA256 does not match the copy in the pinned image")
+
+    def test_the_fixture_is_the_release_that_is_started(self):
+        """A fixture from another release tests the wrong parser.
+
+        The mount is gone, so nothing refuses at runtime any more when this
+        drifts — which makes this assertion the only thing left that notices.
+        """
+        import subprocess
+        head = self.PATH.read_text(encoding="utf-8")[:4000]
+        want = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)", head).group(1)
+        r = subprocess.run(["bash", str(REPO / "setup" / "lib" / "models.sh"),
+                            "halogen-image"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)",
+                        r.stdout).group(1)
+        self.assertEqual(want, got,
+                         "the tool_parse fixture was cut from %s and models.sh "
+                         "starts %s — re-cut the fixture out of the image that "
+                         "actually serves" % (want, got))
+
+    def test_the_fixture_is_not_mounted_anywhere(self):
+        """The whole point of moving it out of setup/halogen/."""
+        src = (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
+        code = "\n".join(l for l in src.splitlines()
+                         if not l.lstrip().startswith("#"))
+        self.assertNotIn("tool_parse", code)
+        self.assertNotIn("fixtures", code)
 
 
 class TestIncrementalToolStream(unittest.TestCase):

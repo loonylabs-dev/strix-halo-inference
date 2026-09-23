@@ -1,0 +1,18 @@
+served turns — 0.8.1, 512k pool, 17.09. 01:59 - 21.09. 14:00: n=4423
+
+         prompt band      n  prefill p50     p90     p99   worst   decode p50    p99  floor    par
+        0-      2000   3980        1.45s   1.50s   1.54s   5.92s        39.5  43.5  27.8    216
+    2,000-     10000     61        1.29s   2.63s  17.78s  17.78s        43.2  57.8  31.1      1
+   10,000-     50000    121        2.41s  11.83s  44.34s  44.66s        39.3  50.6  22.6     19
+   50,000-    150000    250        2.46s   4.67s  11.32s  38.70s        35.7  46.6  28.6     78
+  150,000-       inf     11        2.34s   3.31s 240.52s 240.52s        33.7  38.1  22.0      5
+
+WHAT THIS LOG DOES NOT COVER is the point of these three lines:
+  deepest prompt seen      207,903 tokens
+  turns over 100k prompt   82 of 4423
+  turns beside another     319 of 4423
+  highest pool occupancy   not reported by this release (0.11.5 added it)
+  A band of a dozen turns states a shape, not a rate. Deep and concurrent work has to be RUN to be measured;
+  its absence from a log is not evidence that it is fast.
+
+summary written to @HOME@/.cache/claude-tmp/wt-halogen-0123/bench/reports/2026-09-21_1400_halogen-0.8.1-served-baseline/summary.json

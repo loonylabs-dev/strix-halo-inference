@@ -500,13 +500,15 @@ class TestTheImageAndTheModelsAreResolvedOnce(unittest.TestCase):
         files = sorted(f for f in hits.stdout.split()
                        if f and not f.startswith("bench/reports/"))
         self.assertEqual(
-            files, ["setup/halogen/serve_api.py", "setup/halogen/tool_parse.py",
-                    "setup/lib/models.sh"],
+            files, ["setup/halogen/serve_api.py", "setup/lib/models.sh",
+                    "tests/fixtures/halogen/tool_parse.py"],
             "the image tag is spelled out in %s — one of them will be "
             "forgotten on the next bump. models.sh answers `halogen-image`; "
-            "serve_api.py and tool_parse.py name the tag they were CUT from, "
-            "which is a different statement and is compared against the running "
-            "one by halogenexec." % files)
+            "serve_api.py names the tag it was CUT from, which is a different "
+            "statement and is compared against the running one by halogenexec; "
+            "the tool_parse fixture names the release the OFFLINE tests parse "
+            "against, which nothing refuses at runtime and only "
+            "test_the_fixture_is_the_release_that_is_started notices." % files)
 
     def test_models_sh_answers_for_the_image(self):
         import subprocess
@@ -735,16 +737,26 @@ class TestTheSwitchKeepsItsGuards(unittest.TestCase):
 class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
     """setup/halogen/serve_api.py is mounted OVER the file in the image.
 
-    Three hunks of real fix (both EOS ids, and per-request stop strings as
-    EOS ids) shipped as a 150 KB whole-file copy. Bump the image and the old
-    copy silently reverts every upstream change in that file while `podman
-    ps` reports the new tag — the exact shape of a defect this repo keeps
+    FOUR changes in five places — both EOS ids, per-request stop strings as
+    EOS ids, the app.state bindings these tests use, and the fit-to-room gate
+    — shipped as a 260 KB whole-file copy. Bump the image and the old copy
+    silently reverts every upstream change in that file while `podman ps`
+    reports the new tag — the exact shape of a defect this repo keeps
     finding. So the file has to say which image it was cut from, and
     halogenexec has to refuse the mount when that is no longer true.
+
+    The count and the size were wrong here until 21.09.2026 ("three hunks",
+    "150 KB"), the third place carrying that error after the header and
+    setup/README.md were corrected on 17.09. — which is the argument for
+    asserting on the file rather than describing it in prose.
+
+    tool_parse.py was vendored beside it until 21.09.2026 and is not any
+    more: its only change was the header, so the mount froze a file it did
+    not patch and would have reverted 0.10.2's merge of several leading
+    system messages.
     """
 
     PATH = REPO / "setup" / "halogen" / "serve_api.py"
-    TOOL_PARSE_PATH = REPO / "setup" / "halogen" / "tool_parse.py"
 
     def test_it_names_the_image_it_was_cut_from(self):
         head = self.PATH.read_text(encoding="utf-8")[:4000]
@@ -756,15 +768,43 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
             "without the base file's hash nothing can notice that the image "
             "moved underneath this copy")
 
-    def test_tool_parse_names_the_image_it_was_cut_from(self):
-        head = self.TOOL_PARSE_PATH.read_text(encoding="utf-8")[:4000]
-        self.assertRegex(
-            head, r"halogen-flash-server:\d+\.\d+\.\d+",
-            "the vendored tool_parse.py does not say which image tag it patches")
-        self.assertRegex(
-            head, r"BASE_SHA256\s*[:=]\s*[0-9a-f]{64}",
-            "without the base file's hash nothing can notice that the image "
-            "moved underneath this copy")
+    def test_tool_parse_is_not_vendored_any_more(self):
+        """Retired 21.09.2026, and it must not come back by reflex.
+
+        The copy carried no change but its own header, so the mount froze a
+        file it did not patch: 0.10.2 added the merge of several leading
+        system messages to it (public issue #60) and a stale copy would have
+        reverted that. Anything that needs patching there needs a hunk and a
+        line in the header, not a whole-file copy.
+        """
+        self.assertFalse(
+            (REPO / "setup" / "halogen" / "tool_parse.py").exists(),
+            "tool_parse.py is vendored again — if that is deliberate it needs "
+            "a hunk it actually changes, a BASE_SHA256 in halogenexec and a "
+            "retirement condition; if it is not, delete it")
+
+    def test_the_four_changes_are_actually_in_the_file(self):
+        """The header CLAIMS four changes; this asserts they are there.
+
+        Written 21.09.2026 because the prose count drifted three times
+        (header, README, this class's docstring) while nothing checked the
+        file. A re-cut that loses one of these silently serves a
+        half-reverted front-end, which is the failure the whole vendoring
+        apparatus exists to prevent.
+        """
+        src = self.PATH.read_text(encoding="utf-8")
+        for marker, what in (
+                ("def get_eos_ids", "change 1/2: the end-token function"),
+                ("<|endoftext|>", "change 1: the second end token"),
+                ("req_eos = get_eos_ids(stops)",
+                 "change 2: per-request stop strings as EOS ids"),
+                ("app.state.run", "change 3: the test bindings"),
+                ("app.state.serve", "change 3: the test bindings"),
+                ("FIT_TO_ROOM", "change 4: the fit-to-room gate"),
+                ("fit-to-room clamped max_tokens",
+                 "change 4: the clamp's own stderr line")):
+            self.assertIn(marker, src,
+                          "%s is missing from the vendored copy" % what)
 
     def test_halogenexec_asks_for_the_image_rather_than_naming_it(self):
         src = (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
@@ -778,9 +818,12 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
         self.assertIn("BASE_SHA256", src,
                       "halogenexec mounts the copy without checking that the "
                       "image still carries the file it was cut from")
-        self.assertIn("TOOL_PARSE_BASE_SHA256", src,
-                      "halogenexec mounts tool_parse.py without checking that the "
-                      "image still carries the file it was cut from")
+        code = "\n".join(l for l in src.splitlines()
+                         if not l.lstrip().startswith("#"))
+        self.assertNotIn("tool_parse", code,
+                         "halogenexec still mounts or verifies tool_parse.py, "
+                         "which was retired 21.09.2026 — see "
+                         "test_tool_parse_is_not_vendored_any_more")
 
     def test_the_image_tag_agrees_with_the_one_that_is_started(self):
         """The header names the image the copy was CUT from; models.sh names
@@ -797,20 +840,6 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
                         r.stdout).group(1)
         self.assertEqual(want, got,
                          "the vendored file was cut from %s and models.sh "
-                         "starts %s — re-cut the copy or move the tag back"
-                         % (want, got))
-
-    def test_tool_parse_tag_agrees_with_the_one_that_is_started(self):
-        import subprocess
-        head = self.TOOL_PARSE_PATH.read_text(encoding="utf-8")[:4000]
-        want = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)", head).group(1)
-        r = subprocess.run(["bash", str(REPO / "setup" / "lib" / "models.sh"),
-                            "halogen-image"], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        got = re.search(r"halogen-flash-server:(\d+\.\d+\.\d+)",
-                        r.stdout).group(1)
-        self.assertEqual(want, got,
-                         "the vendored tool_parse.py was cut from %s and models.sh "
                          "starts %s — re-cut the copy or move the tag back"
                          % (want, got))
 
@@ -902,6 +931,14 @@ def load_serve_api():
     import sys, types, importlib.util
     if "serve_api_module" in sys.modules:
         return sys.modules["serve_api_module"]
+    # serve_api.py imports tool_parse at module level. That module is the
+    # image's, not this repo's, since 21.09.2026 — the unmodified copy under
+    # tests/fixtures/halogen/ is here so this load resolves against the REAL
+    # exports rather than a stub that would hide a renamed one. See that
+    # file's header for why it is not in setup/halogen/.
+    fixtures = str(REPO / "tests" / "fixtures" / "halogen")
+    if fixtures not in sys.path:
+        sys.path.insert(0, fixtures)
     class DummyBaseModel:
         def __init__(self, **kw):
             for k, v in kw.items():
@@ -927,8 +964,15 @@ def load_serve_api():
                 return lambda f: f
         sys.modules["fastapi"].FastAPI = DummyFastAPI
         sys.modules["fastapi"].HTTPException = type("HTTPException", (Exception,), {})
+        # Request and Response are new in the 0.12.3 base (0.8.1 imported
+        # neither). A stub that lags the base fails at IMPORT with
+        # "cannot import name X from fastapi", which reads like a broken
+        # environment rather than a moved base file — so when a re-cut breaks
+        # here, check this list against the base's import block first.
+        sys.modules["fastapi"].Request = type("Request", (), {})
         sys.modules["fastapi.exceptions"].RequestValidationError = type("RequestValidationError", (Exception,), {})
         sys.modules["fastapi.responses"].JSONResponse = type("JSONResponse", (), {})
+        sys.modules["fastapi.responses"].Response = type("Response", (), {})
         sys.modules["fastapi.responses"].StreamingResponse = type("StreamingResponse", (), {})
         sys.modules["starlette.exceptions"].HTTPException = type("StarletteHTTPException", (Exception,), {})
 
@@ -1021,7 +1065,11 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
 
         class DummyEngine:
             def __init__(self):
-                self.info = {"ctx": 32768, "version": "0.8.1"}
+                # the shape production serves: slot_ctx 262144 on 0.12.3.
+                # serve() reads the window from engine.info, not from
+                # build_app's ctx, so this is the number that decides whether
+                # a 32000-token budget fits.
+                self.info = {"ctx": 262144, "version": "0.12.3"}
                 self.slots = asyncio.Semaphore(10)
                 self.waiting = 0
                 self.inflight = {}
@@ -1030,8 +1078,14 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
                 self.metrics = types.SimpleNamespace(record=lambda *a, **k: None)
             async def abort(self):
                 pass
+            # seg and snap3 are new in the 0.12.3 base — snap3 is 0.12.1's
+            # third cache save point (the start of the last message). Named
+            # rather than swallowed by **kw ON PURPOSE: a re-cut that adds
+            # another argument should fail here and say so, which is the only
+            # signal this offline suite gets that the engine protocol moved.
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None, penalty="",
-                                snap=0, snap2=0, images=None, schema=None, after=None, escape=(), think=None):
+                                snap=0, snap2=0, images=None, schema=None, after=None, escape=(), think=None,
+                                seg=None, snap3=0):
                 captured_think.append(think)
                 captured_eos.append(list(eos))
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
@@ -1039,16 +1093,34 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
 
         engine = DummyEngine()
         tok = DummyTokenizer()
-        app = mod.build_app(tok, engine, ctx=32768)
+        # max_cap raised from build_app's 4096 default: the shape asserted on
+        # below is the one Claude Code actually sends (max_tokens=32000), and
+        # both the cap and the context window are checked BEFORE the answer
+        # room, so the defaults would refuse the request with a different 400
+        # before any budget was computed.
+        app = mod.build_app(tok, engine, ctx=262144, max_cap=32000)
         serve_fn = app.state.serve
 
-        # 1. With thinking enabled and budget set
-        await serve_fn([1, 2, 3], max_tokens=100, stops=[], stream=False, chat=True, prefix="chat",
+        # 1. With thinking enabled and budget set, at a budget the ANSWER ROOM
+        #    leaves alone. This assertion used max_tokens=100 until
+        #    21.09.2026 and passed on 0.8.1; on 0.12.3 it read 1, which is
+        #    0.11.0's answer room doing its job and not a regression:
+        #        room = max(1024, max_tokens * 15 // 100)
+        #        cap  = max(1, max_tokens - room)      # the think budget's ceiling
+        #    At max_tokens=100 the room (1024) exceeds the whole budget, so
+        #    one token of thinking is all that is left. Case 3 below pins that.
+        #    32000 is what Claude Code sends, so this is the live shape: room
+        #    4800, cap 27200, and 26000 passes untouched — with 1200 tokens to
+        #    spare. The margin is thin on purpose to be visible: below a
+        #    max_tokens of about 30,600 this repo's 26000 starts being cut.
+        await serve_fn([1, 2, 3], max_tokens=32000, stops=[], stream=False, chat=True, prefix="chat",
                        thinking=True, think_budget=26000)
         self.assertEqual(len(captured_think), 1)
         self.assertIsNotNone(captured_think[0])
         budget, end_id, close_ids = captured_think[0]
-        self.assertEqual(budget, 26000)
+        self.assertEqual(budget, 26000,
+                         "the operator's think budget did not reach the engine "
+                         "at a max_tokens the answer room leaves alone")
         self.assertEqual(end_id, 248069)
         # Check EOS includes both <|im_end|> and <|endoftext|>
         self.assertIn(248046, captured_eos[0])
@@ -1061,6 +1133,33 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
                        thinking=False, think_budget=26000)
         self.assertEqual(len(captured_think), 1)
         self.assertIsNone(captured_think[0])
+
+        # 3. The answer room wins over a larger budget (0.11.0, new since the
+        #    0.8.1 this repo served until 21.09.2026). A small max_tokens keeps
+        #    max(1024, 15%) for the answer, so a 26000-token think budget is
+        #    cut to what is left — one token here, since the room alone is more
+        #    than the whole budget. Before 0.11.0 this request thought until it
+        #    hit max_tokens and returned `finish_reason: length` with EMPTY
+        #    content, which is the failure the room exists to remove.
+        #
+        #    Pinned because it changes what a client with a small budget gets
+        #    from this stack, and because the repo's own 26000 is only
+        #    untouched above a max_tokens of about 30,600 (cap = 85% of
+        #    max_tokens there; Claude Code's 32000 clears it, 30000 does not).
+        captured_think.clear()
+        await serve_fn([1, 2, 3], max_tokens=100, stops=[], stream=False, chat=True, prefix="chat",
+                       thinking=True, think_budget=26000)
+        self.assertEqual(len(captured_think), 1)
+        self.assertEqual(captured_think[0][0], 1,
+                         "the answer room did not bound a think budget larger "
+                         "than the whole of max_tokens")
+
+        # 4. And it does not touch a budget that already fits beside the room.
+        captured_think.clear()
+        await serve_fn([1, 2, 3], max_tokens=32000, stops=[], stream=False, chat=True, prefix="chat",
+                       thinking=True, think_budget=1000)
+        self.assertEqual(captured_think[0][0], 1000,
+                         "the answer room moved a budget that fits")
 
 
 class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
@@ -1109,9 +1208,11 @@ class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
                 self.metrics = types.SimpleNamespace(record=lambda *a, **k: None)
             async def abort(self):
                 pass
+            # see the note on the other generate() stub: seg/snap3 are 0.12.x
+            # arguments, named so a further one fails loudly.
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                                penalty="", snap=0, snap2=0, images=None, schema=None,
-                               after=None, escape=(), think=None):
+                               after=None, escape=(), think=None, seg=None, snap3=0):
                 seen.append(max_tokens)
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
                              "decode_ms": 1.0, "prefill_ms": 1.0}, None

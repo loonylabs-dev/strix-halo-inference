@@ -1,23 +1,37 @@
 #!/usr/bin/env python3
 # ===========================================================================
-# VENDORED AND PATCHED — this is NOT this repository's code.
+# TEST FIXTURE — an UNMODIFIED copy, and it is NEVER MOUNTED.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.8.1
-#             image digest sha256:d444524bffb6f487650cb1c29e3dae67fcebf0c6a22abe5a6342f0e4315567e0
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.12.3
+#             image digest sha256:0a49060de34eba6ab762196d4f109a5dab476e10a21841e641c0194346dd5c7d
 #   base file /halogen/tools/tool_parse.py
-#   BASE_SHA256 = 8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4
+#   BASE_SHA256 = e2359e39e7dbfab90cc36a3dd7839d520eb86d5be45b18196ebd3d4e6d7cec12
 #
-# setup/halogenexec mounts this file OVER the one in the image and verifies
-# BASE_SHA256 against the image's own copy before it does. That check is the
-# whole reason the hash is written down: without it a bumped image keeps its
-# new tag in `podman ps` while this old copy silently reverts every upstream
-# change to this one file — the shape of defect this repository keeps
-# finding, and the reason setup/patches/ exists for llama.cpp.
+# WHY IT IS HERE, AND WHY IT IS NOT IN setup/halogen/. Until 21.09.2026 this
+# file was VENDORED beside serve_api.py and mounted over the image's copy,
+# and it carried no change but its own header — the incremental tool-call
+# parameter streaming it once patched was adopted upstream in 0.6.1. A mount
+# that patches nothing still freezes the file: 0.10.2 added the merge of
+# several leading system messages (public issue #60, what older opencode
+# builds send) and the stale copy would have reverted it silently while
+# `podman ps` reported the new tag.
 #
-# WHAT IS CHANGED:
-#   Upstream 0.6.1 officially adopted the incremental tool-call parameter
-#   streaming mechanism (_scan_params, _stream_safe, and ToolStream JSON chunking)
-#   addressing public issue #36. This copy is re-cut from 0.8.1.
+# So the mount is gone. What remains is this: serve_api.py does
+# `from tool_parse import ToolStream, normalize_messages, split_tool_calls`
+# at import, so loading the vendored front-end OFFLINE needs the module to
+# exist. tests/test_halogen.py's load_serve_api() puts this directory on
+# sys.path for exactly that. A three-name stub would have done it in two
+# lines and would have hidden the one thing a re-cut can break — a moved or
+# renamed export — so the real file is used instead.
+#
+# CONSEQUENCES, so the next reader does not have to work them out:
+#   * Nothing here reaches production. The container runs its OWN copy; this
+#     one is read by the test suite and by nothing else.
+#   * It must be RE-CUT on every image bump, or the offline tests load a
+#     front-end against a tool_parse from another release. tests/test_halogen.py
+#     asserts the tag here matches the tag models.sh starts, so a forgotten
+#     re-cut is a red gate rather than a silent drift.
+#   * Edit it and you are testing against something no image ships. Do not.
 # ===========================================================================
 """tools/tool_parse.py — Qwen3.8 tool-call parsing.
 
@@ -532,6 +546,42 @@ def normalize_messages(messages):
                 fixed.append(tc)
             m["tool_calls"] = fixed
         msgs.append(m)
+
+    # Public issue #60 (0.10.2): this template accepts ONE system message and
+    # only as the first, and raises for any other placement. Clients send
+    # the system prompt as several leading system messages (older opencode
+    # builds: a header plus the rest, for prompt-caching reasons), which the
+    # /v1/responses route already merges (`sys_parts`); the chat route now
+    # does the same: a leading run of system messages becomes one, joined by
+    # a blank line, string contents and text parts alike. A system message
+    # AFTER a non-system turn is still the template's refusal, but named by
+    # position so the client knows which one to move.
+    lead = 0
+    while lead < len(msgs) and msgs[lead].get("role") == "system":
+        lead += 1
+    if lead > 1:
+        parts = []
+        for m in msgs[:lead]:
+            c = m.get("content")
+            if isinstance(c, list):
+                texts = []
+                for part in c:
+                    if not isinstance(part, dict) or part.get("type") != "text":
+                        raise ValueError("a system message may carry text only; "
+                                         "send images in a user turn")
+                    texts.append(part.get("text") or "")
+                c = "".join(texts)
+            if c:
+                parts.append(str(c))
+        msgs[:lead] = [{"role": "system", "content": "\n\n".join(parts)}]
+        lead = 1
+    for k in range(lead, len(msgs)):
+        if msgs[k].get("role") == "system":
+            raise ValueError(
+                "message %d has role 'system' after a non-system turn; this "
+                "model's chat template accepts a system message only at the "
+                "start of the conversation (merge it into the first message "
+                "or send it as a user turn)" % k)
 
     i = 0
     while i < len(msgs):

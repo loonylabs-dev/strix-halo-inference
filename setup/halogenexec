@@ -55,16 +55,23 @@ HOST_PORT="${HALOGEN_HOST_PORT:-8080}"
 CONTAINER_PORT=8731
 IMAGE="$(halogen_image "$FLAVOR")"
 
-# The sha256 of /halogen/tools/serve_api.py and tool_parse.py in the image
-# the vendored copies were cut from. Written in their headers too; compared
-# by tests/test_halogen.py so they cannot drift apart.
-BASE_SHA256="018c899b43e496bb27c082a7ffe2f1da17d898144e1f5832607d797478d55cb6"
-TOOL_PARSE_BASE_SHA256="8868cd2ff18d727bc8f95eb827f8dd1f8c68be209cf0058414240d5da0d25de4"
+# The sha256 of /halogen/tools/serve_api.py in the image the vendored copy
+# was cut from. Written in its header too; compared by tests/test_halogen.py
+# so they cannot drift apart.
+#
+# tool_parse.py was vendored too until 21.09.2026 and is NOT any more. Its
+# only change had been the vendoring header — the incremental tool-call
+# parameter streaming it once carried was adopted upstream in 0.6.1 — so the
+# mount froze a file it did not patch. What that cost was measured when this
+# image was cut: 0.10.2 added the merge of several leading system messages to
+# that file (public issue #60, what older opencode builds send), and the
+# stale copy would have reverted it. One vendored file is one retirement
+# condition to check per bump; this is the other one retired.
+BASE_SHA256="7bb0fdac8730afff7d6aa0f24a43b667335bcdd51d3bcfef628fb40873ad994b"
 
 EXTRA_MOUNTS=()
 PATCHED="$REPO/setup/halogen/serve_api.py"
-PATCHED_TP="$REPO/setup/halogen/tool_parse.py"
-if [ -f "$PATCHED" ] || [ -f "$PATCHED_TP" ]; then
+if [ -f "$PATCHED" ]; then
   # VERIFY BEFORE OVERRIDING. The mount replaces a file inside a pinned
   # image, and the failure it invites is silent in the worst direction: bump
   # the tag and `podman ps` reports the new version while this old copy
@@ -76,63 +83,32 @@ if [ -f "$PATCHED" ] || [ -f "$PATCHED_TP" ]; then
   # image: measured well under a second, against an engine that needs twelve.
   vc="halogen-verify-$$"
   tmp="$(mktemp -t halogen-base-XXXXXX.py)"
-  tmp_tp="$(mktemp -t halogen-base-tp-XXXXXX.py)"
   base_sha=""
-  base_sha_tp=""
   if podman create --name "$vc" "$IMAGE" true >/dev/null 2>&1; then
-    if [ -f "$PATCHED" ]; then
-      podman cp "$vc:/halogen/tools/serve_api.py" "$tmp" >/dev/null 2>&1 \
-        && base_sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
-    fi
-    if [ -f "$PATCHED_TP" ]; then
-      podman cp "$vc:/halogen/tools/tool_parse.py" "$tmp_tp" >/dev/null 2>&1 \
-        && base_sha_tp="$(sha256sum "$tmp_tp" | cut -d' ' -f1)"
-    fi
+    podman cp "$vc:/halogen/tools/serve_api.py" "$tmp" >/dev/null 2>&1 \
+      && base_sha="$(sha256sum "$tmp" | cut -d' ' -f1)"
     podman rm -f "$vc" >/dev/null 2>&1 || true
   fi
-  rm -f "$tmp" "$tmp_tp"
+  rm -f "$tmp"
 
-  if [ -f "$PATCHED" ]; then
-    if [ -z "$base_sha" ]; then
-      echo "halogenexec: could not read /halogen/tools/serve_api.py out of $IMAGE." >&2
-      echo "  The patched copy in setup/halogen/ cannot be verified, and mounting" >&2
-      echo "  an unverified override is the thing this check exists to prevent." >&2
-      exit 1
-    fi
-    if [ "$base_sha" != "$BASE_SHA256" ]; then
-      echo "halogenexec: $IMAGE no longer carries the file the patched copy was cut from." >&2
-      echo "  expected $BASE_SHA256" >&2
-      echo "  found    $base_sha" >&2
-      echo "  Re-cut the copy and re-apply the hunks its header describes:" >&2
-      echo "    podman create --name halogen-cut $IMAGE true" >&2
-      echo "    podman cp halogen-cut:/halogen/tools/serve_api.py /tmp/serve_api.new.py" >&2
-      echo "    podman rm -f halogen-cut" >&2
-      echo "    diff -u /tmp/serve_api.new.py setup/halogen/serve_api.py" >&2
-      exit 1
-    fi
-    EXTRA_MOUNTS+=(-v "$PATCHED:/halogen/tools/serve_api.py:ro")
+  if [ -z "$base_sha" ]; then
+    echo "halogenexec: could not read /halogen/tools/serve_api.py out of $IMAGE." >&2
+    echo "  The patched copy in setup/halogen/ cannot be verified, and mounting" >&2
+    echo "  an unverified override is the thing this check exists to prevent." >&2
+    exit 1
   fi
-
-  if [ -f "$PATCHED_TP" ]; then
-    if [ -z "$base_sha_tp" ]; then
-      echo "halogenexec: could not read /halogen/tools/tool_parse.py out of $IMAGE." >&2
-      echo "  The patched copy in setup/halogen/ cannot be verified, and mounting" >&2
-      echo "  an unverified override is the thing this check exists to prevent." >&2
-      exit 1
-    fi
-    if [ "$base_sha_tp" != "$TOOL_PARSE_BASE_SHA256" ]; then
-      echo "halogenexec: $IMAGE no longer carries the file the patched copy was cut from." >&2
-      echo "  expected $TOOL_PARSE_BASE_SHA256" >&2
-      echo "  found    $base_sha_tp" >&2
-      echo "  Re-cut the copy and re-apply the hunks its header describes:" >&2
-      echo "    podman create --name halogen-cut $IMAGE true" >&2
-      echo "    podman cp halogen-cut:/halogen/tools/tool_parse.py /tmp/tool_parse.new.py" >&2
-      echo "    podman rm -f halogen-cut" >&2
-      echo "    diff -u /tmp/tool_parse.new.py setup/halogen/tool_parse.py" >&2
-      exit 1
-    fi
-    EXTRA_MOUNTS+=(-v "$PATCHED_TP:/halogen/tools/tool_parse.py:ro")
+  if [ "$base_sha" != "$BASE_SHA256" ]; then
+    echo "halogenexec: $IMAGE no longer carries the file the patched copy was cut from." >&2
+    echo "  expected $BASE_SHA256" >&2
+    echo "  found    $base_sha" >&2
+    echo "  Re-cut the copy and re-apply the hunks its header describes:" >&2
+    echo "    podman create --name halogen-cut $IMAGE true" >&2
+    echo "    podman cp halogen-cut:/halogen/tools/serve_api.py /tmp/serve_api.new.py" >&2
+    echo "    podman rm -f halogen-cut" >&2
+    echo "    diff -u /tmp/serve_api.new.py setup/halogen/serve_api.py" >&2
+    exit 1
   fi
+  EXTRA_MOUNTS+=(-v "$PATCHED:/halogen/tools/serve_api.py:ro")
 fi
 
 SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"

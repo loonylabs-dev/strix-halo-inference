@@ -1,0 +1,119 @@
+{
+  "n": 4423,
+  "bands": [
+    {
+      "from": 0,
+      "to": 2000,
+      "n": 3980,
+      "n_rated": 3979,
+      "prefill_s": {
+        "p50": 1.45,
+        "p90": 1.5,
+        "p99": 1.54
+      },
+      "decode_tps": {
+        "p50": 39.53,
+        "p90": 41.19,
+        "p99": 43.52
+      },
+      "decode_tps_min": 27.83,
+      "prefill_s_max": 5.92,
+      "parallel": 216,
+      "clamped": 0,
+      "cached_share": 0.9021034521529777
+    },
+    {
+      "from": 2000,
+      "to": 10000,
+      "n": 61,
+      "n_rated": 61,
+      "prefill_s": {
+        "p50": 1.29,
+        "p90": 2.63,
+        "p99": 17.78
+      },
+      "decode_tps": {
+        "p50": 43.19,
+        "p90": 46.94,
+        "p99": 57.8
+      },
+      "decode_tps_min": 31.1,
+      "prefill_s_max": 17.78,
+      "parallel": 1,
+      "clamped": 0,
+      "cached_share": 0.718438704282702
+    },
+    {
+      "from": 10000,
+      "to": 50000,
+      "n": 121,
+      "n_rated": 121,
+      "prefill_s": {
+        "p50": 2.41,
+        "p90": 11.83,
+        "p99": 44.34
+      },
+      "decode_tps": {
+        "p50": 39.27,
+        "p90": 43.9,
+        "p99": 50.64
+      },
+      "decode_tps_min": 22.63,
+      "prefill_s_max": 44.66,
+      "parallel": 19,
+      "clamped": 0,
+      "cached_share": 0.8535914910456333
+    },
+    {
+      "from": 50000,
+      "to": 150000,
+      "n": 250,
+      "n_rated": 250,
+      "prefill_s": {
+        "p50": 2.46,
+        "p90": 4.67,
+        "p99": 11.32
+      },
+      "decode_tps": {
+        "p50": 35.72,
+        "p90": 41.26,
+        "p99": 46.57
+      },
+      "decode_tps_min": 28.62,
+      "prefill_s_max": 38.7,
+      "parallel": 78,
+      "clamped": 0,
+      "cached_share": 0.9838441129192766
+    },
+    {
+      "from": 150000,
+      "to": null,
+      "n": 11,
+      "n_rated": 11,
+      "prefill_s": {
+        "p50": 2.34,
+        "p90": 3.31,
+        "p99": 240.52
+      },
+      "decode_tps": {
+        "p50": 33.71,
+        "p90": 35.57,
+        "p99": 38.1
+      },
+      "decode_tps_min": 22.02,
+      "prefill_s_max": 240.52,
+      "parallel": 5,
+      "clamped": 0,
+      "cached_share": 0.8808384379785605
+    }
+  ],
+  "coverage": {
+    "deepest_prompt": 207903,
+    "over_100k": 82,
+    "parallel_total": 319,
+    "pool_pct_max": null,
+    "think_seen": []
+  },
+  "label": "0.8.1, 512k pool, 17.09. 01:59 - 21.09. 14:00",
+  "unparsed": 0
+}

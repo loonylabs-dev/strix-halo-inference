@@ -829,15 +829,15 @@
       },
       "shows_as": "silent",
       "symptom": "A generation that emits <|endoftext|> (248044) instead of <|im_end|> (248046) is not stopped. The engine decodes on to max_tokens and repeats itself; the client sees a very long answer and finish_reason 'length', never an error.",
-      "measured": "REPORTED, not reproduced here: the runaway that prompted the patch was described by the session that wrote it and no before/after recording of it survives, so the causal claim is carried at the confidence its author gave it. VERIFIED here, 12.09.2026, is only the state AFTER the patch: image 0.5.6 with setup/halogen/serve_api.py mounted (hash confirmed inside the running container), one deepseek-harness turn at 07:54:06 produced 15429 completion tokens in 466.6 s and ended with finish_reason 'tool_calls' — an EOS stop, not a cap. The same conversation's next turn on the same prefix had produced 346 tokens in 30.4 s a few hours earlier, so generation LENGTH on this model is not deterministic and a long answer is not by itself this defect. The 15429 tokens were reasoning_content end to end (the last delta before the tool call was a reasoning delta), at reasoning_effort=low.",
+      "measured": "TWO CLAIMS, AT DIFFERENT CONFIDENCE. (1) THAT THE SECOND END TOKEN IS UNREGISTERED: documented, 21.09.2026, from the project's own files rather than from a run. The weights repo's tokenizer/generation_config.json declares eos_token_id as a LIST, [248046, 248044]; its tokenizer_config.json declares eos_token '<|im_end|>' alone (248046) and pad_token '<|endoftext|>' (248044, which is also bos_token_id). The image's serve_api.py builds eos_ids from tok.eos_token_id union convert_tokens_to_ids('<|im_end|>') — both of which resolve to 248046, so the set holds ONE id and 248044 is never registered, while generation_config.json, the file that declares it, is never read. Verified in the 0.12.3 base file (serve_api.py line 2538 of 4827) and in 0.8.1 before it: the string '<|endoftext|>' does not occur anywhere in either base. (2) THAT THIS CAUSED THE RUNAWAY the patch was written for: REPORTED, NOT REPRODUCED. That claim came from the session that wrote the patch, no before/after recording survives, and it is still carried at its author's confidence — the model emitting 248044 has never been observed here. What was VERIFIED here, 12.09.2026, is only the state AFTER the patch: image 0.5.6 with the mount active (hash confirmed inside the running container), one deepseek-harness turn at 07:54:06 produced 15429 completion tokens in 466.6 s and ended with finish_reason 'tool_calls' — an EOS stop, not a cap. The same conversation's next turn on the same prefix had produced 346 tokens in 30.4 s hours earlier, so generation LENGTH on this model is not deterministic and a long answer is not by itself this defect.",
       "mitigation": "setup/halogen/serve_api.py, mounted over /halogen/tools/serve_api.py by setup/halogenexec. get_eos_ids() registers both token ids and additionally converts the request's stop strings to EOS ids. The gateway injects <|im_end|> and <|endoftext|> as stop strings for this backend (inject_model_kwargs), which reaches the same registration through the supported path and therefore survives a lost mount.",
       "detect": {
         "kind": "manual"
       },
       "status": "mitigated",
       "first_seen": "2026-09-11",
-      "last_checked": "2026-09-14",
-      "note": "Re-cut against upstream 0.8.1 on 14.09.2026. Upstream still does not register <|endoftext|> in eos_ids. The retirement condition is mechanical — halogenexec hashes the image's own copy of the file against BASE_SHA256 and REFUSES to start when they differ."
+      "last_checked": "2026-09-21",
+      "note": "Re-cut against upstream 0.12.3 on 21.09.2026 (was 0.8.1). Upstream still does not register <|endoftext|>, checked against the base FILE and not the changelog. The retirement condition is mechanical — halogenexec hashes the image's own copy against BASE_SHA256 and REFUSES to start when they differ; it fired as designed on this re-cut. NOT REPORTED UPSTREAM as of 21.09.2026, and it is the one entry here where a report would pay for itself: this defect is why a 4827-line file is vendored at all, so an upstream fix retires two of the four changes and most of the per-bump work. The documentary half of the evidence above needs no reproducer — it is the maintainer's own two config files disagreeing — while the runaway half must NOT be claimed as measured. CONTRIBUTING means the human writes the post."
     },
     {
       "id": "halogen-tool-call-streaming-deadlock",
@@ -849,14 +849,14 @@
       "shows_as": "loud",
       "symptom": "After a long reasoning phase, when a model calls a tool with a large payload (such as writing an HTML file taking 3,000+ tokens), Halogen emits 0 bytes over SSE for >100 seconds. Cloudflare Tunnel or client read timeouts terminate the connection with HTTP 500 / 524 / context canceled after ~130s.",
       "measured": "Reproduced live on 12.09.2026 across six consecutive requests in trace-2026-09-12.jsonl at 13:16, 13:18, 13:21, 13:24, 13:26, 13:29: each aborted at exactly ~133.2s with cloudflared context canceled and gateway logging 'ABORTED after 133.2s — no answer, nothing saved'. Verified inside container that ToolStream.push() emitted empty deltas because _parse_block returned None mid-stream when </function> was missing.",
-      "mitigation": "Resolved upstream in 0.6.1+ (_scan_params, _stream_safe, and ToolStream JSON chunking addressing issue #36). setup/halogen/tool_parse.py re-cut from 0.8.1 and pinned by TOOL_PARSE_BASE_SHA256 in halogenexec.",
+      "mitigation": "Resolved upstream in 0.6.1+ (_scan_params, _stream_safe, and ToolStream JSON chunking addressing issue #36). NO LONGER VENDORED as of 21.09.2026: the copy's only difference from the image had been its own header ever since that fix, so the mount froze a file it did not patch — and 0.10.2 added the merge of several leading system messages to it (upstream issue #60), which the stale copy would have reverted silently. halogenexec's TOOL_PARSE_BASE_SHA256 and its second verify block are gone with it. An unmodified copy lives at tests/fixtures/halogen/tool_parse.py for the offline suite only and is never mounted.",
       "detect": {
         "kind": "manual"
       },
       "status": "resolved upstream in 0.6.1",
       "first_seen": "2026-09-12",
-      "last_checked": "2026-09-14",
-      "note": "Upstream 0.6.1 merged native incremental parameter streaming. Verified again on 0.8.1 upgrade 14.09.2026."
+      "last_checked": "2026-09-21",
+      "note": "Upstream 0.6.1 merged native incremental parameter streaming. Verified again on the 0.8.1 upgrade 14.09.2026 and on the 0.12.3 re-cut 21.09.2026, where the vendoring was retired. tests/test_tool_parse.py still exercises the parser, now against the image's own copy: those tests are the regression guard that says whether a bump moved the tool-call behaviour the Anthropic bridge depends on."
     },
     {
       "id": "halogen-vision-compaction-stall",
@@ -926,12 +926,12 @@
       "detect": {
         "kind": "manual"
       },
-      "status": "open, mitigated here since 17.09.2026 02:00. The mitigation is a tuning choice, not a cure: it makes the host survive its own desktop, while the question why the engine goes silent without a lookup-table read is unanswered. UPSTREAM #35 describes the same shutdown on 0.5.8 and the maintainer attributes it to a 0.5.8 defect fixed in 0.5.9; these six occurrences are on 0.6.3 and 0.8.1, i.e. after that fix, with the fix demonstrably active. The original reporter never answered the maintainer's request for a 0.5.9 re-run, so the issue has been stalled since 12.09.2026. A comment carrying this data is drafted and posting it is the operator's call — CONTRIBUTING means the human writes it. Not yet verified on 0.11.2, which is three minors ahead of what serves here; nothing in the 0.9.0-0.11.2 changelog entries reads like it touches this path, but that is a changelog reading, not a measurement.",
+      "status": "open, mitigated here since 17.09.2026 02:00. The mitigation is a tuning choice, not a cure: it makes the host survive its own desktop, while the question why the engine goes silent without a lookup-table read is unanswered. UPSTREAM #35 describes the same shutdown on 0.5.8 and the maintainer attributes it to a 0.5.8 defect fixed in 0.5.9; these six occurrences are on 0.6.3 and 0.8.1, i.e. after that fix, with the fix demonstrably active. The original reporter never answered the maintainer's request for a 0.5.9 re-run, so the issue has been stalled since 12.09.2026. A comment carrying this data is drafted and posting it is the operator's call — CONTRIBUTING means the human writes it. Not yet verified on 0.11.2, which is three minors ahead of what serves here; nothing in the 0.9.0-0.11.2 changelog entries reads like it touches this path, but that is a changelog reading, not a measurement. UPGRADE NOTE 21.09.2026: the tree now re-cuts onto 0.12.3, and THREE upstream releases have worked on exactly this path since the 0.8.1 this was measured on — 0.11.9 reads thread states in /proc and compact_stall in /proc/vmstat before a silent probe counts (naming issues #79 and #35), 0.12.3 bounds that deferral with HALOGEN_ENGINE_WATCHDOG_DEFER_S (900 s) and fixes a watchdog clock that RESTARTED on every deferred probe, and 0.12.2 disables the GPU core dump that kept a faulted process alive for tens of seconds. The restarting clock is this entry's own reported symptom ('the counter also RESETS and climbs again'), and 0.11.4 answers the host-memory half by name. That is a changelog reading plus a code path, NOT a measurement: this entry stays OPEN until the 512k pool and the watchdog are re-measured on 0.12.3 on this host. The #35 draft is superseded by those releases and must be rewritten or dropped rather than posted as it stands.",
       "upstream": [
         "https://github.com/peonist-ai/halogen-flash-server/issues/35"
       ],
       "first_seen": "2026-09-12",
-      "last_checked": "2026-09-17"
+      "last_checked": "2026-09-21"
     }
   ]
 }

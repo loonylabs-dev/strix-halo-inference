@@ -118,7 +118,7 @@ workload_meta() {       # $1 = workload, $2 = variable, $3 = default
 # out: bump one and the others serve or MEASURE a different version while
 # reporting the new one. That is the six-places failure at the top of this
 # file, one backend later.
-HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.8.1"
+HALOGEN_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen-flash-server:0.12.3"
 HALOGEN_27B_IMAGE_DEFAULT="ghcr.io/peonist-ai/halogen:0.1.3"
 
 halogen_image() {

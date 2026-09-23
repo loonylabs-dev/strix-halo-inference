@@ -842,27 +842,128 @@ a cap that cut it off.
 ### The patched front-end, and the check that keeps it honest
 
 `setup/halogen/serve_api.py` is a VENDORED copy of one file out of the image,
-mounted over the original. **Four hunks**, listed in the file's own header and
-pinned by `tests/test_halogen.py`. The one that matters registers
-both of the model's end tokens — the base registered only one, so a
-generation emitting `<|endoftext|>` ran to `max_tokens`
-(`setup/defects.json`, `halogen-second-eos-token-unregistered`) — while single-token
-stop strings are also passed as EOS IDs to the C++ engine. A third exposes
-`app.state.run` and `app.state.serve` for the tests, and the fourth is the
-fit-to-room gate described below. A second file,
-`setup/halogen/tool_parse.py`, originally introduced incremental parameter streaming;
-this was adopted upstream in 0.6.1 (`_scan_params`, `_stream_safe`, and `ToolStream`)
-and is pinned to the identical 0.8.1 upstream copy.
+mounted over the original. **Four changes in five places**, listed in the file's
+own header and — since 21.09.2026 — *asserted present* by
+`tests/test_halogen.py` rather than only described (the count had drifted in
+three separate places by then, which is the argument for the assertion). The one
+that matters registers both of the model's end tokens; the base registers one of
+them twice and never the second, so a generation emitting `<|endoftext|>` runs to
+`max_tokens` (`setup/defects.json`, `halogen-second-eos-token-unregistered`).
+Single-token stop strings are also passed as EOS IDs to the C++ engine. A third
+change exposes `app.state.run` and `app.state.serve` for the tests, and the
+fourth is the fit-to-room gate described below.
 
-In addition, Halogen 0.8.1 introduces:
-* **Native Thinking Budget Protocol**: Wire command `THINK <budget> <end_id> <len> <close_ids>` (issue #56)
-  bounds reasoning in the C++ engine, inlining Qwen's official closing sentence and continuing answer decoding in a single stream.
-* **2-Entry Prompt Cache (Anchor + Leaf)**: Resolves multi-session cache eviction (issue #54); intermediate turns supersede the leaf entry in place without evicting the session root.
-* **Parallel N-gram lookup (64 threads)**: The 47.7 GiB disk table is read with
-  64 concurrent threads (`HALOGEN_NGRAM_GATHER_THREADS`), reducing cold-start NVMe
-  overhead on long prompts (>30k–150k tokens) from minutes down to a few seconds.
-* **Prompt Lookup Decoding (PLD)**: Speculative 3-token chain proposals from earlier
-  context run alongside the MTP drafter, yielding +13–15% faster decode on coding tasks.
+**Only one file is vendored.** `setup/halogen/tool_parse.py` was a second
+vendored copy until 21.09.2026 and is not one any more: its only difference from
+the image had been its own vendoring header ever since 0.6.1 adopted the
+incremental parameter streaming it once carried (`_scan_params`, `_stream_safe`,
+`ToolStream`), so the mount froze a file it did not patch. That had a price, and
+it was measured at the 0.12.3 re-cut: 0.10.2 added the merge of several leading
+system messages to that file (upstream issue #60 — what older `opencode` builds
+send), and the stale copy would have reverted it silently while `podman ps`
+reported the new tag. The container now runs its own copy. An unmodified copy
+remains at `tests/fixtures/halogen/tool_parse.py`, on `sys.path` for the offline
+suite only (`serve_api.py` imports it at module level), never mounted — see that
+file's header.
+
+### What arrived between 0.8.1 and 0.12.3
+
+Re-cut onto `0.12.3` on 21.09.2026 from `0.8.1`. **None of the figures below
+were measured here** — they are the upstream changelog's, taken on the
+maintainer's reference machine, and they stay claims until this stack measures
+them (`bench/README.md`). What is verified here is only that the code paths
+exist in the base file.
+
+* **The engine watchdog no longer kills an engine the kernel is stalling**
+  (0.11.9): thread states in `/proc` and `compact_stall` in `/proc/vmstat` are
+  read before a silent probe counts. 0.12.3 bounds that deferral with
+  `HALOGEN_ENGINE_WATCHDOG_DEFER_S` (900 s) and fixes a clock that restarted on
+  every deferred probe. 0.12.2 disables the GPU core dump after a fault
+  (`HSA_DISABLE_COREDUMP_ON_EXCEPTION=1`), which used to keep a faulted process
+  alive for tens of seconds. This is the path
+  `halogen-pagecache-starvation-watchdog-kill` describes, and the counter reset
+  it reports by name.
+* **Cache placement across concurrent sessions** (0.11.0, 0.11.5, 0.11.7,
+  0.11.8): a side turn no longer evicts the point a conversation resumes from;
+  two long conversations taking turns no longer forget each other; a harness
+  fanning out subagents keeps parent and children. 0.11.8 is the one that
+  reaches THIS stack — the earlier fixes only applied to clients that replay
+  `reasoning_content`, which the Anthropic bridge does not.
+* **A third cache save point** (0.12.1): the start of the request's last
+  message, so a document in one message with the question in the next is no
+  longer a cold prefill. `HALOGEN_CACHE_SNAP3=0` turns it off;
+  `HALOGEN_CACHE_ENTRIES` defaults to 20 upstream (this stack sets 24).
+* **The answer room** (0.11.0): thinking no longer consumes the whole
+  `max_tokens` — `max(1024, 15%)` is kept for the answer and the think budget is
+  cut to the rest. **This changes what this stack's `HALOGEN_MAX_THINKING_TOKENS`
+  does at a small budget**: at Claude Code's `max_tokens=32000` the room is 4,800
+  and the 26,000 budget passes untouched with 1,200 to spare, but below a
+  `max_tokens` of about 30,600 it starts being cut.
+  `HALOGEN_THINKING_ANSWER_ROOM` sets the room, `0` restores the old behaviour.
+  Pinned in `tests/test_halogen.py` on both sides.
+* **The harnesses' own thinking controls are read** (0.11.0), Anthropic's
+  `thinking: {budget_tokens}` among them — before this they were silently dropped.
+* **A non-streaming request stops when its client disconnects** (0.10.2). With
+  the gateway's `MAX_INFLIGHT=1` this is the difference between a dead client
+  releasing the only slot and holding it to the end.
+* **Prompt cache on disk** (0.10.0, `HALOGEN_CACHE_DIR`, off by default): a
+  conversation survives a server restart. About 27 KiB per token, so 7.2 GB at
+  262k; `HALOGEN_CACHE_DISK_GIB` bounds it (default 64). **Needs a filesystem
+  that accepts direct I/O — a tmpfs or overlay is refused**, so not `/tmp` on
+  this machine (see the global `env-machine.md`: it is tmpfs here).
+* **Long-context decode and prefill** (0.12.0): the sparse-attention indexer's
+  block select was the whole decode slope. Byte-identical output. At the 262,144
+  window this stack serves, upstream reports serial decode 30.0 → 35.2 tok/s and
+  43.5 → 49.4 with the draft head; **32k is unchanged**, so a shallow turn sees
+  none of this.
+* **`HALOGEN_INDEXER_BUDGET`** (0.9.1): the model attends the top 512 blocks
+  (2,048 tokens) per query by default. Raising it to 4096 recovered both misses
+  of upstream's 96-case retrieval battery for 4.5–6.7% of prefill — a different
+  configuration from the trained one, and not byte-identical.
+* **1M context** exists and is opt-in (`HALOGEN_ROPE_YARN=4` with
+  `HALOGEN_CTX=1048576`) — it is NOT new, it has been there since 0.2.0, and it
+  stays off here. See *Why the window stays at 262,144* below.
+* **Third-party GGUFs** load (0.11.6, 0.11.10, 0.12.1) and `convert` writes a
+  GGUF as the engine's own checkpoint. Irrelevant while this stack serves the
+  maintainer's `.hgn` weights; it is the exit if that ever stops shipping.
+* **The chat template is probed at startup** (0.12.2) and a template whose
+  `enable_thinking` branch does not do what the thinking controls assume is
+  REFUSED. The weights repo's own `tokenizer/` passes — worth knowing because
+  this stack mounts that directory and a refusal to start would otherwise read
+  as a broken upgrade.
+
+### Why the window stays at 262,144
+
+The model does 262,144 natively and 1,048,576 with the model card's static
+YaRN, which upstream has shipped since 0.2.0 as `HALOGEN_ROPE_YARN=4` plus
+`HALOGEN_CTX=1048576`. Contexts past 262,144 are refused without the factor.
+It is off here, and these are the reasons rather than an oversight:
+
+* **YaRN is global, not per request.** It rescales every position and costs
+  about 0.5% perplexity at 1k–32k (upstream's figure) plus some speculative
+  acceptance at depth. Every short turn pays for a window almost no turn uses.
+* **The KV pool would have to hold the window.** The pool never sizes below
+  `HALOGEN_CTX`. From this stack's own two measured points (524,288 → 14.4 GiB,
+  786,432 → 21.6 GiB) that is 28.8 KiB per position, so a 1M window needs about
+  28.8 GiB for ONE conversation where 14.4 GiB holds two 262k ones today — and
+  it is a linear extrapolation from two points, not a measurement at 1M.
+* **It would re-create the defect this repo already has open.** 68.0 GiB of
+  weights plus a ~28.8 GiB pool plus the 8.4 GiB arena leaves the 47.7 GiB PLE
+  table nothing at all in the page cache. At 786,432 positions this host had
+  5.6 GiB left and the result was six watchdog shutdowns
+  (`halogen-pagecache-starvation-watchdog-kill`).
+* **A cold 1M prefill is minutes, not seconds.** A user's 0.11.1 sweep on the
+  same hardware class (Strix Halo, 128 GB) measured 1,344 s to first token at
+  937k tokens and extrapolated ~24 min for a cold full 1M; prefill fell
+  1,042 → 703 tok/s and decode 42 → 16.4 tok/s. Retrieval held (46/46 needles),
+  so the window is real — it is the latency that rules it out. Their own
+  conclusion was to keep an active session under 100–150k.
+
+If it is ever wanted, the cheaper shape is the factor with a SMALLER `CTX`
+(`HALOGEN_ROPE_YARN=4` with `HALOGEN_CTX=393216` would be a 384k window at
+about 11.3 GiB of pool, by the same extrapolation) — but whether the server
+accepts an intermediate value, and whether a factor of 2 exists at all, is in
+no changelog and would have to be measured.
 
 **Fit-to-room** (hunk 4, `HALOGEN_FIT_TO_ROOM`). Claude Code sends
 `max_tokens=32000` by default, and a session past ~230k tokens leaves less than
@@ -881,10 +982,19 @@ this file already documents.
 
 A whole-file copy over a pinned image invites a silent failure: bump the tag
 and `podman ps` reports the new version while the old copy reverts every
-upstream change to that file. So each copy's header names the image and the
-sha256 of the file it was cut from, and **`halogenexec` verifies those hashes
-(`BASE_SHA256` and `TOOL_PARSE_BASE_SHA256`) against the image and refuses to start when they differ**. That refusal is the
-retirement condition: the next bump stops the service and says what to do.
+upstream change to that file. So the copy's header names the image and the
+sha256 of the file it was cut from, and **`halogenexec` verifies that hash
+(`BASE_SHA256`) against the image and refuses to start when they differ**. That
+refusal is the retirement condition: the next bump stops the service and says
+what to do. It fired as designed on the 0.12.3 re-cut.
+
+**The fixture has no such guard, and that is the one thing to remember about
+it.** `tests/fixtures/halogen/tool_parse.py` is never mounted, so nothing
+refuses at runtime when it drifts from the image that serves — a stale fixture
+would just quietly let the offline suite parse against another release. What
+notices instead is `tests/test_tool_parse.py::test_the_fixture_is_the_release_that_is_started`,
+which compares its header's tag against the tag `models.sh` starts. Re-cut it
+with the front-end, in the same sitting.
 
 #### Mutual exclusion
  

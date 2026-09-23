@@ -950,6 +950,28 @@
       "status": "open as a SIZING rule rather than a bug: the server does exactly what it says, and upstream states the rule in its own README (0.11.7: three conversations need pool >= sum of (prompt + max_tokens)). What was missing until 21.09.2026 was the arithmetic somewhere a reader would find it. NOT mitigated by an automatic clamp, deliberately: the shape this host runs fits the pool, and the one measurement that matters for an operator is now VISIBLE instead — 0.12.3 names every eviction in the log where 0.8.1 named none.",
       "first_seen": "2026-09-21",
       "last_checked": "2026-09-21"
+    },
+    {
+      "id": "halogen-sidecar-ends-agent-turns",
+      "title": "With the quality sidecar, deep agent turns end on their own announcement instead of making the tool call",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "silent",
+      "symptom": "An agent turn announces its next step and ends: 'Jetzt die Änderungen am Command selbst:' then <|im_end|>, finish_reason stop, no tool call. Claude Code reads no tool call as done, so the chat stands still until the user types 'weiter'; nothing errors anywhere. Seen at 120-250k tokens of context; most of them end in a bare ':' (the raw stream shows ':' then stop), one ended in '.'. Not the empty turn of upstream #84 (that one has no text at all) and not the Responses-API history bug of upstream #99 (Chat Completions, which this stack uses, is unaffected by it).",
+      "measured": "23.09.2026 on this machine with bench/colonstop.py: five real stalls of one Claude Code session (123-128k prompt tokens), the model continued from its own text through /v1/completions with byte-identical prompts, 10 continuations each at temperature 1.0. Turns ended again: 17/50 on 0.12.3 with the sidecar, 12/50 on 0.8.1 with the sidecar, 0/50 on 0.12.3 with HALOGEN_CK_OVERLAY=none. Every continuation that did not end opened a <tool_call>. Appending '\\n\\n' after the ':' (the llama.cpp #19513 workaround) gave 25/25 tool calls with the sidecar, but applied to genuine ends it made the model go on in 7 of 10 (6 appended paragraphs, 1 unasked tool call). Report: bench/reports/2026-09-23_colonstop/README.md.",
+      "mitigation": "The Flash-Next units serve the bare checkpoint: Environment=HALOGEN_CK_OVERLAY=none in halogen-qwen38flash.service and halogen.service, forwarded by halogenexec. Decode speed looked unchanged (short continuations only); the price is upstream's figure of ~3.8 % perplexity on prose, not measured here. The '\\n\\n' continuation was measured and deliberately NOT built: with the cause removed it has nothing left to repair, and its broad form harms genuine ends.",
+      "detect": {
+        "kind": "manual"
+      },
+      "suite": "bench/colonstop.py",
+      "upstream": [
+        "https://github.com/peonist-ai/halogen-flash-server/issues/89"
+      ],
+      "status": "mitigated by configuration. Upstream #89 (open) attributes the underlying <|im_end|> preference to the model and its quantization, made stronger by the sidecar, and had not seen it reach served answers; retire the mitigation only when a sidecar that does not do it ships — re-run bench/colonstop.py on the stalls of a trace before switching back.",
+      "first_seen": "2026-09-23",
+      "last_checked": "2026-09-23"
     }
   ]
 }

@@ -19,6 +19,8 @@ EnvironmentFile=-%h/.config/llm-stack.env
 # unit): an over-budget max_tokens clamps to the window the prompt left instead
 # of a 400 the interactive client cannot act on.
 Environment=HALOGEN_FIT_TO_ROOM=1
+# The bare checkpoint — why, with the figures: halogen-qwen38flash.service.
+Environment=HALOGEN_CK_OVERLAY=none
 ExecStart=%h/.local/lib/llm-stack/halogenexec qwen38flash
 ExecStop=/usr/bin/podman stop -t 10 halogen
 ExecStopPost=-/usr/bin/podman rm -f -t 1 halogen

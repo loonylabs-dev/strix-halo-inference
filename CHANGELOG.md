@@ -22,6 +22,45 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
+## 0.6.0 — 2026-09-23
+
+*Halogen Flash Server `0.12.3`, checkpoint `qwen38-flash-next-w4b` now served
+WITHOUT its quality sidecar; client Claude Code `2.1.267`.*
+
+### Fixed
+
+*   **Agent turns that stopped right after announcing a tool call.** A deep
+    Claude Code session would write "Jetzt die Änderungen am Command selbst:"
+    and end the turn — no tool call, no error — so the chat stood still until
+    the user typed "weiter". Six times in one morning, at 120-250k tokens of
+    context.
+
+    The cause is the checkpoint's quality sidecar (upstream #89). Measured
+    23.09.2026 by continuing five real stalls from the model's own text, byte-
+    identical prompts, 10 times each: the turn ended again in **17 of 50** on
+    0.12.3 with the sidecar, **12 of 50** on 0.8.1 with it, and **0 of 50**
+    without it. So it is not the release: 0.8.1 does it as well.
+
+    The Flash-Next units now set `HALOGEN_CK_OVERLAY=none`, and `halogenexec`
+    forwards it — its environment passthrough is an allowlist, and without
+    that line the unit's setting would never have reached the container.
+    Decode speed looked unchanged (~40 vs ~39 tok/s, short continuations only,
+    not a decode benchmark). The quality price is upstream's figure, not ours:
+    about 3.8 % perplexity on prose. Weak points of the evidence — one
+    session's five stalls carry it — are listed in
+    `bench/reports/2026-09-23_colonstop/README.md`.
+
+### Added
+
+*   **`bench/colonstop.py`**: replays a stalled agent turn from the gateway's
+    text-level trace and counts how often the running server ends it again, so
+    the question "does this server still do it" is one command, not a morning.
+    It renders the prompt inside the running container with the server's own
+    code and keeps its bytes — its first version folded a Windows client's
+    `\r\n` into `\n`, which would have replayed a prompt nobody sent.
+
+---
+
 ## 0.5.0 — 2026-09-21
 
 *Halogen Flash Server `0.12.3` (from `0.8.1`), llama.cpp `master-2patches`.*

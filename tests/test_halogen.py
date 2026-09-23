@@ -115,6 +115,42 @@ class TestFitToRoomIsPerUnit(unittest.TestCase):
                              "%s must not set fit-to-room" % p.name)
 
 
+# ------------------------------------------------ quality sidecar / off ---
+class TestTheQualitySidecarIsOff(unittest.TestCase):
+    """The Flash-Next units serve the BARE checkpoint (HALOGEN_CK_OVERLAY=none).
+
+    With the shipped quality sidecar the model ends agent turns right after
+    announcing a tool call ("Jetzt die Änderungen am Command selbst:", then
+    <|im_end|>): 17 of 50 continuations of five real stalls at 123-128k tokens
+    stopped, 0 of 50 on the bare checkpoint, same token prompts, 23.09.2026
+    (bench/reports/2026-09-23_colonstop/). 0.8.1 with the sidecar: 12 of 50,
+    so it is the sidecar, not the release — upstream #89.
+
+    Two halves, and each alone does nothing: the unit must set it, and
+    halogenexec must forward it into the container — its env passthrough is an
+    allowlist, and a variable the unit sets but the list omits never arrives.
+    """
+
+    UNITS = ("halogen.service", "halogen-qwen38flash.service")
+
+    def test_every_flash_unit_sets_it(self):
+        for u in self.UNITS:
+            with self.subTest(unit=u):
+                self.assertIn("Environment=HALOGEN_CK_OVERLAY=none", unit_text(u),
+                              "%s serves the sidecar again" % u)
+
+    def test_halogenexec_forwards_it(self):
+        text = (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
+        m = re.search(r"^for var in (.*?); do$", text, re.M | re.S)
+        self.assertIsNotNone(m, "halogenexec's env allowlist loop is gone")
+        names = m.group(1).replace("\\\n", " ").split()
+        self.assertIn("HALOGEN_TEMPERATURE", names,
+                      "parsed the wrong loop — the guard would be vacuous")
+        self.assertIn("HALOGEN_CK_OVERLAY", names,
+                      "the unit sets HALOGEN_CK_OVERLAY but halogenexec does "
+                      "not pass it into the container")
+
+
 def _continues(text, line):
     """A continuation line of a backslash-wrapped directive."""
     lines = text.splitlines()

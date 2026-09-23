@@ -731,18 +731,45 @@ Halogen supports multimodal input through an optional vision projector/encoder:
   (21.6 GiB KV cache across 4 slots), comfortably caching multiple deep sessions
   concurrently with >240,000 tokens reserve. In addition, `setup/halogenexec` defaults `HALOGEN_MAX_TOK=16384`
   (8.4 GiB prefill arena vs 20.6 GiB at 32k), saving 12.2 GiB of contiguous 2 MiB hugepages.
-  This allows working memory (32.5 GiB weights + 2.0 GiB vision tower + 21.6 GiB KV pool
-  = 56.1 GiB GTT, plus 4.6 GiB for the CPU vision sidecar and ~9 GiB desktop = ~69.7 GiB used)
-  to fit cleanly into the 124.9 GiB UMA with ~55 GiB left for the Linux page cache —
-  enough for the full 47.7 GiB PLE table — starting up with 0 compaction stalls.
+
+  **The page-cache reserve this leaves is NOT ~55 GiB.** That figure was derived,
+  not measured, from a weights estimate of 32.5 GiB. The server's own startup line
+  measures 68.0 GiB of weights locked in RAM, so at 786432 it reports (17.09.2026,
+  this host): `68.0 GiB of weights locked in RAM, 21.6 GiB of KV pool, 12.5 GiB of
+  working memory, 102.0 GiB in all` and `host memory left for everything else: 210
+  contiguous 2 MiB blocks (5.6 GiB total)`. Five point six, not fifty-five. The
+  47.7 GiB PLE table therefore does NOT stay resident on a host that also runs a
+  desktop, and every prompt whose rows are not cached reads them from disk.
+
+  **On a host with other workloads, size the pool down.** Measured 17.09.2026 on this
+  machine (desktop, browser, one qemu guest; 10.6 GiB in use before the server starts):
+
+  | | 786432 (768k) | 524288 (512k) |
+  |---|---|---|
+  | KV pool | 21.6 GiB | 14.4 GiB |
+  | server total | 102.0 GiB | 94.8 GiB |
+  | host RAM left | 5.6 GiB | 12.7 GiB |
+  | free contiguous 2 MiB blocks | 210 | 2776 |
+  | decode, ~1425-token prompt (median) | 24.8 t/s | 39.4 t/s |
+  | prefill, same prompt (median) | 6.69 s | 1.51 s |
+  | prefill spread (max/min) | 26.6x | 4.1x |
+
+  The best case was unchanged (1.50 s vs 1.46 s); what 512k removes is the tail. Note
+  the sample sizes are uneven (n=5 before, n=33 after) — the direction is solid, the
+  exact ratio is not. Set it in `~/.config/llm-stack.env`; the repo default stays 786432,
+  which is right for a host that runs the server and nothing else.
 * **N-gram / PLE lookup table caching**:
   Qwen 3.8 Flash-Next holds core model weights locked in GTT, while its massive
   **47.7 GiB Predictive Language Embedding (PLE) N-gram table** is mapped via page cache
   from `/mnt/shared/halogen-models/qwen38-flash-next-w4b.hgn`.
-  With 768k KV cache and the vision tower active, ~55 GiB remains for the Linux
-  page cache, enough to hold the full 47.7 GiB PLE table.
-  Once sessions are warm in the KV pool, turns prefill in ~0.07s without NVMe re-reads,
-  and decode runs at ~45–50 tokens/s.
+  How much of it stays resident depends on what else the host is doing, and the
+  earlier claim that ~55 GiB remains for the page cache does not survive measurement:
+  at 768k with the vision tower active this host had 5.6 GiB left (17.09.2026), so
+  the table is read from disk, not held. Once sessions are warm in the KV pool AND
+  the rows a turn needs are in the page cache, turns prefill in ~0.07s without NVMe
+  re-reads and decode runs at ~45–50 tokens/s; when they are not, the same turn pays
+  the read. The engine prints `lookup table: R rows for N tokens took T s` when that
+  read runs long — its absence during a slow turn means the cost is somewhere else.
 * **Watchdog probe timer**:
   Halogen has no gfx1151 HIP race corruption defect. `setup/switch-model.sh`
   automatically disables `llama-probe.timer` when switching to Halogen, protecting

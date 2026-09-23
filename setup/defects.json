@@ -868,13 +868,13 @@
       "shows_as": "slow",
       "symptom": "High system load (D-state wait), intermittent system freezes, extreme TTFT latency (>60s) and >98,000 compact_stall events in /proc/vmstat during prompt prefill.",
       "measured": "Measured 12.09.2026: with qwen38-flash-next-vision.hgn active and default POOL_WANT=1048576, available 2 MiB contiguous blocks in /proc/buddyinfo dropped below 260. /proc/vmstat recorded >98,000 compact_stall events and processes accumulated minutes of D-state wait while streaming the 47.7 GiB PLE table from disk. Sizing HALOGEN_KV_POOL_POSITIONS to 786432 (21.6 GiB KV pool) allows concurrent deep sessions (e.g. 228k + 187k + 65k output reservations) to remain resident simultaneously without cache thrashing. Crucially, pairing this with HALOGEN_MAX_TOK=16384 drops the prefill arena scratch from 20.6 GiB to 8.4 GiB (saving 12.2 GiB of contiguous 2 MiB hugepages), leaving ~55 GiB of the 124.9 GiB UMA for the Linux page cache — enough for the full 47.7 GiB PLE table — with 0 compaction stalls.",
-      "mitigation": "setup/halogenexec dynamically defaults HALOGEN_KV_POOL_POSITIONS to 786432 and HALOGEN_MAX_TOK to 16384, eliminating mutual session eviction while guaranteeing zero startup compaction stalls.",
+      "mitigation": "setup/halogenexec dynamically defaults HALOGEN_KV_POOL_POSITIONS to 786432 and HALOGEN_MAX_TOK to 16384, eliminating mutual session eviction while guaranteeing zero startup compaction stalls. NOTE added 17.09.2026: that 12.09. measurement was taken on a near-idle host. The '~55 GiB left for the page cache' it implies was DERIVED from a 32.5 GiB weights estimate; the server's own startup line measures 68.0 GiB of weights, and on this host with a desktop running, 786432 leaves 5.6 GiB, not ~55. See halogen-pagecache-starvation-watchdog-kill.",
       "detect": {
         "kind": "manual"
       },
       "status": "mitigated",
       "first_seen": "2026-09-12",
-      "last_checked": "2026-09-14"
+      "last_checked": "2026-09-17"
     },
     {
       "id": "halogen-concurrency-prefill-deadlock",
@@ -911,6 +911,27 @@
       "status": "resolved upstream in 0.8.1",
       "first_seen": "2026-09-14",
       "last_checked": "2026-09-14"
+    },
+    {
+      "id": "halogen-pagecache-starvation-watchdog-kill",
+      "title": "On a host with other workloads the 768k KV pool starves the PLE page cache; the engine stops answering PING and the watchdog kills the container",
+      "applies_to": {
+        "gpu": "gfx1151",
+        "backend": "halogen"
+      },
+      "shows_as": "slow",
+      "symptom": "Turns get slower and wildly uneven (a 148-new-token prefill costing 7.3 s where it normally costs 1.5), then the container log prints 'the engine has not answered PING for 45s/90s/135s/180s' and at 180 s 'the engine process is alive and has answered nothing for 180s' and shuts the container down; systemd restarts it and the operator pays a cold start plus an empty prompt cache. The counter also RESETS and climbs again without ever reaching 180 s, which looks like a machine that merely hangs now and then. No 'lookup table: ... took N s' line accompanies any of it.",
+      "measured": "Measured 17.09.2026 on this machine (Ryzen AI MAX+ 395, 128 GiB, images 0.6.3 and 0.8.1). Six watchdog shutdowns since 12.09.2026: four on 0.6.3 (uptimes 2.6 h, 0.2 h, 1.5 h) and one on 0.8.1 after 52.8 h; two on 12.09. whose container start had rotated out of the journal. In the 20 minutes before EVERY one of the six there is not a single 'lookup table:' line, although that instrument demonstrably works on this host (71 such lines in the journal, all reading 'on 64 threads', a 31.6 s read among them that did NOT trip the watchdog). CAUSE, as far as it is measured: at HALOGEN_KV_POOL_POSITIONS=786432 the server reports 'host memory left for everything else: 210 contiguous 2 MiB blocks (5.6 GiB total)', so the model's 47.7 GiB PLE table cannot stay resident beside a desktop, and its rows are read from disk on nearly every turn. Dropping the pool to 524288 left 12.7 GiB and 2776 blocks, and at an identical prompt shape (~1425 tokens, 1277 cached) moved the decode median from 24.8 to 39.4 t/s and the prefill median from 6.69 s to 1.51 s, with the spread collapsing from 26.6x to 4.1x. Sample sizes are uneven (n=5 before, n=33 after) and the best case was already equal (1.50 s vs 1.46 s): what the smaller pool removes is the tail, not the floor. WHAT IS NOT MEASURED: why the engine stops answering PING at all. The changelog says PING is answered between decode rounds, between prefill layers and through the table read, so on this evidence the silence is none of those three.",
+      "mitigation": "Set HALOGEN_KV_POOL_POSITIONS=524288 in ~/.config/llm-stack.env on a host that also runs a desktop or other workloads (done here 17.09.2026, 02:00). The repo default in setup/halogenexec stays 786432, which is the right value for a host that runs the server and nothing else — see the entry halogen-vision-compaction-stall, whose 12.09. measurement was taken on a near-idle machine. Raising HALOGEN_ENGINE_WATCHDOG_S would stop the container being killed but not the slowness, and it would hide the symptom; it is not the fix.",
+      "detect": {
+        "kind": "manual"
+      },
+      "status": "open, mitigated here since 17.09.2026 02:00. The mitigation is a tuning choice, not a cure: it makes the host survive its own desktop, while the question why the engine goes silent without a lookup-table read is unanswered. UPSTREAM #35 describes the same shutdown on 0.5.8 and the maintainer attributes it to a 0.5.8 defect fixed in 0.5.9; these six occurrences are on 0.6.3 and 0.8.1, i.e. after that fix, with the fix demonstrably active. The original reporter never answered the maintainer's request for a 0.5.9 re-run, so the issue has been stalled since 12.09.2026. A comment carrying this data is drafted and posting it is the operator's call — CONTRIBUTING means the human writes it. Not yet verified on 0.11.2, which is three minors ahead of what serves here; nothing in the 0.9.0-0.11.2 changelog entries reads like it touches this path, but that is a changelog reading, not a measurement.",
+      "upstream": [
+        "https://github.com/peonist-ai/halogen-flash-server/issues/35"
+      ],
+      "first_seen": "2026-09-12",
+      "last_checked": "2026-09-17"
     }
   ]
 }

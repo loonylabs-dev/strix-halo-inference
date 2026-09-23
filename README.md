@@ -170,6 +170,7 @@ Nothing in this repository is based on estimates or marketing claims:
 | If you want to … | go here |
 |---|---|
 | find out whether this repo is **for your machine** | `bash setup/preflight.sh` — run it first |
+| see **what changed** and which component versions it was measured against | [CHANGELOG.md](CHANGELOG.md) |
 | **set the machine up from scratch** — BIOS to first token | [docs/setup/](docs/setup/README.md), six chapters |
 | **run it** — services, boot, the four ceilings | [setup/README.md](setup/README.md) |
 | point **Claude Code or an OpenAI agent** at it — yours or somebody else's | [docs/CONSUMERS.md](docs/CONSUMERS.md), and `bash setup/consumer-info.sh` for the values |

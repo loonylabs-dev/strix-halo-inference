@@ -104,6 +104,7 @@ independent of it.)
 
 | Learning about | Goes to |
 |---|---|
+| a capability, a component version, or a figure a READER of this repo needs | `CHANGELOG.md` — and nothing else goes there |
 | an instrument, flag or figure of this stack | comment beside the code/env value it concerns, with date + report path |
 | a defect, hang or corruption | `setup/defects.json` (copy an existing entry; tests validate the schema) |
 | a measured dead end | `docs/HANDOVER.md` → *Do not try again* |
@@ -119,3 +120,14 @@ the target; the global file takes only what survives the last row's test.
 
 Thematic commits. The subject is a claim with an em-dash, the body carries
 the reasoning and the measurement — read `git log` for the pattern.
+
+**`CHANGELOG.md` is the public-facing half of that**, added 21.09.2026 because
+228 commits are not a way to find out what changed. It is NOT a second commit
+log: a component bump, a new capability, a retired workaround or a figure a
+reader would act on goes in; a refactor, a test, a measurement that confirmed
+what was already written does not. Each entry names the component versions that
+were current for it — "faster" without them says nothing — and every number
+carries its date and, where it is weak, its weakness. Minor for a capability,
+patch for a fix or a measurement. The repo is public, so what belongs to the
+MACHINE (session shapes, hostnames, paths) stays out, the same border the
+gitignored German sources sit on.

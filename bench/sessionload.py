@@ -119,6 +119,28 @@ def build_document(salt, session, target_tokens):
     return "\n".join(lines)
 
 
+# --side-turns: what a harness's side query looks like. Claude Code sends one
+# every turn or so (a 3-5 word activity summary, recorded in the gateway trace
+# 22.09.2026) built from a snapshot of the history in which ONE earlier message
+# is rendered differently from the main loop's copy: the main loop had replaced
+# a queued mid-turn user message with an "empty response" nudge, the snapshot
+# still carried the queued message. Main and side then alternate and diverge at
+# that message. The texts below imitate that shape; only the divergence matters.
+SIDE_REMINDER = ("\n<system-reminder>\nThe user sent a new message while you "
+                 "were working:\nplease also check the lines that end in 3\n"
+                 "</system-reminder>")
+SIDE_QUESTION = ("Describe your most recent action in 3-5 words using present "
+                 "tense (-ing). Do not use tools.")
+# The message the side variant changes: the second user message, i.e. right
+# behind the document and its first answer. So the fork sits deep in the prompt
+# and everything the history grows by afterwards lies behind it — the shape of
+# 22.09.2026, fork at 39.5k of a conversation growing from 40k to 80k.
+FORK_AT = 2
+# A filler asks for the word OK; its budget only has to fit that. Small on
+# purpose — see the reservation note in main().
+FILLER_MAX_TOKENS = 64
+
+
 def post(url, payload, timeout):
     """One chat completion, non-streaming, with the server's own timings.
 
@@ -259,10 +281,38 @@ def main():
     ap.add_argument("--timeout", type=int, default=900,
                     help="per-request timeout; the baseline's worst prefill was "
                          "240 s, so this is deliberately generous")
+    ap.add_argument("--side-turns", action="store_true",
+                    help="pingpong only: after every main turn from the second "
+                         "on, send a side request whose history differs from "
+                         "the main one at message 2 and ends in a short "
+                         "question; its answer is not kept. The shape that cost "
+                         "24 min of prefill on 22.09.2026 (Claude Code's summary "
+                         "queries beside its main loop)")
+    ap.add_argument("--turn-pad", type=int, default=0,
+                    help="approximate tokens of fresh record lines added to "
+                         "every user turn after the first — what tool results "
+                         "do to a real history. Without it the history behind "
+                         "a fork is a few hundred tokens and losing it costs "
+                         "nothing measurable")
+    ap.add_argument("--fillers", default="",
+                    help="comma-separated document sizes of IDLE conversations "
+                         "sent once, cold, before the measured ones, and never "
+                         "again: the held regions of sessions that are over, "
+                         "which is what filled the pool to 88%% on 22.09.2026. "
+                         "Recorded, not included in the summary")
+    ap.add_argument("--live-fillers", action="store_true",
+                    help="touch every filler with one short cached turn per "
+                         "round, so they are LIVE neighbours rather than idle "
+                         "ones — see touch_fillers() for why that decides "
+                         "which cache entries the server gives up")
     ap.add_argument("--allow-warm", action="store_true",
                     help="run even when the prompt cache already holds entries")
     ap.add_argument("--out", help="report directory (default: bench/reports/...)")
     a = ap.parse_args()
+    if a.side_turns and a.mode != "pingpong":
+        print("--side-turns needs --mode pingpong: a side request must follow "
+              "the main turn it forks from", file=sys.stderr)
+        return 2
 
     h = health()
     if not h:
@@ -288,6 +338,8 @@ def main():
         "mode": a.mode, "sessions": a.sessions, "turns": a.turns,
         "doc_tokens_requested": str(a.doc_tokens), "max_tokens": a.max_tokens,
         "salt": a.salt,
+        "side_turns": a.side_turns, "turn_pad": a.turn_pad,
+        "fillers_requested": a.fillers, "live_fillers": a.live_fillers,
         "server": {k: h.get(k) for k in (
             "version", "context", "slot_ctx", "slots", "kv_pool_positions",
             "indexer_budget", "rope_scaling", "prompt_cache", "drafter_default",
@@ -352,6 +404,22 @@ def main():
     # may not. Printed rather than assumed, because the first version of this
     # tool defaulted to 8.7% of the pool and would have measured nothing.
     reserved = sum(s + a.max_tokens for s in sizes)
+    fillers = [int(x) for x in a.fillers.split(",") if x.strip()]
+    # An idle filler holds its prompt's rows and nothing more once its turn is
+    # over; its max_tokens is reserved only while it runs. Counted here as
+    # held, so the share printed is what the MEASURED turns find occupied.
+    # A LIVE filler reserves its budget again on every touch, which is why its
+    # turns ask for FILLER_MAX_TOKENS rather than --max-tokens: the first live
+    # run (22.09.2026) gave them 12000, each touch reserved 204,544 positions,
+    # and LRU evicted both measured branches — the known reservation defect
+    # (halogen-kv-reservation-is-prompt-plus-max-tokens), not the branch case
+    # this mode is for. This line did not count it and printed 91.6%.
+    reserved += sum(fillers) + (len(fillers) * FILLER_MAX_TOKENS
+                                if a.live_fillers else 0)
+    if a.turn_pad:
+        # the history grows by the pad every turn; the last turn is what the
+        # pool has to hold, per session
+        reserved += a.sessions * a.turn_pad * (a.turns - 1)
     pool = h.get("kv_pool_positions") or 0
     if pool:
         share = 100.0 * reserved / pool
@@ -359,6 +427,8 @@ def main():
               f"of the pool" +
               ("  <-- OVERBOOKED, this is the eviction case"
                if share > 100 else
+               "  (under 100%, but a side turn's fork needs a second span: "
+               "the pressure is on the branches)" if a.side_turns else
                "  (under 100%: the pool holds every session at once, so "
                "eviction is NOT under test)"))
         context["reservation_positions"] = reserved
@@ -388,45 +458,94 @@ def main():
         # Strictly round robin: session 0 turn 0, session 1 turn 0, ... Each
         # session's next turn therefore lands after every other session has
         # taken a region, which is the eviction shape of issue #74.
+        def one(messages, s, t, kind):
+            """One non-streaming turn; returns the answer text or None."""
+            try:
+                resp, wall = post(URL, {
+                    "model": "halogen-qwen3.8-flash-next",
+                    "messages": messages,
+                    "max_tokens": (FILLER_MAX_TOKENS if kind == "filler"
+                                   else a.max_tokens),
+                    "temperature": 0,
+                    "stream": False,
+                    "enable_thinking": False,   # see the note in run_session
+                }, a.timeout)
+            except Exception as e:
+                results.append({"session": s, "turn": t, "kind": kind,
+                                "error": repr(e)})
+                return None
+            choice = (resp.get("choices") or [{}])[0]
+            msg = choice.get("message") or {}
+            usage = resp.get("usage") or {}
+            tim = resp.get("timings") or {}
+            cached = (usage.get("prompt_tokens_details") or {}).get(
+                "cached_tokens")
+            results.append({
+                "session": s, "turn": t, "kind": kind,
+                "wall_s": round(wall, 3),
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": usage.get("completion_tokens"),
+                "finish_reason": choice.get("finish_reason"),
+                "prompt_ms": tim.get("prompt_ms"),
+                "predicted_ms": tim.get("predicted_ms"),
+                "cached_tokens": cached,
+            })
+            print(f"  {kind:6s} s{s} t{t}: {wall:7.2f}s  prompt "
+                  f"{usage.get('prompt_tokens')}  cached {cached}", flush=True)
+            return msg.get("content") or ""
+
+        # Idle conversations first: one cold turn each, then never again.
+        # Their session numbers start at 100 so their documents cannot
+        # coincide with a measured session's under the same salt.
+        filler_hist = []
+        for i, size in enumerate(fillers):
+            h = [{"role": "user", "content": build_document(a.salt, 100 + i, size)
+                  + "\n\nAnswer with the word OK only."}]
+            ans = one(h, 100 + i, 0, "filler")
+            h.append({"role": "assistant", "content": ans or ""})
+            filler_hist.append(h)
+
+        def touch_fillers(t):
+            """--live-fillers: one short, cached turn per filler, so none of
+            them is the least recently used when the pool runs out.
+
+            Measured 22.09.2026 (the first run of this mode, on 0.12.3): with
+            IDLE fillers the server did what 0.13.3 promises — `forgot the
+            region at 0 (... the least recently used)`, a filler — and the
+            pressure was gone for the rest of the run. The trace of that day
+            had no idle neighbours: a subagent and the auto-mode classifier
+            were live beside the main loop, and the server dropped the main
+            conversation's own branch (`forgot N longer entries (cheapest)`)
+            instead. Live fillers are that shape."""
+            for i, h in enumerate(filler_hist):
+                h.append({"role": "user", "content": "Answer with OK only."})
+                ans = one(h, 100 + i, t, "filler")
+                h.append({"role": "assistant", "content": ans or ""})
+
         histories = [[{"role": "user",
                        "content": docs[s] + "\n\n" + QUESTIONS[0]}]
                      for s in range(a.sessions)]
         for t in range(a.turns):
             for s in range(a.sessions):
                 if t:
-                    histories[s].append(
-                        {"role": "user",
-                         "content": QUESTIONS[t % len(QUESTIONS)]})
-                try:
-                    resp, wall = post(URL, {
-                        "model": "halogen-qwen3.8-flash-next",
-                        "messages": histories[s],
-                        "max_tokens": a.max_tokens,
-                        "temperature": 0,
-                        "stream": False,
-                        "enable_thinking": False,   # see the note in run_session
-                    }, a.timeout)
-                except Exception as e:
-                    results.append({"session": s, "turn": t, "error": repr(e)})
+                    q = QUESTIONS[t % len(QUESTIONS)]
+                    if a.turn_pad:
+                        # fresh lines every turn, like a tool result; seeded
+                        # per (session, turn) so two runs build the same bytes
+                        q = (build_document(f"{a.salt}/pad{t}", s, a.turn_pad)
+                             + "\n\n" + q)
+                    histories[s].append({"role": "user", "content": q})
+                answer = one(histories[s], s, t, "main")
+                if answer is None:
                     continue
-                choice = (resp.get("choices") or [{}])[0]
-                msg = choice.get("message") or {}
-                usage = resp.get("usage") or {}
-                tim = resp.get("timings") or {}
-                histories[s].append({"role": "assistant",
-                                     "content": msg.get("content") or ""})
-                results.append({
-                    "session": s, "turn": t, "wall_s": round(wall, 3),
-                    "prompt_tokens": usage.get("prompt_tokens"),
-                    "completion_tokens": usage.get("completion_tokens"),
-                    "finish_reason": choice.get("finish_reason"),
-                    "prompt_ms": tim.get("prompt_ms"),
-                    "predicted_ms": tim.get("predicted_ms"),
-                    "cached_tokens": (usage.get("prompt_tokens_details") or {}
-                                      ).get("cached_tokens"),
-                })
-                print(f"  s{s} t{t}: {wall:6.2f}s  prompt "
-                      f"{usage.get('prompt_tokens')}", flush=True)
+                histories[s].append({"role": "assistant", "content": answer})
+                if a.side_turns and t >= 1 and len(histories[s]) > FORK_AT:
+                    side = [dict(m) for m in histories[s]]
+                    side[FORK_AT]["content"] += SIDE_REMINDER
+                    side.append({"role": "user", "content": SIDE_QUESTION})
+                    one(side, s, t, "side")
+            if a.live_fillers:
+                touch_fillers(t)
 
     context["wall_total_s"] = round(time.perf_counter() - t_start, 1)
     context["platform_profile_end"] = platform_profile()
@@ -434,9 +553,52 @@ def main():
         context["platform_profile"] == context["platform_profile_end"])
     context["cache_after"] = cache_state()
 
-    ok = [r for r in results if "error" not in r]
+    everything = [r for r in results if "error" not in r]
     errs = [r for r in results if "error" in r]
+    # Fillers are the setting, not the subject; side turns get their own
+    # figures below. Runs before 22.09.2026 carry no `kind` and are all main.
+    ok = [r for r in everything if r.get("kind", "main") == "main"]
     summary = {"n": len(ok), "errors": len(errs)}
+    if a.side_turns:
+        # THE figure of this mode: did a turn resume from its OWN branch's
+        # previous prompt? Every earlier prompt of a branch is a prefix of its
+        # next one (for a side turn, all but the trailing side question), so
+        # a cache that kept the branch covers at least that much. Less is a
+        # history the cache had and lost.
+        #
+        # The first version counted turns that recomputed more than
+        # `turn_pad + 2000` and read 0 losses against a fake server whose cache
+        # lost EVERY branch (22.09.2026): at small depth what lies behind the
+        # fork is below any fixed margin. Comparing against the branch's own
+        # previous prompt has no such blind band. SLACK covers the side
+        # question and template tokens the previous side prompt ended with —
+        # a heuristic, not derived; the side question is ~30 tokens.
+        SLACK = 256
+        prev = {}
+        for r in everything:
+            key = (r["session"], r.get("kind"))
+            if r.get("prompt_tokens") is None:
+                continue
+            if key in prev:
+                r["expected_cached_min"] = prev[key] - SLACK
+                r["lost_history"] = (r.get("cached_tokens") or 0) < prev[key] - SLACK
+            prev[key] = r["prompt_tokens"]
+        for kind in ("main", "side"):
+            rs = [r for r in everything if r.get("kind") == kind
+                  and "lost_history" in r]
+            if not rs:
+                continue
+            recomputed = [r["prompt_tokens"] - (r.get("cached_tokens") or 0)
+                          for r in rs]
+            walls = sorted(r["wall_s"] for r in rs)
+            summary[f"{kind}_turns"] = {
+                "n": len(rs),
+                "lost_history": sum(r["lost_history"] for r in rs),
+                "recomputed_tokens_sum": sum(recomputed),
+                "wall_s_sum": round(sum(walls), 1),
+                "wall_s_p50": statistics.median(walls),
+                "wall_s_max": walls[-1],
+            }
     if ok:
         walls = sorted(r["wall_s"] for r in ok)
         summary["wall_s"] = {
@@ -482,6 +644,13 @@ def main():
         print(f"turn 1 (cold): {summary['turn1_wall_s']}")
         print(f"turns 2+: n={l['n']} p50={l['p50']:.2f}s p90={l['p90']:.2f}s "
               f"max={l['max']:.2f}s")
+    for kind in ("main", "side"):
+        k = summary.get(f"{kind}_turns")
+        if k:
+            print(f"{kind} turns: n={k['n']}  lost their history: "
+                  f"{k['lost_history']}  recomputed {k['recomputed_tokens_sum']} "
+                  f"tokens  wall sum {k['wall_s_sum']}s  p50 {k['wall_s_p50']:.2f}s"
+                  f"  max {k['wall_s_max']:.2f}s")
     if not context["conditions_held"]:
         print("\n" + "!" * 78)
         print(f"WARNING: platform_profile changed DURING this run: "

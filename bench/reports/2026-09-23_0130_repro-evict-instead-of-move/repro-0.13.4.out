@@ -1,0 +1,32 @@
+performance
+server {'api': '0.13.4', 'engine': '0.13.4', 'match': True}  pool 524288  slots 4  cache entries 0
+  F1 t0      prompt  192338  cached       0   194.46 s
+  F2 t0      prompt  192266  cached       0   193.72 s
+  MAIN t0    prompt   38752  cached       0    36.87 s
+  F1 t0      prompt  192358  cached  192338     0.69 s
+  F2 t0      prompt  192286  cached  192266     0.70 s
+  MAIN t1    prompt   42638  cached   38752     5.53 s
+  SIDE t1    prompt   42720  cached   42592     1.84 s
+  F1 t1      prompt  192378  cached  192358     0.70 s
+  F2 t1      prompt  192306  cached  192286     0.69 s
+  MAIN t2    prompt   46562  cached   42592     5.34 s
+  SIDE t2    prompt   46636  cached   42656     5.47 s
+  F1 t2      prompt  192398  cached  192378     0.70 s
+  F2 t2      prompt  192326  cached  192306     0.72 s
+  MAIN t3    prompt   50508  cached   46562     5.48 s
+  SIDE t3    prompt   50581  cached   42656     9.27 s
+  F1 t3      prompt  192418  cached       0   193.12 s
+  F2 t3      prompt  192346  cached       0   192.99 s
+  MAIN t4    prompt   54447  cached       0    51.56 s
+  SIDE t4    prompt   54519  cached   50528     5.68 s
+  F1 t4      prompt  192438  cached  192418     0.75 s
+  F2 t4      prompt  192366  cached  192346     0.74 s
+  MAIN t5    prompt   58394  cached   54447     5.47 s
+  SIDE t5    prompt   58467  cached   50528     8.87 s
+  F1 t5      prompt  192458  cached       0   193.06 s
+  F2 t5      prompt  192386  cached       0   193.01 s
+
+FINDING 1 (round 3): REPRODUCED — F1's live 192k conversation came back cold; its region was forgotten for SIDE t3, which needed 3,840 positions more than it held.
+FINDING 2 (round 5): REPRODUCED — F1 came back cold again; SIDE t5's region was not grown by dropping its own longer entries, a live neighbour was forgotten instead.
+EXIT 0
+performance

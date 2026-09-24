@@ -1,0 +1,13 @@
+kv pool: vision tower configured, 1.97 GiB (0.84 resident weights + 1.14 worst-case scratch at HALOGEN_VISION_MAX_PIXELS), charged against the 1.5 GiB margin
+kv pool: host RAM 125 GiB, less 67.7 resident weights and 20.0 reserved for the n-gram page cache and the OS = 37.2 GiB for the device
+kv pool: 524288 positions, ~26.6 GiB (12.2 GiB of it for everything but the pool, at max_tok 16384)
+kv pool: no room for 58880 positions; moved 1 held regions (46562 rows, 12.1 ms) up against the next busy region and the region at 385024 this request resumes from grows in place (no loss)
+kv pool: no room for 62720 positions; moved the 46562 rows this request resumes from, region 465664 -> 443904 (overlapping, copied in chunks) in 13.3 ms (no loss)
+kv pool: no room for 62720 positions; forgot the 2 entries longer than the hit at 42656 in the region at 385024 this request resumes from (3980 rows; the least recently used region, at 0, is newer and would cost 192398 of its 192398 rows to rebuild)
+kv pool: no room for 62720 positions; moved 1 held regions (50508 rows, 14.0 ms) up against the next busy region and the region at 385024 this request resumes from grows in place (no loss)
+kv pool: no room for 66560 positions; moved the 50508 rows this request resumes from, region 461568 -> 447744 (overlapping, copied in chunks) in 15.4 ms (no loss)
+kv pool: no room for 66560 positions; moved 1 held regions (54447 rows, 15.5 ms) up against the next busy region and the region at 385024 this request resumes from grows in place (no loss)
+kv pool: no room for 70400 positions; moved the 54447 rows this request resumes from, region 457728 -> 451584 (overlapping, copied in chunks) in 18.0 ms (no loss)
+kv pool: no room for 70656 positions; forgot the 2 entries longer than the hit at 50528 in the region at 385024 this request resumes from (3991 rows; the least recently used region, at 0, is newer and would cost 192438 of its 192438 rows to rebuild)
+kv pool: the region at 385024 this request resumes from cannot grow and nothing holds a move; the turn runs in the 8093 positions it has left (max_tokens 12000 -> 8093)
+kv pool: no room for 192768 positions; moved 3 held regions (309227 rows, 109.6 ms) up against the next busy region and the region at 0 this request resumes from grows in place (no loss)

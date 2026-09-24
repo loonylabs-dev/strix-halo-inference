@@ -1,0 +1,38 @@
+{
+  "n": 8,
+  "errors": 0,
+  "main_turns": {
+    "n": 7,
+    "lost_history": 3,
+    "recomputed_tokens_sum": 198875,
+    "wall_s_sum": 196.7,
+    "wall_s_p50": 5.576,
+    "wall_s_max": 63.378
+  },
+  "side_turns": {
+    "n": 6,
+    "lost_history": 4,
+    "recomputed_tokens_sum": 152708,
+    "wall_s_sum": 151.9,
+    "wall_s_p50": 9.343499999999999,
+    "wall_s_max": 63.168
+  },
+  "wall_s": {
+    "p50": 21.3235,
+    "max": 63.378,
+    "min": 5.314
+  },
+  "turn1_wall_s": [
+    37.071
+  ],
+  "later_turns_wall_s": {
+    "n": 7,
+    "p50": 5.576,
+    "p90": 63.378,
+    "max": 63.378
+  },
+  "prompt_tokens": {
+    "min": 38752,
+    "max": 66341
+  }
+}

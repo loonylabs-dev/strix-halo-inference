@@ -1,0 +1,32 @@
+performance
+server {'api': '0.12.3', 'engine': '0.12.3', 'match': True}  pool 524288  slots 4  cache entries 0
+  F1 t0      prompt  192338  cached       0   194.97 s
+  F2 t0      prompt  192266  cached       0   193.95 s
+  MAIN t0    prompt   38752  cached       0    37.15 s
+  F1 t0      prompt  192358  cached  192338     0.70 s
+  F2 t0      prompt  192286  cached  192266     0.69 s
+  MAIN t1    prompt   42638  cached   38752     5.54 s
+  SIDE t1    prompt   42720  cached   42592     1.84 s
+  F1 t1      prompt  192378  cached  192358     0.71 s
+  F2 t1      prompt  192306  cached  192286     0.70 s
+  MAIN t2    prompt   46562  cached   42592     5.35 s
+  SIDE t2    prompt   46636  cached   42656     5.46 s
+  F1 t2      prompt  192398  cached  192378     0.71 s
+  F2 t2      prompt  192326  cached  192306     0.72 s
+  MAIN t3    prompt   50508  cached   46562     5.51 s
+  SIDE t3    prompt   50581  cached   42656     9.17 s
+  F1 t3      prompt  192418  cached       0   193.88 s
+  F2 t3      prompt  192346  cached       0   193.64 s
+  MAIN t4    prompt   54447  cached       0    51.84 s
+  SIDE t4    prompt   54519  cached   50528     5.66 s
+  F1 t4      prompt  192438  cached  192418     0.75 s
+  F2 t4      prompt  192366  cached  192346     0.74 s
+  MAIN t5    prompt   58394  cached   54447     5.52 s
+  SIDE t5    prompt   58467  cached   50528     8.99 s
+  F1 t5      prompt  192458  cached  192438     0.83 s
+  F2 t5      prompt  192386  cached  192366     0.75 s
+
+FINDING 1 (round 3): REPRODUCED — F1's live 192k conversation came back cold; its region was forgotten for SIDE t3, which needed 3,840 positions more than it held.
+FINDING 2 (round 5): not reproduced — F1 kept its cache at round 5 (expected on 0.12.3, which drops SIDE's own longer entries there).
+EXIT 0
+performance

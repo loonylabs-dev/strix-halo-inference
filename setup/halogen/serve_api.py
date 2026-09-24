@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.12.3
-#             image digest sha256:0a49060de34eba6ab762196d4f109a5dab476e10a21841e641c0194346dd5c7d
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.13.8
+#             image digest sha256:6e626c979d536ab1edb07898e278be6686afd353758ea268817457f801d687dd
 #   base file /halogen/tools/serve_api.py
-#   BASE_SHA256 = 7bb0fdac8730afff7d6aa0f24a43b667335bcdd51d3bcfef628fb40873ad994b
+#   BASE_SHA256 = 97019cc97cdad6f21f0abe795527de740422f94b81324ffee27f237dd1dcc572
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -59,6 +59,43 @@
 #     context window, both run after this gate, and lowering `want` here is
 #     what feeds answer_room() — the same coupling 0.11.5 states for its own.
 #
+# RE-CUT 22.09.2026, 0.12.3 -> 0.13.4 (base file 4827 -> 5237 lines), checked
+# against the 0.13.4 FILE again:
+#   * changes 1-2: still needed. `eos_ids` is built in the same two-line form
+#     and <|endoftext|> does not occur in the base. The generate() call was
+#     rebuilt upstream (it now returns a stream wrapped by the end-of-turn
+#     guard), so req_eos is applied at `stream = engine.generate(...)`.
+#   * change 3: still needed. `app.state.` does not occur in the base.
+#   * change 4: still needed. The `room <= 0` / `want > room` structure is
+#     unchanged and no context-window clamp arrived.
+#   * NEW INTERACTION with 0.13.4's end-of-turn guard (#84). The guard keeps
+#     an end-of-turn token as TEXT inside the think block and an open tool
+#     call. Its GUARD clause to the engine carries only state and marker ids,
+#     not token ids: WHICH ids count as end-of-turn is the eos list handed to
+#     generate() — here req_eos, which includes <|endoftext|> through change
+#     1. So inside the think block <|endoftext|> is kept rather than ending
+#     the reply, exactly as <|im_end|> is, and only the thinking budget and
+#     the answer room bound it; in the answer it still ends the reply, which
+#     is where the runaway this change exists for was seen. That the engine
+#     treats every id of the list alike is READ from the front end, not
+#     measured. EOS_SET (the front end's copy) is left as upstream builds it,
+#     from the same list, so the two sides agree. A kept <|endoftext|> is not
+#     in LITERAL and therefore leaves no text; left so, to keep this hunk-free.
+#
+# RE-CUT 24.09.2026, 0.13.4 -> 0.13.8 (base file 5237 -> 5343 lines), as a
+# three-way merge (git merge-file: this file's 0.13.4 cut, the 0.13.4 base,
+# the 0.13.8 base) — no conflict, and the change set against the new base is
+# the same 178 +/- lines as the 0.13.4 cut's against its base, compared
+# line for line. Checked against the 0.13.8 FILE:
+#   * changes 1-2: still needed. `eos_ids` is built in the same two-line
+#     form, <|endoftext|> does not occur in the base.
+#   * change 3: still needed. `app.state` does not occur in the base.
+#   * change 4: still needed. `room <= 0` / `want > room` unchanged.
+#   * 0.13.8's logprob scoring (max_tokens 1) goes through the one
+#     `engine.generate(...)` call there is, so it gets req_eos like any turn.
+#   * the HALOGEN_* names read under /halogen/tools are the same 43 in both
+#     images, so halogenexec's allowlist needs no addition.
+#
 # RETIREMENT: changes 1-3 go when an image ships them — check the upstream
 # changelog AND the base file on every bump. Change 4 goes only if upstream
 # ships an equivalent context-window clamp; until then it stays even on an
@@ -104,8 +141,8 @@ from pydantic import BaseModel, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tool_parse import (ToolStream, normalize_messages,      # noqa: E402
-                        split_tool_calls)
+from tool_parse import (TC_CLOSE, TC_OPEN, ToolStream,      # noqa: E402
+                        normalize_messages, split_tool_calls)
 
 SSE_PROF = {"t": 0.0, "n": 0}
 # This string is what `/v1/models` lists and what every OpenAI client echoes
@@ -460,6 +497,13 @@ def oai_error(status, message, code=None):
 # mode), so this is generous by an order of magnitude on purpose: the cost of
 # a false alarm is a restarted container.
 ENGINE_PING_S = float(os.environ.get("HALOGEN_ENGINE_PING_S", 30.0))
+# 0.13.1 (issue #90): the INFO probe's budget per attempt and the attempts
+# made at connect. One 5 s attempt was the whole budget, and on a miss the
+# front end silently ran on guesses for the life of the container: a
+# 32,768-token context (the --context default, which the entrypoint had
+# never set) and one slot, while the engine was correctly at HALOGEN_CTX.
+PROBE_S = float(os.environ.get("HALOGEN_ENGINE_PROBE_S", 5.0))
+PROBE_ATTEMPTS = 3
 
 FIRST_TOKEN_S = 1800.0   # waits out PREFILL; a cold 262K prompt is ~19 min
 NEXT_TOKEN_S = 300.0     # between tokens a round is sub-second; minutes = wedge
@@ -575,6 +619,59 @@ def vocab_blob(tok):
             out += struct.pack("<BH", 0, len(b)) + b
     _VOCAB_BLOB = (n, bytes(out))
     return _VOCAB_BLOB
+
+
+def t_line_logprob(parts):
+    """The logprob column of a split `T <req> <tok> [...]` line, or None.
+    On the first token of a TOPLP request (public issue #100) the list
+    follows it, `<n> <id> <logprob> ...`, and this returns (logprob,
+    [(id, logprob), ...]). Both readers (the batch-1 loop and the batched
+    demux) take it from here, so they cannot disagree."""
+    if len(parts) <= 3:
+        return None
+    lp = float(parts[3])
+    if len(parts) > 4:
+        n = int(parts[4])
+        lp = (lp, [(int(parts[5 + 2 * j]), float(parts[6 + 2 * j]))
+                   for j in range(n) if int(parts[5 + 2 * j]) >= 0])
+    return lp
+
+
+_TOKEN_BYTES = None
+
+
+def token_bytes(tok, i):
+    """The bytes of token id `i`, as the VOCAB payload spells them: a
+    byte-level token's own bytes, an added token's UTF-8. Built once."""
+    global _TOKEN_BYTES
+    if _TOKEN_BYTES is None:
+        u2b = {u: b for b, u in _bytes_to_unicode().items()}
+        added = set(tok.get_added_vocab().values()) if hasattr(tok, "get_added_vocab") else set()
+        table = {}
+        for t, j in tok.get_vocab().items():
+            if j in added:
+                table[j] = t.encode("utf-8")
+            else:
+                try:
+                    table[j] = bytes(u2b[ch] for ch in t)
+                except KeyError:
+                    table[j] = t.encode("utf-8")
+        _TOKEN_BYTES = table
+    return _TOKEN_BYTES.get(int(i), b"")
+
+
+def logprob_entry(tok, tid, v):
+    """One OpenAI `logprobs.content` entry. `v` is the logprob, or on the
+    first token of a top_logprobs request (logprob, [(id, logprob), ...])."""
+    lp, tops = v if isinstance(v, tuple) else (v, None)
+
+    def one(i, x):
+        b = token_bytes(tok, i)
+        return {"token": b.decode("utf-8", "replace"), "logprob": x,
+                "bytes": list(b)}
+    e = one(tid, lp)
+    e["top_logprobs"] = [one(i, x) for i, x in (tops or [])]
+    return e
 
 
 class Metrics:
@@ -735,6 +832,7 @@ class Engine:
         self.reader = None   # background demux task (batched engines only)
         self.cstat = asyncio.Queue()  # CSTAT replies, via the demux
         self.info = {}       # engine capabilities, from INFO at connect
+        self.fallback_ctx = 0   # 0.13.1: --context, named in the probe line
         self.tokenizer = None   # 0.8.0: bound by build_app, for VOCAB
         self.metrics = Metrics()   # 0.8.0: the /metrics totals
         self.reserved = {}         # slot key -> positions the request holds (prompt + max_tokens)
@@ -783,6 +881,13 @@ class Engine:
             except Exception:
                 pass
         self.info = await self._probe()
+        await self._apply_info()
+
+    async def _apply_info(self):
+        """Act on what INFO said: the vocabulary for grammar, the slot
+        semaphore, the demux. Split out of connect() so a probe that failed
+        there and succeeded on a later request (_reprobe) takes the same
+        path; before 0.13.1 there was no later path."""
         if self.info.get("grammar"):
             await self._send_vocab()
         n = max(1, int(self.info.get("kv_slots", 1)))
@@ -816,8 +921,13 @@ class Engine:
             blob = vocab_blob(self.tokenizer)
             self.w.write(b"VOCAB %d %s\n" % (blob[0], base64.b64encode(blob[1])))
             await self.w.drain()
-            raw = await asyncio.wait_for(self.r.readline(), timeout=60)
-            p = raw.decode().split(None, 2)
+            # 0.13.1: a late reply to an earlier INFO attempt (issue #90's
+            # probe retries) may sit ahead of the V line; skip past it.
+            for _ in range(PROBE_ATTEMPTS + 1):
+                raw = await asyncio.wait_for(self.r.readline(), timeout=60)
+                p = raw.decode().split(None, 2)
+                if not raw or not p or p[0] != "I":
+                    break
             if len(p) >= 2 and p[0] == "V" and p[1] == "ok":
                 return
             self.info["grammar"] = False
@@ -932,116 +1042,178 @@ class Engine:
         block forever — on timeout we fall back to 'serial only', which is
         the safe assumption.
         """
-        try:
-            self.w.write(b"INFO\n")
-            await self.w.drain()
-            raw = await asyncio.wait_for(self.r.readline(), timeout=5)
+        # 0.13.1 (issue #90): PROBE_ATTEMPTS tries of PROBE_S each, and the
+        # result says whether it was PROBED at all. A reply to an earlier
+        # attempt that lands during a later one is the same line, so it is
+        # taken. On a miss the fallback is labelled, printed, and re-probed
+        # on the next request (_reprobe) instead of standing for the life of
+        # the container; /health names it as capability_probe.
+        for attempt in range(PROBE_ATTEMPTS):
+            try:
+                self.w.write(b"INFO\n")
+                await self.w.drain()
+                raw = await asyncio.wait_for(self.r.readline(), timeout=PROBE_S)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"serve_api: capability probe FAILED: {e}", flush=True)
+                break
+            if not raw:
+                break                    # the engine closed the socket
             p = raw.decode().split()
             if p and p[0] == "I" and len(p) >= 6:
-                return {"mtp": p[1] == "1", "draft_head": p[2] == "1",
-                        "ctx": int(p[3]), "spec_rows": int(p[4]),
-                        "default": int(p[5]),
-                        # trailing: the drafter's weights are loaded and
-                        # ready. In this fork the MTP head IS the drafter, so
-                        # the engine answers this with the MTP head's
-                        # readiness. It was a hardcoded 0 until the field was
-                        # fixed: the value is inherited from an engine with a
-                        # separate draft model, where it meant that model's
-                        # weights were present, and nothing here ever set it.
-                        "drafter_weights": len(p) >= 7 and p[6] == "1",
-                        # trailing: a separate shortlist draft model is
-                        # SELECTABLE (weights present AND the verify apparatus
-                        # wired). This fork has no such model, so the engine
-                        # sends a literal 0 here and this is always False.
-                        "dflash2": len(p) >= 8 and p[7] == "1",
-                        # trailing, an earlier change: prompt-cache cap (MB, 0 = off) and
-                        # the snapshot alignment. Alignment is reported, not
-                        # buried, because it is what decides whether a warm
-                        # answer is bitwise identical to a cold one (an earlier change).
-                        "cache_mb": int(p[8]) if len(p) >= 9 else 0,
-                        "cache_align": int(p[9]) if len(p) >= 10 else 0,
-                        # trailing, an earlier change: the engine's KV slot pool. The
-                        # front-end sizes its own concurrency from this rather
-                        # than guessing -- admitting more than there are slots
-                        # just rebuilds the queue one layer up. Absent (older
-                        # engine) means one slot, i.e. batch-1, which is the
-                        # safe assumption for the same reason 'serial only' is.
-                        "kv_slots": int(p[10]) if len(p) >= 11 else 1,
-                        "slot_ctx": int(p[11]) if len(p) >= 12 else 0,
-                        # The prompt cache MODE. 1 = snapshot on a
-                        # prefill-chunk boundary, which is what makes a warm
-                        # answer byte-identical to a cold one; 2 = snapshot at
-                        # every request end, faster at every prompt length and
-                        # NOT byte-identical. Absent (older engine) means 1,
-                        # because that is all an older engine could do.
-                        "cache_mode": int(p[12]) if len(p) >= 13 else 1,
-                        # The engine SAMPLES: SAMPLE / PENALTY / BIAS /
-                        # LOGPROBS are honoured on both drafters. Read from
-                        # the engine rather than assumed, because /health
-                        # once advertised nine sampling parameters this
-                        # engine did not have. Absent (older engine) = no.
-                        "sampling": len(p) >= 14 and p[13] == "1",
-                        # The RoPE scaling factor in force (1 = the native
-                        # context). Read from the engine so /health names
-                        # the numeric arm that is actually serving.
-                        "rope_factor": float(p[14]) if len(p) >= 15 else 1.0,
-                        # 0.3: the KV pool's size in positions, shared by the
-                        # slots; a request reserves prompt + max_tokens of it.
-                        # Absent (older engine) = one context per slot.
-                        "kv_pool": int(p[15]) if len(p) >= 16 else 0,
-                        # Whether the engine holds a VISION TOWER. Read from
-                        # the engine because /health cannot see it any other
-                        # way, and a server that says it takes images and
-                        # then refuses them is the lying-field defect this
-                        # project has now shipped four times. Absent (an
-                        # older engine) = no, which is what an older engine
-                        # is.
-                        "vision": len(p) >= 17 and p[16] == "1",
-                        # The engine's release, from ITS image's stamp (#26).
-                        # Absent = an engine older than the field, which is
-                        # itself the answer: it predates this front-end.
-                        "version": p[17] if len(p) >= 18 else "unknown",
-                        # Prompt lookup beside the head: the n-gram length
-                        # matched against the request's own context and the
-                        # chain length proposed; 0 = off. Absent (an older
-                        # engine) = none.
-                        "pld_n": int(p[18]) if len(p) >= 20 else 0,
-                        "pld_k": int(p[19]) if len(p) >= 20 else 0,
-                        # Where the trunk came from: "hgn" (the engine's own
-                        # checkpoint), "gguf" (a llama.cpp file repacked at
-                        # this start) or "gguf-cache" (that repack read back
-                        # from its cache file). Absent (an older engine) =
-                        # hgn, which is all an older engine could load.
-                        "checkpoint_format": p[20] if len(p) >= 21 else "hgn",
-                        # 0.8.0: the engine accepts a SCHEMA on the GEN line
-                        # (constrained decoding) once this front
-                        # end has sent it the vocabulary. 0 = HALOGEN_GRAMMAR=0;
-                        # absent = an engine older than structured output.
-                        "grammar": len(p) >= 22 and p[21] == "1",
-                        # 0.9.0: composable context. `composable` on/off, its
-                        # unit floor and seam in tokens, its host byte budget,
-                        # the store's fingerprint. Absent = an engine older
-                        # than the feature = off.
-                        "composable": len(p) >= 23 and p[22] == "1",
-                        "cc_floor": int(p[23]) if len(p) >= 24 else 0,
-                        "cc_seam": int(p[24]) if len(p) >= 25 else 0,
-                        "cc_bytes": int(p[25]) if len(p) >= 26 else 0,
-                        "cc_fingerprint": p[26] if len(p) >= 27 else "-",
-                        # 0.9.1 (issue #57): the QSA indexer budget the
-                        # engine runs, in tokens (HALOGEN_INDEXER_BUDGET;
-                        # the checkpoint's 2048 is the default). Absent = an
-                        # engine older than the lever = the checkpoint's.
-                        "indexer_budget": int(p[27]) if len(p) >= 28 else 2048}
-        except Exception:
-            pass
+                try:
+                    return self._parse_info(p)
+                except Exception as e:
+                    print(f"serve_api: capability probe FAILED to parse "
+                          f"{raw.decode().strip()!r}: {e}", flush=True)
+                    break
+            # any other line (a late PONG, a stray token line): read on
+        print(f"serve_api: capability probe FAILED: the engine did not answer "
+              f"INFO in {PROBE_ATTEMPTS} x {PROBE_S:g} s. Serving on defaults "
+              f"(context {self.fallback_ctx}, one slot, no sampling, no "
+              f"images, no grammar) until a request re-probes it; /health "
+              f"reports capability_probe=failed meanwhile.", flush=True)
+        return self._fallback_info()
+
+    @staticmethod
+    def _fallback_info():
         return {"mtp": False, "draft_head": False, "default": 0,
                 "kv_slots": 1, "slot_ctx": 0, "cache_mode": 1,
                 "sampling": False, "rope_factor": 1.0, "kv_pool": 0,
-                "vision": False, "version": "unknown"}
+                "vision": False, "version": "unknown", "probed": False}
+
+    async def _reprobe(self):
+        """0.13.1 (issue #90): a probe that failed at connect is retried on
+        the next request, ONE attempt, and only while nothing else reads the
+        socket (a failed probe means one slot and no demux, so `active` is
+        the only other reader). On success the same path as connect applies
+        the result: vocabulary, slots, demux."""
+        if self.info.get("probed") or self.reader is not None \
+                or self.active is not None:
+            return
+        if self.w is None or self.w.is_closing():
+            return
+        try:
+            self.w.write(b"INFO\n")
+            await self.w.drain()
+            raw = await asyncio.wait_for(self.r.readline(), timeout=PROBE_S)
+            p = raw.decode().split()
+            if p and p[0] == "I" and len(p) >= 6:
+                self.info = self._parse_info(p)
+        except Exception:
+            return
+        if self.info.get("probed"):
+            print(f"serve_api: capability probe recovered: context "
+                  f"{self.info['ctx']}, {self.info['kv_slots']} slot(s), "
+                  f"engine version {self.info.get('version')}", flush=True)
+            await self._apply_info()
+
+    @staticmethod
+    def _parse_info(p):
+        """The INFO line, field by field. Raises on a malformed line."""
+        return {"probed": True,
+                "mtp": p[1] == "1", "draft_head": p[2] == "1",
+                "ctx": int(p[3]), "spec_rows": int(p[4]),
+                "default": int(p[5]),
+                # trailing: the drafter's weights are loaded and
+                # ready. In this fork the MTP head IS the drafter, so
+                # the engine answers this with the MTP head's
+                # readiness. It was a hardcoded 0 until the field was
+                # fixed: the value is inherited from an engine with a
+                # separate draft model, where it meant that model's
+                # weights were present, and nothing here ever set it.
+                "drafter_weights": len(p) >= 7 and p[6] == "1",
+                # trailing: a separate shortlist draft model is
+                # SELECTABLE (weights present AND the verify apparatus
+                # wired). This fork has no such model, so the engine
+                # sends a literal 0 here and this is always False.
+                "dflash2": len(p) >= 8 and p[7] == "1",
+                # trailing, an earlier change: prompt-cache cap (MB, 0 = off) and
+                # the snapshot alignment. Alignment is reported, not
+                # buried, because it is what decides whether a warm
+                # answer is bitwise identical to a cold one (an earlier change).
+                "cache_mb": int(p[8]) if len(p) >= 9 else 0,
+                "cache_align": int(p[9]) if len(p) >= 10 else 0,
+                # trailing, an earlier change: the engine's KV slot pool. The
+                # front-end sizes its own concurrency from this rather
+                # than guessing -- admitting more than there are slots
+                # just rebuilds the queue one layer up. Absent (older
+                # engine) means one slot, i.e. batch-1, which is the
+                # safe assumption for the same reason 'serial only' is.
+                "kv_slots": int(p[10]) if len(p) >= 11 else 1,
+                "slot_ctx": int(p[11]) if len(p) >= 12 else 0,
+                # The prompt cache MODE. 1 = snapshot on a
+                # prefill-chunk boundary, which is what makes a warm
+                # answer byte-identical to a cold one; 2 = snapshot at
+                # every request end, faster at every prompt length and
+                # NOT byte-identical. Absent (older engine) means 1,
+                # because that is all an older engine could do.
+                "cache_mode": int(p[12]) if len(p) >= 13 else 1,
+                # The engine SAMPLES: SAMPLE / PENALTY / BIAS /
+                # LOGPROBS are honoured on both drafters. Read from
+                # the engine rather than assumed, because /health
+                # once advertised nine sampling parameters this
+                # engine did not have. Absent (older engine) = no.
+                "sampling": len(p) >= 14 and p[13] == "1",
+                # The RoPE scaling factor in force (1 = the native
+                # context). Read from the engine so /health names
+                # the numeric arm that is actually serving.
+                "rope_factor": float(p[14]) if len(p) >= 15 else 1.0,
+                # 0.3: the KV pool's size in positions, shared by the
+                # slots; a request reserves prompt + max_tokens of it.
+                # Absent (older engine) = one context per slot.
+                "kv_pool": int(p[15]) if len(p) >= 16 else 0,
+                # Whether the engine holds a VISION TOWER. Read from
+                # the engine because /health cannot see it any other
+                # way, and a server that says it takes images and
+                # then refuses them is the lying-field defect this
+                # project has now shipped four times. Absent (an
+                # older engine) = no, which is what an older engine
+                # is.
+                "vision": len(p) >= 17 and p[16] == "1",
+                # The engine's release, from ITS image's stamp (#26).
+                # Absent = an engine older than the field, which is
+                # itself the answer: it predates this front-end.
+                "version": p[17] if len(p) >= 18 else "unknown",
+                # Prompt lookup beside the head: the n-gram length
+                # matched against the request's own context and the
+                # chain length proposed; 0 = off. Absent (an older
+                # engine) = none.
+                "pld_n": int(p[18]) if len(p) >= 20 else 0,
+                "pld_k": int(p[19]) if len(p) >= 20 else 0,
+                # Where the trunk came from: "hgn" (the engine's own
+                # checkpoint), "gguf" (a llama.cpp file repacked at
+                # this start) or "gguf-cache" (that repack read back
+                # from its cache file). Absent (an older engine) =
+                # hgn, which is all an older engine could load.
+                "checkpoint_format": p[20] if len(p) >= 21 else "hgn",
+                # 0.8.0: the engine accepts a SCHEMA on the GEN line
+                # (constrained decoding) once this front
+                # end has sent it the vocabulary. 0 = HALOGEN_GRAMMAR=0;
+                # absent = an engine older than structured output.
+                "grammar": len(p) >= 22 and p[21] == "1",
+                # 0.9.0: composable context. `composable` on/off, its
+                # unit floor and seam in tokens, its host byte budget,
+                # the store's fingerprint. Absent = an engine older
+                # than the feature = off.
+                "composable": len(p) >= 23 and p[22] == "1",
+                "cc_floor": int(p[23]) if len(p) >= 24 else 0,
+                "cc_seam": int(p[24]) if len(p) >= 25 else 0,
+                "cc_bytes": int(p[25]) if len(p) >= 26 else 0,
+                "cc_fingerprint": p[26] if len(p) >= 27 else "-",
+                # 0.9.1 (issue #57): the QSA indexer budget the
+                # engine runs, in tokens (HALOGEN_INDEXER_BUDGET;
+                # the checkpoint's 2048 is the default). Absent = an
+                # engine older than the lever = the checkpoint's.
+                "indexer_budget": int(p[27]) if len(p) >= 28 else 2048}
 
     async def _ensure(self):
         if self.w is None or self.w.is_closing():
             await self.connect()
+        elif not self.info.get("probed"):
+            async with self.clock:
+                await self._reprobe()
 
     async def close(self):
         try:
@@ -1083,6 +1255,9 @@ class Engine:
         if len(parts) >= 22:            # 0.12.2: the THINK budget fired and
             d["think_forced"] = int(parts[20])  # closed the block (1), and the
             d["think_seen"] = int(parts[21])    # generated tokens inside it then
+        if len(parts) >= 24:            # 0.13.4 (#84): end-of-turn tokens the
+            d["kept_think"] = int(parts[22])    # guard kept as text inside the
+            d["kept_call"] = int(parts[23])     # think block / an open tool call
         return d
 
     def _note_pool(self, d):
@@ -1124,8 +1299,7 @@ class Engine:
                     raise HTTPException(502, "engine closed the connection")
                 if parts[0] == "T":
                     first = False
-                    yield (int(parts[2]), None,
-                           float(parts[3]) if len(parts) > 3 else None)
+                    yield (int(parts[2]), None, t_line_logprob(parts))
                 elif parts[0] == "D":
                     if parts[2] == "error":
                         raise HTTPException(400, engine_refusal(parts))
@@ -1156,8 +1330,8 @@ class Engine:
     async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                        penalty="", snap=0, snap2=0, images=None, schema=None,
                        after=None, escape=(), think=None, seg=None,
-                       snap3=0):   # noqa: E301
-        """Yields (token_id, None) per token, then (None, done_dict).
+                       snap3=0, guard=None):   # noqa: E301
+        """Yields (token_id, None, logprob) per token, then (None, done_dict, None).
 
         `drafter` is the trailing wire field (0 serial / 1 MTP); None omits
         it and lets the engine apply its own default.
@@ -1231,6 +1405,10 @@ class Engine:
                 # engine closes the think block itself at the budget.
                 + ((" THINK %d %d %d " % (think[0], think[1], len(think[2])))
                    + " ".join(str(t) for t in think[2]) if think else "")
+                # 0.13.4, #84: GUARD <in_think> <in_call> <think_end>
+                # <call_open> <call_close>: an end-of-turn token inside the
+                # think block or an open tool call is text, not a stop.
+                + (" GUARD %d %d %d %d %d" % guard if guard else "")
                 # 0.9.0: the message boundaries, so composable context can cut
                 # its units at them. Sent only when the engine reports the
                 # feature on, so an engine without it never sees the field.
@@ -1285,10 +1463,11 @@ class Engine:
                 # make every token look like the end of the stream.
                 # parts[3] is the an earlier change logprob column, present only when
                 # LOGPROBS was sent -- absent for every older engine and every
-                # greedy request, hence a length check and not a version.
+                # request that did not ask, hence a length check and not a
+                # version. Public issue #100: t_line_logprob also reads a
+                # TOPLP request's list, on the first token.
                 first = False
-                yield (int(parts[2]), None,
-                       float(parts[3]) if len(parts) > 3 else None)
+                yield (int(parts[2]), None, t_line_logprob(parts))
             elif parts[0] == "D" and int(parts[1]) == req:
                 self.active = None
                 if parts[2] == "error":
@@ -1630,6 +1809,7 @@ DEFAULTS = {
 }
 
 
+
 def answer_room(max_tokens):
     """Tokens of `max_tokens` kept for the answer: the operator's number, or
     the policy; 0 when the rule is off."""
@@ -1637,6 +1817,21 @@ def answer_room(max_tokens):
     if r is None:
         return max(1024, int(max_tokens) * 15 // 100)
     return int(r)
+
+
+# 0.13.4 (public issue #84): THE END-OF-TURN GUARD. The tokenizer has one id
+# for `<|im_end|>`, so a model quoting a ChatML template (writing a chat
+# template for another model, reading one out of a tool result) writes the
+# real end-of-turn token. Inside the think block that ended the reply with
+# finish "stop", no content and no tool call: 15-25% of one reporter's agent
+# turns. With the guard on (the default) the engine keeps an end-of-turn
+# token as text when it comes inside the think block, and inside an open
+# tool call up to four times a request; the thinking budget and the answer
+# room bound a block that then does not close. The kept token, and a quoted
+# `<|im_start|>`, reach the reply as their literal text. Anywhere else an
+# end-of-turn token still ends the reply. HALOGEN_EOS_GUARD=0 is the 0.13.3
+# behaviour.
+EOS_GUARD = _env_bool("HALOGEN_EOS_GUARD") is not False
 
 
 # 0.12.2: THE CHAT TEMPLATE IS PROBED, NOT TRUSTED. Everything above
@@ -1868,6 +2063,11 @@ class CompletionReq(BaseModel):
 # scope rather than a class attribute because pydantic reads an unannotated
 # class attribute as a field default.
 TEMPLATE_KWARGS = ("reasoning_effort", "enable_thinking", "preserve_thinking")
+# 0.13.3 (public issue #96): the marker this template ends every message
+# with. A prefill continuation strips exactly this off the end of the
+# render so generation resumes inside the final message instead of
+# after it; render_prompt refuses rather than guessing if it is absent.
+EOM = "<|im_end|>"
 
 
 class ChatReq(BaseModel):
@@ -1944,6 +2144,41 @@ class ChatReq(BaseModel):
     # asked is the defect #14 was, and the answer there was the same: name it
     # on the wire rather than discard it.
     chat_template_kwargs: dict | None = None
+    # 0.13.3 (public issue #96): PREFILL CONTINUATION, the third instance of
+    # the silent-drop defect #14 and #24 were. Neither of these was
+    # declared, so pydantic's `extra="ignore"` dropped both, every chat
+    # render went through `add_generation_prompt=True`, and a trailing
+    # assistant message was CLOSED with `<|im_end|>` and a fresh turn
+    # opened. With plain text that is invisible (a fresh turn that carries
+    # on the sentence reads like a continuation); with a tool call cut off
+    # mid-`<parameter=...>` the model opens a new `<tool_call>` and rewrites
+    # the value from the start, so a file larger than `max_tokens` can never
+    # be finished. The reporter proved the weights were fine by rebuilding
+    # the same prompt against raw `/v1/completions`, where it resumes
+    # cleanly; only this path differed.
+    continue_final_message: bool | None = None
+    add_generation_prompt: bool | None = None
+
+    @model_validator(mode="after")
+    def _check_continuation(self):
+        """The two continuation flags, and what they may not say together."""
+        if self.add_generation_prompt is None and self.continue_final_message is None:
+            return self
+        cont = bool(self.continue_final_message)
+        if self.add_generation_prompt is True and cont:
+            raise ValueError(
+                "continue_final_message and add_generation_prompt cannot both "
+                "be true: one continues the final assistant message, the other "
+                "opens a new one")
+        if cont:
+            last = self.messages[-1] if self.messages else None
+            role = last.get("role") if isinstance(last, dict) else getattr(last, "role", None)
+            if role != "assistant":
+                raise ValueError(
+                    "continue_final_message needs the last message to be an "
+                    "assistant message to continue; got "
+                    + (f"role '{role}'" if role else "no messages"))
+        return self
 
     @model_validator(mode="after")
     def _resolve_budget(self):
@@ -2264,12 +2499,17 @@ def responses_messages(instructions, items):
       function_call        -> an assistant turn carrying `tool_calls`
       function_call_output -> a `tool` turn carrying `tool_call_id`
 
-    CONSECUTIVE function_calls MERGE into one assistant turn. The Responses
-    wire lists parallel calls as separate top-level items, while chat carries
-    them as one message with several `tool_calls`, and the template renders
-    tool results positionally against that list. Emitting one assistant turn
-    per call would present two parallel calls as two sequential turns and
-    silently reassociate the results.
+    CONSECUTIVE ASSISTANT ITEMS ARE ONE TURN: a `message` and the
+    function_calls after it, and parallel calls, merge into one assistant
+    turn. The Responses wire lists a turn's text and each of its calls as
+    separate top-level items, while chat carries them as one message with
+    `content` and several `tool_calls`, and the template renders tool results
+    positionally against that list. One assistant turn per item presents a
+    turn's progress text as a turn of its own, closed before its call: a
+    history of those teaches the model that the text ends the turn, and it
+    stopped after "Reading X now." with no call (public issue #99). Only an
+    input item that is not the assistant's (a user message, a call's output)
+    ends the turn.
     """
     # EVERY SYSTEM-ISH TURN BECOMES ONE LEADING SYSTEM MESSAGE.
     #
@@ -2304,8 +2544,9 @@ def responses_messages(instructions, items):
                     "type": "function",
                     "function": {"name": it.get("name") or "",
                                  "arguments": it.get("arguments") or "{}"}}
-            if msgs and msgs[-1].get("role") == "assistant"                     and "tool_calls" in msgs[-1]                     and not msgs[-1].get("content"):
-                msgs[-1]["tool_calls"].append(call)
+            if (msgs and msgs[-1].get("role") == "assistant"
+                    and isinstance(msgs[-1].get("content"), str)):
+                msgs[-1].setdefault("tool_calls", []).append(call)
             else:
                 msgs.append({"role": "assistant", "content": "",
                              "tool_calls": [call]})
@@ -2338,6 +2579,15 @@ def responses_messages(instructions, items):
             if content:
                 sys_parts.append(content)
             continue
+        if (role == "assistant" and isinstance(content, str) and msgs
+                and msgs[-1].get("role") == "assistant"
+                and isinstance(msgs[-1].get("content"), str)):
+            # the same turn: more of its text, after its text or its calls
+            # (the template writes a turn's text before its calls)
+            if content:
+                prev = msgs[-1]["content"]
+                msgs[-1]["content"] = prev + "\n\n" + content if prev else content
+            continue
         if content or role == "assistant":
             msgs.append({"role": role, "content": content})
     if sys_parts:
@@ -2350,17 +2600,26 @@ SAMPLING_FIELDS = ("n",)
 
 
 def penalty_spec(req):
-    """The PENALTY / BIAS / LOGPROBS suffixes, or "" for none.
+    """The PENALTY / BIAS / LOGPROBS / TOPLP suffixes, or "" for none.
 
-    All three are sampler-only and the engine REJECTS them without
+    PENALTY and BIAS are sampler-only and the engine REJECTS them without
     temperature>0 rather than ignoring them: greedy takes the argmax, so an
     additive delta that does not reorder it changes nothing a client could
-    see, and a logprob has no sampler to come from. Building them here only
-    when sampling keeps that rejection unreachable from a well-formed request.
+    see. Building them here only when sampling keeps that rejection
+    unreachable from a well-formed request.
+
+    LOGPROBS rides every request that asked (public issue #100). A greedy
+    request reads it at the SCORING POSITION only, the first generated
+    token, and so does TOPLP at any temperature; check_sampling has already
+    refused the requests that would need more (max_tokens other than 1).
     """
-    if sample_spec(req) is None:
-        return ""
     out = ""
+    if req.logprobs:
+        out += " LOGPROBS"
+        if req.top_logprobs:
+            out += " TOPLP %d" % int(req.top_logprobs)
+    if sample_spec(req) is None:
+        return out
     pp = float(server_default(req, "presence_penalty") or 0.0)
     fp = float(server_default(req, "frequency_penalty") or 0.0)
     if pp or fp:
@@ -2382,8 +2641,6 @@ def penalty_spec(req):
                                      f"over this server's cap of 20480")
         out += " BIAS %d " % len(items) + " ".join(
             "%d %.9g" % (i, v) for i, v in items)
-    if req.logprobs:
-        out += " LOGPROBS"
     return out
 
 
@@ -2542,6 +2799,11 @@ class ThinkSplit:
         self.thinking = thinking
         self.full = ""
         self.sent_r = self.sent_c = 0
+        # 0.13.4 (#84): where the answer starts in a reply whose block never
+        # closed, when the server decided it (a tool call the model wrote in
+        # the block and then ended its turn on; see call_in_block). None =
+        # the marker alone splits.
+        self.cut = None
 
     def push(self, delta):
         """-> (reasoning_delta, content_delta)"""
@@ -2551,6 +2813,11 @@ class ThinkSplit:
             self.sent_c = len(self.full)
             return "", out
         i = self.full.find(self.MARK)
+        if i < 0 and self.cut is not None:
+            r, c = self.full[:self.cut], self.full[self.cut:]
+            rd, cd = r[self.sent_r:], c[self.sent_c:]
+            self.sent_r, self.sent_c = len(r), len(c)
+            return rd, cd
         if i < 0:
             # marker may be half-arrived; hold back a possible prefix
             hold = 0
@@ -2571,6 +2838,9 @@ class ThinkSplit:
         if not self.thinking:
             return "", self.full
         i = self.full.find(self.MARK)
+        if i < 0 and self.cut is not None:
+            return (self.full[:self.cut].strip(),
+                    self.full[self.cut:].lstrip("\n"))
         if i < 0:
             # thinking on but never closed (hit max_tokens mid-reasoning)
             return self.full.strip(), ""
@@ -2581,6 +2851,7 @@ class ThinkSplit:
 def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
               template=None):
     engine.tokenizer = tok   # 0.8.0: the VOCAB line is built from it
+    engine.fallback_ctx = ctx   # 0.13.1 (issue #90): named by the probe line
     app = FastAPI(title="halogen")
 
     # Incremental detokenization is sound only if
@@ -2739,22 +3010,47 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         if req.top_k is not None and req.top_k < 0:
             raise HTTPException(400, f"top_k={req.top_k} must be >= 0 "
                                      f"(0 disables the filter).")
-        if req.logprobs and req.stream:
+        if (req.logprobs or req.top_logprobs) and req.stream:
             raise HTTPException(
                 400, "logprobs with stream=true is not implemented. The "
                      "logprob column is collected and returned with the "
                      "finished response. Send stream=false, or drop "
                      "logprobs.")
-        if req.top_logprobs:
+        # Public issue #100: THE SCORING POSITION. A classifier reads the
+        # next-token distribution over a few labels from one forward pass
+        # (max_tokens 1, usually after an assistant prefix it continues).
+        # The first generated token's logprob exists at any temperature, and
+        # top_logprobs lists up to 20 alternatives there. Past the first
+        # token only a SAMPLED request carries a logprob (the chosen token's),
+        # so anything that would need more is refused here, never answered
+        # with a column that stops partway.
+        tl = req.top_logprobs
+        if tl is not None:
+            if isinstance(tl, bool) or not isinstance(tl, int) or not 0 <= tl <= 20:
+                raise HTTPException(
+                    400, f"top_logprobs={tl!r} must be an integer in 0..20.")
+            if tl and not req.logprobs:
+                raise HTTPException(
+                    400, "top_logprobs needs logprobs=true (the OpenAI rule): "
+                         "send both.")
+        scoring = bool(req.logprobs) and (sample_spec(req) is None or bool(tl))
+        if scoring and req.max_tokens != 1:
             raise HTTPException(
-                400, "top_logprobs is not implemented: this server returns "
-                     "the logprob of the CHOSEN token only. Send "
-                     "logprobs=true without top_logprobs.")
+                400, ("top_logprobs" if tl else "logprobs at temperature 0")
+                     + " covers the first generated token only: send "
+                     "max_tokens 1, which is the classifier shape (one "
+                     "forward pass, the next-token distribution). With "
+                     "temperature > 0 and no top_logprobs, every sampled "
+                     "token carries its own logprob.")
+        if req.logprobs and isinstance(rf, dict) and rf.get("type") in ("json_schema", "json_object"):
+            raise HTTPException(
+                400, "logprobs with response_format is not supported: the "
+                     "schema's mask picks the token, and an unmasked logprob "
+                     "would not describe that pick. Drop one of the two.")
         if sample_spec(req) is None:
             for f, why in (("presence_penalty", req.presence_penalty),
                            ("frequency_penalty", req.frequency_penalty),
-                           ("logit_bias", req.logit_bias),
-                           ("logprobs", req.logprobs)):
+                           ("logit_bias", req.logit_bias)):
                 if why:
                     raise HTTPException(
                         400, f"{f} applies to the sampler, and this request "
@@ -2827,10 +3123,60 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
     if not isinstance(TOOL_CALL_ID, int) or TOOL_CALL_ID < 0:
         TOOL_CALL_ID = None
 
+    # 0.13.4 (#84): the ids the end-of-turn guard reads a prompt's state from
+    # and hands the engine, and the literal text of the two ChatML markers a
+    # guarded reply carries (the decode skips special tokens, so without this
+    # a kept `<|im_end|>` would vanish from the text it was kept for).
+    def _one_id(s):
+        i = tok.convert_tokens_to_ids(s) \
+            if hasattr(tok, "convert_tokens_to_ids") else None
+        return i if isinstance(i, int) and i >= 0 else None
+    IM_START_ID = _one_id("<|im_start|>")
+    THINK_OPEN_ID = _one_id("<think>")
+    TOOL_CALL_END_ID = _one_id("</tool_call>")
+    EOS_SET = frozenset(eos_ids)
+    LITERAL = {i: s for i, s in ((IM_START_ID, "<|im_start|>"),
+                                 (_one_id(EOM), EOM)) if i is not None}
+
+    def guard_for(ids):
+        """0.13.4 (#84): the GUARD clause for a chat prompt, or None.
+
+        The state is the prompt's at its end: the last message (everything
+        after the last `<|im_start|>`) walked the way the engine walks what
+        it generates, except that a `<think>` here opens the block, because
+        here it is the template's opener (a generated one is a quote). The
+        usual prompt ends `<think>\\n` (in the block); thinking off ends
+        after an empty block (out of it); a continued final message can end
+        inside an unterminated `<tool_call>` (in a call)."""
+        if not EOS_GUARD or IM_START_ID is None or not EOS_SET:
+            return None
+        k = len(ids) - 1
+        while k >= 0 and ids[k] != IM_START_ID:
+            k -= 1
+        if k < 0:
+            return None
+        in_think = in_call = False
+        for t in ids[k + 1:]:
+            if in_think:
+                if t == THINK_END_ID:
+                    in_think = False
+            elif t == THINK_OPEN_ID:
+                in_think = True
+            elif t == TOOL_CALL_ID:
+                in_call = True
+            elif t == TOOL_CALL_END_ID:
+                in_call = False
+        if THINK_END_ID is None:
+            in_think = False   # a block with no marker would never close
+        return (int(in_think), int(in_call),
+                -1 if THINK_END_ID is None else THINK_END_ID,
+                -1 if TOOL_CALL_ID is None else TOOL_CALL_ID,
+                -1 if TOOL_CALL_END_ID is None else TOOL_CALL_END_ID)
+
     async def run(ids, max_tokens, stops, drafter=None, sample=None,
                   penalty="", snap=0, snap2=0, images=None, schema=None,
                   after=None, escape=(), think=None, seg=None, snap3=0,
-                  think_on=None, think_src=None):
+                  think_on=None, think_src=None, guard=None):
         """Drives the engine and incrementally detokenizes.
 
         0.12.2: `think_on` is the template's state for this request (True /
@@ -2841,6 +3187,12 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         engine reports that the budget fired, `closed at N by ...`; the D
         line's `think_forced` is annotated with the source here, where it
         is known, so `usage()` can name it too.
+
+        0.13.4 (#84): `guard` is the GUARD clause (`guard_for`), None when it
+        does not ride. With it, an end-of-turn token is held one step to
+        learn whether it ended the reply (the D line follows: no text, as
+        before) or the engine kept it (another token follows: its literal
+        text), and a `<|im_start|>` the model wrote is its literal text too.
 
         Public issue #13, reported with measurements and a patch by
         @rosstang, independently confirmed by @hvico). This loop used to
@@ -2900,17 +3252,57 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         # METHOD 45: measure before fixing. These three sum to the wall of
         # this loop, so they apportion it rather than sampling it.
         prof = {"detok": 0.0, "wait": 0.0, "n": 0}
+        # 0.13.4 (#84): the ChatML markers a guarded reply writes as text.
+        # Without the guard this is empty and detok() is the plain decode.
+        lit = LITERAL if guard else {}
+
+        def detok(seq):
+            if not lit or not any(t in lit for t in seq):
+                return tok.decode(seq, skip_special_tokens=True)
+            parts, run_ = [], []
+            for t in seq:
+                if t in lit:
+                    if run_:
+                        parts.append(tok.decode(run_, skip_special_tokens=True))
+                        run_ = []
+                    parts.append(lit[t])
+                else:
+                    run_.append(t)
+            if run_:
+                parts.append(tok.decode(run_, skip_special_tokens=True))
+            return "".join(parts)
+
+        # Neither wrapper closes `stream` itself: a hung-up client's cancel
+        # is the engine generator's own `finally`, run when it is collected,
+        # exactly as when this loop iterated it directly.
+        async def held(stream):
+            # (tid, d, lp, kept): an end-of-turn token waits for what follows
+            pending = None
+            async for tid, d, lp in stream:
+                if pending is not None:
+                    yield pending[0], None, pending[1], d is None
+                    pending = None
+                if d is None and tid in EOS_SET:
+                    pending = (tid, lp)
+                    continue
+                yield tid, d, lp, False
+            if pending is not None:
+                yield pending[0], None, pending[1], False
+
+        async def plain(stream):
+            async for tid, d, lp in stream:
+                yield tid, d, lp, False
+
         _t_last = time.perf_counter()
         req_eos = get_eos_ids(stops)
-        async for tid, d, lp in engine.generate(ids, max_tokens, req_eos,
-                                                drafter, sample, penalty,
-                                                snap=snap, snap2=snap2,
-                                                images=images, schema=schema,
-                                                after=after, escape=escape,
-                                                think=think, seg=seg,
-                                                snap3=snap3):
+        stream = engine.generate(ids, max_tokens, req_eos, drafter, sample,
+                                 penalty, snap=snap, snap2=snap2,
+                                 images=images, schema=schema, after=after,
+                                 escape=escape, think=think, seg=seg,
+                                 snap3=snap3, guard=guard)
+        async for tid, d, lp, kept in (held(stream) if guard else plain(stream)):
             if lp is not None:
-                lps.append(lp)
+                lps.append((tid, lp))
             if d is not None:
                 done = d
                 if think_src and d.get("think_forced"):
@@ -3010,6 +3402,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                            + (f", closed at {d.get('think_seen', 0)} by "
                               f"{'answer room' if think_src == 'answer_room' else think_src}"
                               if d.get("think_closed_by") else ""))
+                # 0.13.4 (#84): end-of-turn tokens the guard kept as text
+                kt, kc = d.get("kept_think", 0), d.get("kept_call", 0)
+                think_s += ((f" | end of turn kept as text: {kt} in the think "
+                             f"block, {kc} in a tool call") if kt or kc else "")
                 print(f"serve_api: {name} {d['n_gen']} tok in {dt:.2f}s = "
                       f"{rate} | {spec}"
                       f"prompt {pn}{cached_s}"
@@ -3046,15 +3442,20 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             _t0 = time.perf_counter()
             prof["wait"] += _t0 - _t_last
             out.append(tid)
+            if lit and tid in EOS_SET and not kept:
+                # the end-of-turn token that ended the reply: no text, as
+                # the plain decode (special tokens skipped) gives it
+                yield "", None
+                continue
             # Decode the carry window, not the transcript. `base` is
             # whatever `new` is expected to start with, so the diff below is
             # the same diff as before on a bounded string.
             windowed = use_window
             if windowed:
                 win_ids = tail_ids + [tid]
-                new, base = tok.decode(win_ids, skip_special_tokens=True), tail_text
+                new, base = detok(win_ids), tail_text
             else:
-                new, base = tok.decode(out, skip_special_tokens=True), text
+                new, base = detok(out), text
             prof["detok"] += time.perf_counter() - _t0
             prof["n"] += 1
             # HOLD BACK an incomplete multi-byte character. A byte-fallback
@@ -3080,7 +3481,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 # the whole list and run the ORIGINAL logic for this step, so
                 # the bytes are exactly the older path's. Then close the
                 # window and carry on incrementally.
-                new = tok.decode(out, skip_special_tokens=True)
+                new = detok(out)
                 while new.endswith("�"):
                     new = new[:-1]
                 base, tail_ids, tail_text = text, [], ""
@@ -3166,6 +3567,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 det["reasoning_closed_at"] = int(d.get("think_seen", 0))
                 det["reasoning_closed_by"] = d["think_closed_by"]
             u["completion_tokens_details"] = det
+        # 0.13.4 (#84): the end-of-turn guard's two acts, absent when neither
+        # happened: end-of-turn tokens kept as text (inside the think block
+        # or an open tool call), and a tool call made from the think block.
+        kept = int(d.get("kept_think", 0)) + int(d.get("kept_call", 0))
+        if kept:
+            u.setdefault("completion_tokens_details", {})["end_of_turn_kept"] = kept
+        if d.get("call_in_block"):
+            u.setdefault("completion_tokens_details", {})["tool_call_from_reasoning"] = True
         return u
 
     def responses_usage(d, n_prompt):
@@ -3294,6 +3703,41 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                          "message": str(e.detail),
                          "code": ("engine_busy" if e.status_code == 503
                                   else None)}
+
+    async def call_in_block(gen, split, tools):
+        """0.13.4 (public issue #84), the other half of the empty reply. The
+        model wrote a complete `<tool_call>` INSIDE its think block and then
+        ended its turn on it, the template's own `</tool_call><|im_end|>`, so
+        the call sat in `reasoning_content`, nothing was in `content`, and
+        the client saw a stop with nothing to run. The engine's guard stops
+        exactly there (it keeps every other end of turn inside the block as
+        text), and this makes that call: the reply's answer starts at the
+        call's `<tool_call>` (`split.cut`), which every serializer then parses
+        the way it parses any call. The call's text also stays in the
+        reasoning, where it was already streamed.
+        """
+        acc = ""
+        try:
+            async for delta, d in gen:
+                if d is None:
+                    acc += delta
+                    yield delta, d
+                    continue
+                body = acc.rstrip()
+                i = body.rfind(TC_OPEN)
+                if (d.get("reason") == "stop" and ThinkSplit.MARK not in acc
+                        and body.endswith(TC_CLOSE) and i >= 0
+                        and split_tool_calls(body[i:], tools)[1]):
+                    split.cut = len(acc)
+                    d["call_in_block"] = 1
+                    print("serve_api: the reply ended inside its think block "
+                          "right after a complete tool call; that call is "
+                          "made (the end-of-turn guard)", flush=True)
+                    yield body[i:], None
+                yield delta, d
+        finally:
+            # closing this closes the generation, as closing it directly did
+            await gen.aclose()
 
     def error_body(d):
         return {"message": d["message"],
@@ -3738,6 +4182,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 # /v1 so named here the way /cache is.
                 "metrics": "/metrics",
                 "context": engine.info.get("ctx") or ctx,
+                # 0.13.1 (issue #90): whether the fields below came from the
+                # engine. "failed" means the engine did not answer INFO at
+                # connect: context is the entrypoint's HALOGEN_CTX, slots
+                # are 1, and every feature reads off until a request
+                # re-probes it. Before this the fallback was silent and
+                # /health reported a guess as a fact.
+                "capability_probe": "ok" if engine.info.get("probed")
+                                    else "failed",
                 # Contexts past the native 262,144 run Qwen's static YaRN
                 # (HALOGEN_ROPE_YARN); null means the native RoPE.
                 "rope_scaling": ({"type": "yarn",
@@ -3759,6 +4211,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 # releases behind its engine answered image questions from
                 # nothing, and no surface said which version either one was).
                 "version": version_status(),
+                # 0.13.0: what this image can be started as, from the same
+                # list the OCI label carries (HALOGEN_IMAGE_MODES, set by the
+                # Containerfile); null outside the image, as `version` is.
+                "modes": modes_status(),
                 # Where the loaded trunk came from, from the engine's INFO:
                 # "hgn" is the engine's own checkpoint; "gguf" a llama.cpp
                 # file repacked at startup; "gguf-cache" that repack read back
@@ -3953,6 +4409,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 "thinking_answer_room": (DEFAULTS["thinking_answer_room"]
                                          if DEFAULTS["thinking_answer_room"] is not None
                                          else "max(1024, 15% of max_tokens)"),
+                # 0.13.4 (#84): whether an end-of-turn token inside the think
+                # block or an open tool call is kept as text (HALOGEN_EOS_GUARD)
+                "end_of_turn_guard": EOS_GUARD,
                 "thinking_control_aliases": ["thinking_budget_tokens", "thinking_budget",
                                              "thinking_token_budget",
                                              "reasoning.{enabled,effort,max_tokens}",
@@ -4034,7 +4493,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                     "implemented": ["temperature", "top_p", "top_k", "min_p",
                                     "seed", "presence_penalty",
                                     "frequency_penalty", "logit_bias",
-                                    "logprobs"],
+                                    "logprobs", "top_logprobs"],
                     "decode": (
                         ("temperature absent samples at the server's "
                          "default of %g (HALOGEN_TEMPERATURE); temperature "
@@ -4055,8 +4514,15 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                             "in distribution, not token for token",
                     "penalties": "presence and frequency count GENERATED "
                                  "tokens only; applied on both drafters",
-                    "not_implemented": ["top_logprobs", "logprobs with "
-                                        "stream=true", "n > 1"],
+                    "logprobs": "a sampled request carries the chosen "
+                                "token's logprob on every token; at "
+                                "temperature 0, and with top_logprobs (up "
+                                "to 20) at any temperature, the first "
+                                "generated token only, so those need "
+                                "max_tokens 1",
+                    "not_implemented": ["logprobs with stream=true",
+                                        "logprobs past the first token at "
+                                        "temperature 0", "n > 1"],
                 } if engine.info.get("sampling") else {
                     "implemented": [],
                     "decode": "greedy only: a forward pass and an argmax",
@@ -4127,11 +4593,23 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
 
     @app.get("/v1/models")
     async def models():
+        # 0.13.0 (public issue #86): the limits a generic client sizes its
+        # compaction from, on the OpenAI surface and not only on /health. The
+        # three spellings other servers use for the window are all carried,
+        # so a client reading vLLM's, llama-server's or LiteLLM's field finds
+        # it; the field set is additive and a client that ignores unknown
+        # keys is unaffected. The values are the ones /health reports.
+        window = engine.info.get("ctx") or ctx
         return {"object": "list",
                 "data": [{"id": MODEL_ID, "object": "model",
-                          "owned_by": "halogen", "created": 0}]}
+                          "owned_by": "halogen", "created": 0,
+                          "max_model_len": window,
+                          "context_length": window,
+                          "meta": {"n_ctx_train": window, "n_ctx": window},
+                          "max_tokens_cap": max_cap,
+                          "max_tokens_default": ChatReq.model_fields["max_tokens"].default}]}
 
-    def render_prompt(msgs, kw):
+    def render_prompt(msgs, kw, continue_final=False):
         """-> (ids, snap): the tokenized chat prompt and the STABLE PREFIX
         length to hand the engine's prompt cache as SNAP.
 
@@ -4153,10 +4631,33 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         token ends exactly there (a template that opens differently), snap
         is 0 and the engine keeps its old position rather than guessing.
         """
-        text = tok.apply_chat_template(msgs, tokenize=False,
-                                       add_generation_prompt=True, **kw)
-        stable = tok.apply_chat_template(msgs, tokenize=False,
-                                         add_generation_prompt=False, **kw)
+        if continue_final:
+            # 0.13.3 (public issue #96): render the history WITHOUT a
+            # generation prompt and strip the end-of-message marker the
+            # template put after the final assistant turn, so the model
+            # resumes inside whatever that turn left open: a sentence, an
+            # unterminated `<tool_call>`, a `<parameter=...>` cut mid-value.
+            # This is what raw /v1/completions already does for a prompt
+            # ending at the same place, which is how the reporter showed the
+            # weights were not the problem.
+            text = tok.apply_chat_template(msgs, tokenize=False,
+                                           add_generation_prompt=False, **kw)
+            cut = text.rstrip()
+            if not cut.endswith(EOM):
+                raise HTTPException(
+                    400, "continue_final_message: this chat template does not "
+                         "end the final message with " + EOM + ", so there is "
+                         "no place to resume from")
+            text = cut[:-len(EOM)]
+            # No history point: the next turn does not repeat THIS prompt
+            # (it repeats the completed message), so a snapshot here would
+            # be a place nothing comes back to. The system point still holds.
+            stable = None
+        else:
+            text = tok.apply_chat_template(msgs, tokenize=False,
+                                           add_generation_prompt=True, **kw)
+            stable = tok.apply_chat_template(msgs, tokenize=False,
+                                             add_generation_prompt=False, **kw)
         enc = tok(text, add_special_tokens=False, return_offsets_mapping=True)
         ids = list(enc["input_ids"])
 
@@ -4181,7 +4682,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             if b > 0 and (not seg or b > seg[-1]):
                 seg.append(b)
             c = text.find("<|im_start|>", c + 1)
-        snap = boundary_at(len(stable)) if text.startswith(stable) else 0
+        snap = (boundary_at(len(stable))
+                if stable is not None and text.startswith(stable) else 0)
         # The SECOND point: the end of the system block. Requests that share
         # a system prompt and ask different things cannot use the history
         # point (their user turns differ); they resume from this one. The
@@ -4213,7 +4715,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         # HALOGEN_CACHE_SNAP3=0 turns the hint off (the engine honours the
         # same variable; the front end's is what /cache reports).
         snap3 = 0
-        if (SNAP3_ON and msgs and isinstance(msgs[-1], dict)
+        if (SNAP3_ON and not continue_final and msgs
+                and isinstance(msgs[-1], dict)
                 and msgs[-1].get("role") == "user"):
             first = text.find("<|im_start|>user")
             cut = text.rfind("<|im_start|>user")
@@ -4222,6 +4725,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             if snap3 and (snap3 <= snap2 or (snap and snap3 >= snap)):
                 snap3 = 0
         return ids, snap, snap2, seg, snap3
+
+    def modes_status():
+        m = (os.environ.get("HALOGEN_IMAGE_MODES") or "").split()
+        return m or None
 
     def version_status():
         """This front-end's release beside the engine's, and whether they agree.
@@ -4288,7 +4795,23 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                                     + "; ".join(st["disabled_because"]))
         return imgs
 
-    def render_with_images(msgs, kw, imgs):
+    def continued_text(msg):
+        """The assistant text a continuation resumes inside, for the PARSE.
+
+        Only the text parts: an assistant message can carry content parts,
+        and a partial tool call lives in the text of the message the client
+        sent back, not in its `tool_calls` (a call that never finished has
+        no arguments to put there, which is the whole of issue #96).
+        """
+        c = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(c, str):
+            return c
+        if isinstance(c, list):
+            return "".join(p.get("text", "") for p in c
+                           if isinstance(p, dict) and p.get("type") == "text")
+        return ""
+
+    def render_with_images(msgs, kw, imgs, continue_final=False):
         """-> (ids, snap, snap2, wire_imgs, seg, snap3). ONE renderer for BOTH wires.
 
         /v1/responses shipped without this and dropped every image, because
@@ -4297,7 +4820,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         one copy that gets forgotten.
         """
         try:
-            ids, snap, snap2, seg, snap3 = render_prompt(msgs, kw)
+            ids, snap, snap2, seg, snap3 = render_prompt(msgs, kw, continue_final)
         except HTTPException:
             raise
         except Exception as e:                      # template raise_exception
@@ -4368,6 +4891,9 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         # The request line's `think on|off` (0.12.2): the template's state
         # on the two chat-shaped wires; a raw prompt has none.
         think_on = bool(thinking) if chat else None
+        # 0.13.4 (#84): the end-of-turn guard, on the chat-shaped wires only
+        # (a raw prompt need not be ChatML at all).
+        guard = guard_for(ids) if chat else None
         # batch-1: QUEUE rather than reject. Reasoning defaults to xhigh, so
         # one request routinely runs minutes at ~10 t/s; failing every other
         # caller instantly for that whole window made the endpoint look dead
@@ -4472,6 +4998,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         created = int(time.time())
         split = ThinkSplit(thinking)
         tstream = ToolStream(tools) if tools else None
+        # 0.13.4 (#84): a call the model wrote inside its think block and
+        # ended its turn on is made (call_in_block). Only where the guard
+        # rode with the prompt inside the block, and with tools to call.
+        block_calls = bool(guard and guard[0] and tools and not pre)
         if stream:
             n_ev = 0
             n_ka = 0
@@ -4486,10 +5016,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             async def body():
                 nonlocal n_ev, n_ka, finished, t_last, gap_max
                 try:
-                    gen = guarded(run(ids, max_tokens, stops, drafter, sample,
-                                      penalty, snap, snap2, images, schema,
-                                      after, escape, think, seg, snap3=snap3,
-                                      think_on=think_on, think_src=think_src))
+                    gen = run(ids, max_tokens, stops, drafter, sample,
+                              penalty, snap, snap2, images, schema,
+                              after, escape, think, seg, snap3=snap3,
+                              think_on=think_on, think_src=think_src,
+                              guard=guard)
+                    if block_calls:
+                        gen = call_in_block(gen, split, tools)
+                    gen = guarded(gen)
                     # The Responses wire is a different SERIALIZATION of the
                     # same generation. Everything that matters for safety --
                     # the slot semaphore, the abort on hangup, the inflight
@@ -4581,7 +5115,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             # what sends the abort, and the reply nobody reads is a 499.
             gen = run(ids, max_tokens, stops, drafter, sample, penalty, snap,
                       snap2, images, schema, after, escape, think, seg,
-                      snap3=snap3, think_on=think_on, think_src=think_src)
+                      snap3=snap3, think_on=think_on, think_src=think_src,
+                      guard=guard)
+            if block_calls:
+                gen = call_in_block(gen, split, tools)
             gone, n_tok = False, 0
             try:
                 async for delta, d in gen:
@@ -4684,15 +5221,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
             choice = {"index": 0, "finish_reason": fin, "message": msg}
         else:
             choice = {"index": 0, "finish_reason": fin, "text": text}
-        # an earlier change. OpenAI's shape, minus top_logprobs (rejected at the door, not
-        # returned empty) and minus `bytes`, which would need a per-token
-        # detokenisation this loop does not keep -- run() decodes the whole
-        # list each step and diffs, so individual token text is not retained.
-        # Reporting the fields we do not have as null beats inventing them.
+        # an earlier change. OpenAI's shape. Each entry keeps its token id,
+        # so `token` and `bytes` come from the tokenizer's own bytes for that
+        # id (they were null until public issue #100, which also brought
+        # `top_logprobs`: filled on the first token of a request that asked,
+        # empty otherwise).
         if done and done.get("logprobs"):
             choice["logprobs"] = {"content": [
-                {"token": None, "logprob": v, "bytes": None,
-                 "top_logprobs": []} for v in done["logprobs"]]}
+                logprob_entry(tok, t, v) for t, v in done["logprobs"]]}
         done["n_reasoning"] = reasoning_tokens(done, chat and split.thinking)
         return {"id": cid, "created": created, "model": MODEL_ID,
                 "object": "chat.completion" if chat else "text_completion",
@@ -4750,9 +5286,24 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         except ValueError as e:
             raise HTTPException(400, str(e))
         imgs = collect_images(msgs)
-        ids, snap, snap2, wire_imgs, seg, snap3 = render_with_images(msgs, kw, imgs)
+        cont = bool(req.continue_final_message)
+        if cont and pre:
+            raise HTTPException(400, "continue_final_message cannot be combined "
+                                     "with a forced tool choice: one resumes the "
+                                     "assistant turn already in the history, the "
+                                     "other starts a new call")
+        ids, snap, snap2, wire_imgs, seg, snap3 = render_with_images(
+            msgs, kw, imgs, cont)
         if pre:
             ids += tok(pre, add_special_tokens=False)["input_ids"]
+        elif cont:
+            # 0.13.3: the partial is ALREADY in `ids` (it is the final message,
+            # rendered with its end marker stripped), so nothing is appended
+            # here. It is handed to serve() as `pre` for the PARSE alone, so
+            # that a `<tool_call>` the client opened in that partial is closed
+            # by what follows instead of being invisible to the tool parser
+            # and the generated remainder read as loose text.
+            pre = continued_text(msgs[-1])
         return await serve(ids, req.max_tokens, stop_list(req.stop),
                            req.stream, True, "chatcmpl",
                            http_request=http_request,
@@ -4763,7 +5314,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                            penalty=penalty_spec(req),
                            tools=(req.tools if mode != "none" else None),
                            parallel=req.parallel_tool_calls is not False,
-                           pre=pre, forced=bool(pre),
+                           pre=pre, forced=bool(pre) and not cont,
                            include_usage=wants_usage(req), snap=snap,
                            snap2=snap2, images=wire_imgs,
                            schema=schema_for(req), seg=seg, snap3=snap3)
@@ -4877,8 +5428,10 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8731)
     ap.add_argument("--context", type=int, default=32768,
-                    help="FALLBACK only — the engine's INFO reports the real "
-                         "kMaxCtx and that is what is enforced")
+                    help="FALLBACK only: the engine's INFO reports the real "
+                         "context and that is what is enforced. The "
+                         "entrypoint passes HALOGEN_CTX here (0.13.1, issue "
+                         "#90) so a failed probe cannot shrink the context.")
     ap.add_argument("--queue-timeout", type=float, default=3600,
                     help="seconds a request waits for the batch-1 slot "
                          "before 503")

@@ -43,7 +43,7 @@ class TestToolParseHeaderAndBaseSha(unittest.TestCase):
         m = re.search(r"BASE_SHA256\s*[:=]\s*([0-9a-f]{64})", head)
         self.assertEqual(
             m.group(1),
-            "e2359e39e7dbfab90cc36a3dd7839d520eb86d5be45b18196ebd3d4e6d7cec12",
+            "c08e7cbeec7b4f354c4c779cc1b67dbe23f51189fe83f7a06250628064947938",
             "BASE_SHA256 does not match the copy in the pinned image")
 
     def test_the_fixture_is_the_release_that_is_started(self):

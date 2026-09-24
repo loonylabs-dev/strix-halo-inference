@@ -2,10 +2,10 @@
 # ===========================================================================
 # TEST FIXTURE — an UNMODIFIED copy, and it is NEVER MOUNTED.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.12.3
-#             image digest sha256:0a49060de34eba6ab762196d4f109a5dab476e10a21841e641c0194346dd5c7d
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.13.8
+#             image digest sha256:6e626c979d536ab1edb07898e278be6686afd353758ea268817457f801d687dd
 #   base file /halogen/tools/tool_parse.py
-#   BASE_SHA256 = e2359e39e7dbfab90cc36a3dd7839d520eb86d5be45b18196ebd3d4e6d7cec12
+#   BASE_SHA256 = c08e7cbeec7b4f354c4c779cc1b67dbe23f51189fe83f7a06250628064947938
 #
 # WHY IT IS HERE, AND WHY IT IS NOT IN setup/halogen/. Until 21.09.2026 this
 # file was VENDORED beside serve_api.py and mounted over the image's copy,
@@ -60,6 +60,7 @@ documented as lossy rather than pretended to be exact.
 """
 
 import json
+import math
 import re
 import uuid
 
@@ -171,16 +172,31 @@ def coerce(raw, jtype):
         return None
     if jtype == "boolean" and v.lower() in ("true", "false"):
         return v.lower() == "true"
-    if jtype == "integer":
+    if jtype in ("integer", "number"):
+        # Public issue #101: AN INTEGER LITERAL STAYS AN INTEGER. JSON has one
+        # number type, but strict clients do not: Codex CLI reads a "number"
+        # parameter into a Rust integer and rejects `30000.0`, which is what
+        # float("30000") serialized as, so the call failed and the model
+        # retried it. A literal written with a point or an exponent keeps the
+        # float it was written as, except under "integer", where an integral
+        # one (`7.0`) is the integer the schema asks for. A non-finite value
+        # would serialize as NaN or Infinity, which is not JSON at all, so it
+        # is kept as its raw text like any other literal that does not parse.
         try:
             return int(v)
-        except Exception:
+        except ValueError:
             pass
-    if jtype == "number":
         try:
-            return float(v)
-        except Exception:
-            pass
+            f = float(v)
+        except ValueError:
+            f = None
+        if f is not None:
+            if not math.isfinite(f):
+                return raw
+            if jtype == "number":
+                return f
+            if f.is_integer():
+                return int(f)
     try:
         return json.loads(v)
     except Exception:
@@ -582,6 +598,39 @@ def normalize_messages(messages):
                 "model's chat template accepts a system message only at the "
                 "start of the conversation (merge it into the first message "
                 "or send it as a user turn)" % k)
+
+    # Public issue #89: CONSECUTIVE ASSISTANT MESSAGES ARE ONE TURN. A client
+    # that keeps a turn's parts as separate messages (the text, then a message
+    # carrying only the calls) sent the template two assistant turns, the
+    # first closed right after its text. Each step of an agent loop reads
+    # "Now the notes:" and then its call, so a long history held dozens of
+    # turns that ENDED on an announcement, and the model learned from its own
+    # context to end there: on our own sessions rendered that way the chance
+    # of ending the turn after the colon rose from about 0.0002 to 0.6, and
+    # climbed with every such turn in the history. The /v1/responses wire had
+    # the same defect and merges its items the same way (public issue #99).
+    # Text joins the turn's text and calls join its calls; the template writes
+    # a turn's text before its calls. A part list (an image in an assistant
+    # turn) is not merged. Only a message that is not the assistant's ends
+    # the turn.
+    merged = []
+    for m in msgs:
+        prev = merged[-1] if merged else None
+        if (prev is not None and m.get("role") == "assistant"
+                and prev.get("role") == "assistant"
+                and isinstance(m.get("content") or "", str)
+                and isinstance(prev.get("content") or "", str)):
+            a, b = prev.get("content") or "", m.get("content") or ""
+            prev["content"] = a + "\n\n" + b if a and b else (a or b)
+            ra, rb = prev.get("reasoning_content"), m.get("reasoning_content")
+            if isinstance(rb, str) and rb.strip():
+                prev["reasoning_content"] = (ra + "\n\n" + rb if isinstance(ra, str)
+                                             and ra.strip() else rb)
+            if isinstance(m.get("tool_calls"), list) and m["tool_calls"]:
+                prev["tool_calls"] = list(prev.get("tool_calls") or []) + m["tool_calls"]
+            continue
+        merged.append(m)
+    msgs = merged
 
     i = 0
     while i < len(msgs):

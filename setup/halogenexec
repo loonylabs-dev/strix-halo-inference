@@ -67,7 +67,7 @@ IMAGE="$(halogen_image "$FLAVOR")"
 # that file (public issue #60, what older opencode builds send), and the
 # stale copy would have reverted it. One vendored file is one retirement
 # condition to check per bump; this is the other one retired.
-BASE_SHA256="7bb0fdac8730afff7d6aa0f24a43b667335bcdd51d3bcfef628fb40873ad994b"
+BASE_SHA256="97019cc97cdad6f21f0abe795527de740422f94b81324ffee27f237dd1dcc572"
 
 EXTRA_MOUNTS=()
 PATCHED="$REPO/setup/halogen/serve_api.py"
@@ -129,9 +129,14 @@ MAX_TOK_WANT="${HALOGEN_MAX_TOK:-$(local_var HALOGEN_MAX_TOK 2>/dev/null || true
 MAX_TOK_WANT="${MAX_TOK_WANT:-16384}"
 
 EXTRA_ENV=()
+# An allowlist: a variable not named here never reaches the container, however
+# it is set. HALOGEN_CACHE_BRANCHES (0.13.3) and HALOGEN_EOS_GUARD (0.13.4) were
+# added with the 0.13.4 bump, 22.09.2026; unset they take upstream's defaults
+# (2, and on). 0.13.5-0.13.8 read no new name (24.09.2026).
 for var in HALOGEN_TEMPERATURE HALOGEN_TOP_P HALOGEN_TOP_K HALOGEN_MIN_P \
            HALOGEN_MAX_THINKING_TOKENS HALOGEN_MAX_TOKENS_DEFAULT \
            HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES \
+           HALOGEN_CACHE_BRANCHES HALOGEN_EOS_GUARD \
            HALOGEN_FIT_TO_ROOM HALOGEN_FIT_TO_ROOM_FLOOR \
            HALOGEN_CK_OVERLAY; do
   val="${!var:-$(local_var "$var" 2>/dev/null || true)}"

@@ -1119,9 +1119,11 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
             # rather than swallowed by **kw ON PURPOSE: a re-cut that adds
             # another argument should fail here and say so, which is the only
             # signal this offline suite gets that the engine protocol moved.
+            # It did so on the 0.13.4 re-cut: `guard` is the end-of-turn
+            # guard's clause (#84), 22.09.2026.
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None, penalty="",
                                 snap=0, snap2=0, images=None, schema=None, after=None, escape=(), think=None,
-                                seg=None, snap3=0):
+                                seg=None, snap3=0, guard=None):
                 captured_think.append(think)
                 captured_eos.append(list(eos))
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
@@ -1245,10 +1247,12 @@ class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
             async def abort(self):
                 pass
             # see the note on the other generate() stub: seg/snap3 are 0.12.x
-            # arguments, named so a further one fails loudly.
+            # arguments and guard is 0.13.4's, named so a further one fails
+            # loudly.
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                                penalty="", snap=0, snap2=0, images=None, schema=None,
-                               after=None, escape=(), think=None, seg=None, snap3=0):
+                               after=None, escape=(), think=None, seg=None, snap3=0,
+                               guard=None):
                 seen.append(max_tokens)
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
                              "decode_ms": 1.0, "prefill_ms": 1.0}, None

@@ -278,6 +278,37 @@ SAVE_OWED = {}
 # blaming the watchdog for what a client-side rewrite had done.
 LAST_SHAPE = {}
 LAST_SHAPE_MAX = 64
+# The few shapes BEFORE the last one, per prefix, for the case the last one
+# alone misreads: a client that sends two versions of one history alternately.
+# Measured 22.09.2026 — Claude Code's main loop and its summary side queries
+# rendered message 34 differently; against the last request every turn was
+# "rewritten from 34, the cache lost nothing" while 59 turns recomputed
+# 1.42 M tokens. See branch_match(). Four is enough for a main loop beside one
+# or two kinds of side query; it is a choice, not a measurement.
+RECENT_SHAPES = {}
+RECENT_SHAPES_N = 4
+
+
+def branch_match(recent, shape):
+    """-> the older request this one continues, when it is NOT the last one.
+
+    `recent` is oldest first, each {"shape": [...], "in": tokens}; its last
+    element is the previous request. Returns {"back": k, "kept": n, "in": t}
+    for the record k requests back (k >= 2) that shares the most leading
+    messages with `shape`, if that is more than the previous request shares;
+    None otherwise. A client that alternates two versions of its history is
+    continuing THAT record, and a cache that kept it would resume up to its
+    `in` — which is the figure a loss has to be measured against.
+    """
+    if not recent or len(recent) < 2:
+        return None
+    last_kept = DIA.shapes_agree(recent[-1]["shape"], shape)
+    best = None
+    for back, rec in enumerate(reversed(recent[:-1]), start=2):
+        kept = DIA.shapes_agree(rec["shape"], shape)
+        if kept > last_kept and (best is None or kept > best["kept"]):
+            best = {"back": back, "kept": kept, "in": rec.get("in")}
+    return best
 # How long the first request of a prefix may be held for its own save. It is
 # bounded because the save now sits IN the request path: the write is 314 ms
 # and the prefill in front of it is work the request had to do anyway, but a
@@ -1841,7 +1872,7 @@ CACHE_LOSS_MIN_RECOMPUTE = int(
     os.environ.get("CACHE_LOSS_MIN_RECOMPUTE", 20000) or 20000)
 
 
-def cache_loss_note(ident, reuse, ledger, threshold=None):
+def cache_loss_note(ident, reuse, ledger, threshold=None, branch=None):
     """-> a line to log when a conversation that WAS cached re-prefills, else None.
 
     Why this exists at all. Measured 21.09.2026: in a three-session run on
@@ -1863,6 +1894,11 @@ def cache_loss_note(ident, reuse, ledger, threshold=None):
     `sum over live sessions of (prompt + max_tokens) <= pool`, and which term to
     give up — a session, its depth, or its output budget — is the operator's
     call, not this function's.
+
+    `branch` (from branch_match(), 22.09.2026) is the other cause, and it needs
+    the other sentence: the SAME conversation sent two versions of its history
+    alternately, and the server kept one. Blaming "another conversation" for
+    that would send the operator after sessions that are not the problem.
     """
     if not reuse or not ledger:
         return None
@@ -1875,6 +1911,17 @@ def cache_loss_note(ident, reuse, ledger, threshold=None):
     # Never cached before: this is a first read, not a loss.
     if (ledger.get("reused_sum") or 0) <= 0:
         return None
+    if branch and branch.get("in") and reused < 0.9 * branch["in"]:
+        return (
+            "BRANCH LOST prefix=%s recomputed %d tokens (reused %d of the %d "
+            "this history had when it was sent %d requests ago). The client "
+            "sends two versions of this conversation, differing from message "
+            "%d, alternately — typically a main loop beside its side queries — "
+            "and the server kept one. Not another conversation's doing: the "
+            "levers are the server keeping both branches "
+            "(HALOGEN_CACHE_BRANCHES, Halogen 0.13.3+) or the client sending one"
+            % (ident, computed, reused, branch["in"], branch["back"],
+               branch["kept"] + 1))
     return (
         "LOST CACHE  prefix=%s recomputed %d tokens that were cached before "
         "(reused %d). Another conversation took the KV pool room this one held: "
@@ -2697,11 +2744,19 @@ async def handler(req):
             fingers = DIA.message_fingerprints(p, dialect) if p else []
             shape = [h for h, _ in fingers]
             kept = DIA.shapes_agree(prev["shape"], shape) if prev else None
+            branch = (branch_match(RECENT_SHAPES.get(ident) or [], shape)
+                      if ident else None)
             if ident:
                 LAST_SHAPE[ident] = {"shape": shape, "post": post_id,
                                      "in": (reuse[0] + reuse[1]) if reuse else None}
                 if len(LAST_SHAPE) > LAST_SHAPE_MAX:
                     LAST_SHAPE.pop(next(iter(LAST_SHAPE)))
+                rs = RECENT_SHAPES.setdefault(ident, [])
+                rs.append({"shape": shape,
+                           "in": (reuse[0] + reuse[1]) if reuse else None})
+                del rs[:-RECENT_SHAPES_N]
+                if len(RECENT_SHAPES) > LAST_SHAPE_MAX:
+                    RECENT_SHAPES.pop(next(iter(RECENT_SHAPES)))
             # THE LEDGER, UPDATED BY THE MEASUREMENT RATHER THAN BY THE
             # INTENTION. Marking a prefix "the server has it" because we chose
             # not to restore would make one wrong skip permanent. Reuse of zero
@@ -2762,7 +2817,8 @@ async def handler(req):
             # was captured above, before this turn was added to the ledger —
             # see the note there for why that distinction is load-bearing.
             loss = cache_loss_note(ident, reuse,
-                                   {"reused_sum": history_reused})
+                                   {"reused_sum": history_reused},
+                                   branch=branch)
             if loss:
                 log(loss)
             TRACE.record(
@@ -2858,6 +2914,11 @@ async def handler(req):
                          # messages came back unchanged; `prev_in` what the
                          # last request for this prefix cost as input.
                          "prev_in": prev.get("in") if prev else None,
+                         # The older request this one continues when that is
+                         # NOT the last one (branch_match, 22.09.2026): what
+                         # its history cost then, and how far back it was.
+                         "branch_in": branch.get("in") if branch else None,
+                         "branch_back": branch.get("back") if branch else None,
                          "msgs_prev": len(prev["shape"]) if prev else None,
                          "msgs_kept": kept,
                          "msgs": len(shape),

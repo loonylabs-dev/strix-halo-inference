@@ -759,5 +759,43 @@ class TestTheSessionColumn(unittest.TestCase):
         self.assertRegex(cell.group(1), r"unknown, not single")
 
 
+class TestABranchSwitchReadsAsALoss(unittest.TestCase):
+    """`rewritten from 34 — the cache lost nothing` stood beside 59 turns that
+    recomputed 1.42 M tokens on 22.09.2026: main loop and side queries sent two
+    versions of message 34 alternately. Against the LAST request that is a
+    rewrite; against the branch the turn continues it is a loss, and the
+    gateway now records that branch (`branch_in`)."""
+
+    # borrowed, not inherited: inheriting would run every test of that class
+    # a second time under this name
+    run_js = TestTheseFunctionsActuallyRun.run_js
+
+    @classmethod
+    def setUpClass(cls):
+        cls.node = shutil.which("node")
+
+    TODAY = ("{kind:'request', msgs_prev:118, msgs_kept:33, prev_in:80434,"
+             " reused:39552, branch_in:80270, branch_back:2}")
+
+    def test_the_row_says_branch_lost_and_is_marked_bad(self):
+        out = self.run_js("const h = history(%s); console.log(h.label);"
+                          " console.log(h.bad);" % self.TODAY)
+        self.assertEqual(out[-2], "branch lost at 34")
+        self.assertEqual(out[-1], "true")
+
+    def test_a_kept_branch_stays_a_plain_rewrite(self):
+        out = self.run_js("console.log(history({kind:'request', msgs_prev:118,"
+                          " msgs_kept:33, prev_in:80434, reused:80100,"
+                          " branch_in:80270, branch_back:2}).label);")
+        self.assertEqual(out[-1], "rewritten from 34")
+
+    def test_a_record_from_before_the_field_is_read_as_before(self):
+        """Rows written before 22.09.2026 carry no branch_in; claiming a loss
+        for them would be a reading the data cannot support."""
+        out = self.run_js("console.log(history({kind:'request', msgs_prev:118,"
+                          " msgs_kept:33, prev_in:80434, reused:39552}).label);")
+        self.assertEqual(out[-1], "rewritten from 34")
+
+
 if __name__ == "__main__":
     unittest.main()

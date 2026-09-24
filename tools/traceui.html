@@ -190,6 +190,17 @@ function history(r) {
   if (r.kind !== "request" || r.msgs_prev == null) return {label: "", why: "", bad: false};
   const rewrote = r.msgs_kept < r.msgs_prev;
   const dropped = r.prev_in != null && r.reused != null && r.reused < r.prev_in * 0.9;
+  // A rewrite against the LAST request can still be a loss: a client sending
+  // two versions of one history alternately continues the one it sent
+  // `branch_back` requests ago (22.09.2026: 59 turns, 1.42 M tokens recomputed,
+  // every row reading "the cache lost nothing"). Rows from before the gateway
+  // recorded branch_in cannot say, and are read as before.
+  if (rewrote && r.branch_in != null && r.reused != null && r.reused < r.branch_in * 0.9)
+    return {label: `branch lost at ${r.msgs_kept + 1}`, bad: true,
+            why: `the client alternates two versions of this history, differing `
+                 + `from message ${r.msgs_kept + 1}; this one was last sent `
+                 + `${r.branch_back} requests ago with ${r.branch_in} tokens, and only `
+                 + `${r.reused} came back — the server kept the other branch`};
   if (rewrote)
     return {label: `rewritten from ${r.msgs_kept + 1}`, bad: false,
             why: `${r.msgs_kept} of ${r.msgs_prev} messages came back unchanged — `

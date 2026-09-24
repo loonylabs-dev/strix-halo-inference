@@ -309,9 +309,12 @@ class TestCacheLossNote(unittest.TestCase):
                         "history_reused is captured AFTER this turn was added "
                         "to reused_sum, so it is not the history any more")
         self.assertLess(fold, call)
+        # Without the closing parenthesis since 22.09.2026: the call gained a
+        # `branch=` argument after the ledger, which changes nothing about
+        # which ledger is passed.
         self.assertIn('cache_loss_note(ident, reuse,\n'
                       '                                   {"reused_sum": '
-                      'history_reused})', src,
+                      'history_reused}', src,
                       "the call no longer passes the captured history")
 
     def test_the_note_names_the_cause_and_the_lever(self):
@@ -3587,6 +3590,62 @@ class TestVisionRouting(GatewayOnTheWire):
         self.assertEqual(r.status, 200)
         self.assertEqual(GW.GATE.depth(), 0)
         self.assertEqual(GW.GATE.free, 2)
+
+
+class TestABranchSwitchIsNotARewrite(unittest.TestCase):
+    """Two versions of one history, sent alternately — and the cache keeping one.
+
+    Measured 22.09.2026 in the trace: Claude Code's main loop and its summary
+    side queries rendered message 34 of one conversation differently, and
+    alternated. Compared with the LAST request only, every turn read `rewritten
+    from 34` — "the client changed its history; the cache lost nothing" — while
+    the server resumed each turn at the fork and 59 turns recomputed 1.42 M
+    tokens (24 min of prefill). The history each turn continued had been sent
+    two requests earlier; comparing with that one is what shows the loss.
+    """
+
+    MAIN_A = ["s", "u1", "a1", "MAIN34"]
+    SIDE_A = ["s", "u1", "a1", "SIDE34", "q"]
+    MAIN_B = ["s", "u1", "a1", "MAIN34", "a2", "u3"]
+
+    def recent(self, *shapes_and_in):
+        return [{"shape": s, "in": n} for s, n in shapes_and_in]
+
+    def test_the_branch_sent_two_requests_ago_is_found(self):
+        m = GW.branch_match(self.recent((self.MAIN_A, 80_000),
+                                        (self.SIDE_A, 80_400)), self.MAIN_B)
+        self.assertIsNotNone(m, "the older branch this turn continues was not found")
+        self.assertEqual(m["back"], 2)
+        self.assertEqual(m["kept"], 4)
+        self.assertEqual(m["in"], 80_000)
+
+    def test_a_plain_continuation_is_not_a_branch(self):
+        """The last request already matches best — nothing to report."""
+        self.assertIsNone(GW.branch_match(
+            self.recent((self.SIDE_A, 1), (self.MAIN_A, 80_000)), self.MAIN_B))
+
+    def test_no_history_is_no_branch(self):
+        self.assertIsNone(GW.branch_match([], self.MAIN_B))
+        self.assertIsNone(GW.branch_match(self.recent((self.MAIN_A, 1)), self.MAIN_B))
+
+    def test_a_lost_branch_is_named_as_such_not_blamed_on_the_pool(self):
+        """The existing note blames another conversation for the room. Here no
+        other conversation is involved: the SAME one alternates, and the lever
+        is the server keeping both branches (HALOGEN_CACHE_BRANCHES, 0.13.3) or
+        the client sending one — not fewer sessions."""
+        note = GW.cache_loss_note(
+            "abc123", (39_552, 40_848), {"reused_sum": 150_000},
+            branch={"back": 2, "kept": 33, "in": 80_000})
+        self.assertIsNotNone(note)
+        self.assertIn("BRANCH", note)
+        self.assertIn("34", note, "the note has to name the message the "
+                                  "two versions diverge at")
+        self.assertNotIn("Another conversation", note)
+
+    def test_a_branch_the_cache_kept_is_silent(self):
+        self.assertIsNone(GW.cache_loss_note(
+            "abc123", (79_900, 900), {"reused_sum": 150_000},
+            branch={"back": 2, "kept": 33, "in": 80_000}))
 
 
 if __name__ == "__main__":

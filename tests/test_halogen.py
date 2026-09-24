@@ -116,28 +116,31 @@ class TestFitToRoomIsPerUnit(unittest.TestCase):
 
 
 # ------------------------------------------------ quality sidecar / off ---
-class TestTheQualitySidecarIsOff(unittest.TestCase):
-    """The Flash-Next units serve the BARE checkpoint (HALOGEN_CK_OVERLAY=none).
+class TestTheQualitySidecarIsServed(unittest.TestCase):
+    """The Flash-Next units serve the checkpoint WITH its quality sidecar —
+    upstream's default — by not setting HALOGEN_CK_OVERLAY at all.
 
-    With the shipped quality sidecar the model ends agent turns right after
-    announcing a tool call ("Jetzt die Änderungen am Command selbst:", then
-    <|im_end|>): 17 of 50 continuations of five real stalls at 123-128k tokens
-    stopped, 0 of 50 on the bare checkpoint, same token prompts, 23.09.2026
-    (bench/reports/2026-09-23_colonstop/). 0.8.1 with the sidecar: 12 of 50,
-    so it is the sidecar, not the release — upstream #89.
+    From 23.09. to 24.09.2026 they served it bare (HALOGEN_CK_OVERLAY=none):
+    five real stalls ("Jetzt die Änderungen am Command selbst:" then
+    <|im_end|>) ended again 17/50 with the sidecar and 0/50 bare. Those five
+    were picked where the sidecar stalled. At 10 positions it did NOT stall
+    on, bare ended 10/100 (0.12.3: 15/100) and the sidecar 3/100, 24.09.2026
+    (bench/reports/2026-09-24_halogen-0.13.8/, upstream #89): each checkpoint
+    has its own positions, roughly 6 % vs 10 % of announcements — an
+    estimate. Bare's case fell; the sidecar's ~3.8 % perplexity on prose
+    (upstream's figure) decided it, operator's call 24.09.
 
-    Two halves, and each alone does nothing: the unit must set it, and
-    halogenexec must forward it into the container — its env passthrough is an
-    allowlist, and a variable the unit sets but the list omits never arrives.
+    halogenexec still forwards the variable: bench side servers set it.
     """
 
     UNITS = ("halogen.service", "halogen-qwen38flash.service")
 
-    def test_every_flash_unit_sets_it(self):
+    def test_no_flash_unit_turns_it_off(self):
         for u in self.UNITS:
             with self.subTest(unit=u):
-                self.assertIn("Environment=HALOGEN_CK_OVERLAY=none", unit_text(u),
-                              "%s serves the sidecar again" % u)
+                set_lines = [l for l in unit_text(u).splitlines()
+                             if l.startswith("Environment") and "HALOGEN_CK_OVERLAY" in l]
+                self.assertEqual(set_lines, [], "%s overrides the sidecar default" % u)
 
     def test_halogenexec_forwards_it(self):
         text = (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
@@ -147,8 +150,8 @@ class TestTheQualitySidecarIsOff(unittest.TestCase):
         self.assertIn("HALOGEN_TEMPERATURE", names,
                       "parsed the wrong loop — the guard would be vacuous")
         self.assertIn("HALOGEN_CK_OVERLAY", names,
-                      "the unit sets HALOGEN_CK_OVERLAY but halogenexec does "
-                      "not pass it into the container")
+                      "a side server's HALOGEN_CK_OVERLAY would not reach "
+                      "the container")
 
 
 def _continues(text, line):

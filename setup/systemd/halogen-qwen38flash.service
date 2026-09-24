@@ -19,14 +19,11 @@ EnvironmentFile=-%h/.config/llm-stack.env
 # unit): an over-budget max_tokens clamps to the window the prompt left instead
 # of a 400 the interactive client cannot act on.
 Environment=HALOGEN_FIT_TO_ROOM=1
-# The BARE checkpoint, not the shipped quality sidecar. With the sidecar the
-# model ends agent turns right after announcing a tool call ("…Command selbst:"
-# then <|im_end|>): 17 of 50 continuations of five real stalls (123-128k tokens)
-# stopped on 0.12.3, 12 of 50 on 0.8.1, 0 of 50 bare — same token prompts,
-# 23.09.2026, bench/reports/2026-09-23_colonstop/. Decode speed unchanged in that
-# run (~40 vs ~39 tok/s, short continuations only). The price is upstream's
-# figure, not ours: ~3.8 % perplexity on prose (#89). halogenexec forwards it.
-Environment=HALOGEN_CK_OVERLAY=none
+# The quality sidecar is served — upstream's default, so nothing is set here.
+# 23.-24.09.2026 this unit ran bare (HALOGEN_CK_OVERLAY=none) against agent
+# turns ending on their own announcement; that verdict was a selection effect:
+# bare stalls too, at other positions (~10 % vs ~6 % of announcements, an
+# estimate — bench/reports/2026-09-24_halogen-0.13.8/, upstream #89).
 ExecStart=%h/.local/lib/llm-stack/halogenexec qwen38flash
 ExecStop=/usr/bin/podman stop -t 10 halogen
 ExecStopPost=-/usr/bin/podman rm -f -t 1 halogen

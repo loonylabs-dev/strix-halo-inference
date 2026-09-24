@@ -22,6 +22,48 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
+## 0.6.1 — 2026-09-24
+
+*Halogen Flash Server `0.13.8`, checkpoint `qwen38-flash-next-w4b` served WITH
+its quality sidecar again (the pre-0.6.0 file on disk); client Claude Code
+`2.1.267`.*
+
+### Changed
+
+*   **Halogen 0.12.3 -> 0.13.8.** In the deep side-turn load (one 40k-token
+    session beside two live 200k fillers, the shape that 0.13.4 lost on
+    23.09.), both releases served bare, measured 24.09.2026: 0.13.8 lost the
+    history of **0 of 7** main turns against **1 of 7**, recomputed 29k + 42k
+    tokens against 79k + 97k, and took **947 s against 1412 s**. n=1 per
+    release. It renders this client's histories byte-identically to 0.12.3.
+
+    Unchanged, and now known: when a conversation's cache region cannot
+    grow, both releases shorten the answer rather than evict a neighbour —
+    in that load down to ~3,000 of the requested 12,000 tokens. Upstream
+    has the missing compaction on its list (#97).
+
+### Fixed
+
+*   **0.6.0's sidecar verdict was a selection effect**, and the sidecar is
+    served again. The five stalls that convicted it had been picked where it
+    stalled. At ten positions it had gone on from, bare ended the turn
+    10/100 on 0.13.8 (15/100 on 0.12.3) and the sidecar 3/100: each
+    checkpoint has its own positions. Weighted over the two sessions, roughly
+    6 % of deep announcements end with the sidecar and 10 % bare — an
+    estimate from few positions, not a measurement. So bare bought no
+    reliability and cost upstream's ~3.8 % perplexity on prose. The stall
+    itself remains, at a few percent per announcement, on both.
+    `bench/reports/2026-09-24_halogen-0.13.8/`, upstream #89.
+
+### Added
+
+*   **`bench/colonstop.py --strip-stalls` and `--announcements`**: replay a
+    stall without the earlier stall episodes in its history, and replay
+    positions where the model did go on — the counter-sample the first
+    verdict lacked.
+
+---
+
 ## 0.6.0 — 2026-09-23
 
 *Halogen Flash Server `0.12.3`, checkpoint `qwen38-flash-next-w4b` now served

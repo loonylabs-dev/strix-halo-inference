@@ -381,7 +381,7 @@ On Strix Halo (128 GB UMA), Halogen's MTP speculative decoding operates at full 
 
 The gateway protects against contention:
 1. **Serialised GPU execution (`MAX_INFLIGHT=1`)**: Requests are queued and served one by one at full MTP + PLD decode speed. While in the queue or awaiting upstream prefill, the gateway emits periodic SSE keepalive comments / Anthropic pings every 10 seconds (`QUEUE_KEEPALIVE=10`), preventing client read timeouts (such as DSH's 40s timeout or Cloudflare 524).
-2. **Persistent multi-session KV pool**: Halogen retains 4 resident slots in its 786,432-position KV pool. Multiple client sessions (e.g. concurrent deep coding sessions at 228k and 187k with 65k output reservations) stay cached in RAM simultaneously without evicting each other's prefixes; only their GPU generation passes are scheduled sequentially.
+2. **Multi-session KV pool, backed by disk**: Halogen keeps 4 slots over one 524,288-position KV pool (786,432 until 17.09.2026, lowered because it starved the page cache — see CHANGELOG 0.5.0). A reservation is prompt + `max_tokens`, so two deep sessions fit and a third, or Claude Code's side requests beside a main session and its subagents, evicts the least recently used conversation. Since 0.7.0 the prompt cache also lives on NVMe (`HALOGEN_CACHE_DIR`): an evicted conversation is restored instead of re-read — measured 24.09.2026, a 186k follow-up turn 175 s → 2.3 s — and a server restart no longer loses it (first turn 188 s → 2.7 s). `bench/reports/2026-09-24_halogen-disk-cache/`.
 
 The prefix rules of the last section apply unchanged: the id is formed
 from the system prompt and the tool block, so a changed plugin set means

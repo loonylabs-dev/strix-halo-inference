@@ -22,11 +22,11 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
-## 0.7.0 — branch `night-2026-09-24`, not yet merged
+## 0.7.0 — 2026-09-24
 
 *Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code
-`2.1.267` / `2.1.281`. Nothing here is live until the branch is merged and the
-units restarted — the operator's step.*
+`2.1.267` / `2.1.281`. Live since 24.09. 20:24, with the disk tier at
+`HALOGEN_CACHE_DISK_GIB=200` and `HALOGEN_CACHE_PRUNE_OLD=1` on this machine.*
 
 ### Added
 
@@ -56,6 +56,15 @@ units restarted — the operator's step.*
     the gateway replaced them with its own end tokens; the classifier's
     `</block>` never arrived. Measured safe with reasoning on: 48 calls, no
     reasoning cut.
+
+### Documentation
+
+*   **The root README carries measured Halogen figures** instead of "top token
+    throughput" (24.09.2026: a cold 186k prompt in 192 s, a long answer at
+    31-34 tok/s from 2k to 193k), and says the prompt cache now survives
+    evictions and restarts. `docs/CONSUMERS.md` no longer promises that deep
+    sessions never evict each other in a 786,432-position pool — the pool has
+    been 524,288 since 17.09., and they do.
 
 ---
 

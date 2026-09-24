@@ -19,7 +19,7 @@ bash setup/install.sh                # once — writes ~/.config/llm-stack.env
 bash setup/switch-model.sh halogen-qwen38flash # (alias: halogen) serve the high-speed Halogen container
 # or: bash setup/switch-model.sh halogen-qwen38  # serve 27B via Halogen
 # or: bash setup/switch-model.sh qwen38         # serve GGUF via llama-server
-bash tests/run.sh                    # the gate (1449 tests, ~20 s, no GPU)
+bash tests/run.sh                    # the gate (1529 tests, ~20 s, no GPU)
 ```
 
 The name you fetch is the name you serve. There is no `pull` command, because
@@ -49,9 +49,13 @@ stack provides turnkey configurations for the fastest inference engines on
 this silicon:
 
 * **Halogen Flash Server** ([`setup/halogen/`](setup/halogen/)): A rootless
-  container backend running Qwen 3.8 Flash-Next with MTP speculative decoding.
-  The fastest solution on this hardware for daily agent workloads, delivering
-  top token throughput.
+  container backend running Qwen 3.8 Flash-Next with MTP speculative decoding
+  — production here for daily agent work. Measured 24.09.2026 on 0.13.8: a
+  cold 186k-token prompt in 192 s (~970 tok/s), a long answer at 31-34 tok/s
+  from 2k to 193k of context. Its prompt cache lives in RAM **and on NVMe**:
+  a deep conversation that was evicted, or survived a restart, resumes in
+  2-3 s instead of ~3 minutes
+  ([report](bench/reports/2026-09-24_halogen-disk-cache/README.md)).
 * **llama.cpp** ([`setup/scripts/build-llama.sh`](setup/scripts/build-llama.sh)):
   Upstream master plus a small curated set of hardware patches
   ([`setup/patches/`](setup/patches/README.md)) for the broad GGUF model
@@ -78,9 +82,13 @@ and the serving engine:
   and scripts talk to whichever backend is running without separate bridge
   daemons.
 * **True prompt and prefix caching:** Agent prompts often carry 20k–40k tokens
-  of system instructions and tool definitions. The gateway tracks prefix hashes
-  and KV states, turning a ~120-second cold prefill into a **1.3-second**
-  follow-up turn (>90% cache reuse).
+  of system instructions and tool definitions. On llama.cpp the gateway tracks
+  prefix hashes and saves KV states, turning a ~120-second cold prefill into a
+  **1.3-second** follow-up turn (>90% cache reuse). On Halogen the engine
+  caches itself, and the gateway passes Claude Code's cache marks through so
+  that even its auto-mode safety check resumes where its transcript ends:
+  **32.5 s → 18.6 s** per check, verdicts unchanged (24.09.2026,
+  [report](bench/reports/2026-09-24_classifier/README.md)).
 * **Edge-stable streaming:** Incremental token-by-token parameter streaming for
   tool calls and 10-second SSE keepalive heartbeats prevent Cloudflare Tunnel
   and proxy dropouts (`500` / `524`) on long generations.
@@ -161,7 +169,7 @@ Nothing in this repository is based on estimates or marketing claims:
   degeneration) and upstream bugs are recorded as data in
   [`setup/defects.json`](setup/defects.json). `python3 setup/lib/defects.py`
   verifies whether your running build is affected.
-* **Rigorous test gate:** `bash tests/run.sh` runs 1449 tests in ~20 seconds
+* **Rigorous test gate:** `bash tests/run.sh` runs 1529 tests in ~20 seconds
   without needing a GPU, verifying parser integrity, dialect conversions,
   budget calculations, and guardrails before anything touches production.
 

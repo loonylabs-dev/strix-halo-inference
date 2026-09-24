@@ -758,6 +758,12 @@ Halogen supports multimodal input through an optional vision projector/encoder:
   the sample sizes are uneven (n=5 before, n=33 after) — the direction is solid, the
   exact ratio is not. Set it in `~/.config/llm-stack.env`; the repo default stays 786432,
   which is right for a host that runs the server and nothing else.
+
+  **What the smaller pool costs changed on 24.09.2026:** with the prompt cache on disk
+  (`HALOGEN_CACHE_DIR`, see "What arrived between 0.12.3 and 0.13.8") an evicted
+  conversation is restored instead of re-read — a 186k follow-up turn 175 s → 2.3 s,
+  measured at 524288 with three deep conversations overbooking the pool
+  (`bench/reports/2026-09-24_halogen-disk-cache/`).
 * **N-gram / PLE lookup table caching**:
   Qwen 3.8 Flash-Next holds core model weights locked in GTT, while its massive
   **47.7 GiB Predictive Language Embedding (PLE) N-gram table** is mapped via page cache

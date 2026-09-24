@@ -17,6 +17,11 @@ differs. A continuation that is empty ended the turn again ('stop'); one that
 opens a <tool_call> is what the model should have done ('tool').
 
     --arms control        the stall as it was (default)
+    --strip-stalls        the history without the earlier stall episodes (a
+                          stall + the user's nudge after it) — upstream #89's
+                          question whether a pile of stalls drives the next one
+    --announcements       --at names turns that DID call a tool, cut after their
+                          text: the counter-sample to stalls picked by a stall
     --arms control,fix    also '\\n\\n' appended: the llama.cpp #19513 workaround
                           (25/25 tool calls on 23.09. — measured, then not built,
                           because turning the sidecar off removed the cause)
@@ -102,9 +107,74 @@ def stall(body, k):
     return th, tx
 
 
-def openai_body(body, k):
-    """The request the gateway sent for the turn that produced message k."""
-    q = dict(body, messages=body["messages"][:k])
+def announcement(body, k):
+    """-> (thinking, text) of assistant message k up to its FIRST tool call.
+
+    The counter-sample to stall(): a turn that did go on to call a tool, cut
+    where the stall would have ended. Upstream #89 (23.09.2026) objected that
+    the five stalls were picked where the sidecar stalled, which favours bare;
+    these positions were picked by nothing but depth."""
+    if k >= len(body["messages"]):
+        raise SystemExit(f"message {k}: the trace holds only "
+                         f"{len(body['messages'])} messages of this conversation")
+    msg = body["messages"][k]
+    if msg["role"] != "assistant" or not isinstance(msg["content"], list):
+        raise SystemExit(f"message {k} is not an assistant turn")
+    calls = [j for j, b in enumerate(msg["content"]) if b.get("type") == "tool_use"]
+    if not calls:
+        raise SystemExit(f"message {k} called no tool — use it as a stall")
+    head = msg["content"][:calls[0]]
+    th = "".join(b.get("thinking") or "" for b in head if b.get("type") == "thinking")
+    tx = "".join(b.get("text") or "" for b in head if b.get("type") == "text")
+    if not tx.strip():
+        raise SystemExit(f"message {k} has no text before its call — nothing announced")
+    return th, tx
+
+
+def is_stall(msg):
+    """A text-only assistant turn that ended on its own announcement (':')."""
+    if msg["role"] != "assistant" or not isinstance(msg["content"], list):
+        return False
+    if any(b.get("type") == "tool_use" for b in msg["content"]):
+        return False
+    tx = "".join(b.get("text") or "" for b in msg["content"] if b.get("type") == "text")
+    return tx.rstrip().endswith(":")
+
+
+def strip_stalls(messages):
+    """-> (messages without earlier stall episodes, how many were removed).
+
+    An episode is a stall plus the user's nudge after it ("du stehst schon
+    wieder"). Upstream #89 asked for this 23.09.2026: on its own sessions a
+    pile of earlier stalls drove the next one, bare more than with the
+    sidecar. What the turn after a removed nudge says about being nudged
+    stays in — it is the model's own history, not the episode."""
+    out, n, i = [], 0, 0
+    while i < len(messages):
+        m = messages[i]
+        if is_stall(m):
+            if i + 1 >= len(messages) or messages[i + 1]["role"] != "user":
+                raise SystemExit(f"message {i}: a stall not followed by a user "
+                                 "turn — removing it would leave two assistant "
+                                 "turns in a row")
+            n, i = n + 1, i + 2
+            continue
+        out.append(m)
+        i += 1
+    return out, n
+
+
+def cache_name(prefix, k, strip):
+    return f"{prefix}-{k}{'-nostalls' if strip else ''}.txt"
+
+
+def openai_body(body, k, strip=False):
+    """The request the gateway sent for the turn that produced message k —
+    with strip, minus every earlier stall episode."""
+    hist = body["messages"][:k]
+    if strip:
+        hist = strip_stalls(hist)[0]
+    q = dict(body, messages=hist)
     o = AB.anthropic_to_openai_request(q, target_model="halogen")
     # the gateway copies these after translating (gateway.py, dialect bridge)
     for f in ("enable_thinking", "reasoning_effort", "max_thinking_tokens", "stop"):
@@ -174,6 +244,10 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--max-tokens", type=int, default=120)
+    ap.add_argument("--strip-stalls", action="store_true",
+                    help="replay without the earlier stall episodes (upstream #89)")
+    ap.add_argument("--announcements", action="store_true",
+                    help="--at names turns that DID call a tool; cut them after their text")
     a = ap.parse_args()
 
     trace = Path(a.trace) if a.trace else max(TRACE_DIR.glob("trace-*.jsonl"))
@@ -186,9 +260,11 @@ def main():
     body = conversation(trace, a.prefix)
 
     for k in (int(x) for x in a.at.split(",")):
-        th, tx = stall(body, k)
-        prompt = cached(cache / f"{a.prefix}-{k}.txt",
-                        lambda: render(a.render_from, openai_body(body, k)))
+        th, tx = announcement(body, k) if a.announcements else stall(body, k)
+        stripped = strip_stalls(body["messages"][:k])[1] if a.strip_stalls else 0
+        prompt = cached(cache / cache_name(a.prefix, k, a.strip_stalls),
+                        lambda: render(a.render_from,
+                                       openai_body(body, k, a.strip_stalls)))
         base = prompt + th.strip() + "\n</think>\n\n" + tx.rstrip()
         prompts = {"control": base, "fix": base + "\n\n"}
         for _ in range(a.n):  # arms interleaved, so drift over time hits both
@@ -199,7 +275,9 @@ def main():
                        "finish": ch.get("finish_reason"), "took_s": round(took, 2),
                        "prompt_tokens": usage.get("prompt_tokens"),
                        "completion_tokens": usage.get("completion_tokens"),
-                       "last_char": tx.rstrip()[-1:], "t": time.strftime("%F %T")}
+                       "last_char": tx.rstrip()[-1:], "stalls_removed": stripped,
+                       "kind": "announcement" if a.announcements else "stall",
+                       "t": time.strftime("%F %T")}
                 with open(out / f"{a.label}.jsonl", "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(row) + "\n")
                 print(json.dumps(row), flush=True)

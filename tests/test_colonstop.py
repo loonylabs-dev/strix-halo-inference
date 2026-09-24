@@ -1,5 +1,6 @@
 """test_colonstop — the stall replay's pure parts: what counts as a stall, what
 the replayed request carries, and that private prompts cannot land in the repo."""
+import json
 import subprocess
 import sys
 import unittest
@@ -69,6 +70,73 @@ class TestOpenaiBody(unittest.TestCase):
         self.assertEqual(o["reasoning_effort"], "low")
         self.assertEqual(o["stop"], ["<|im_end|>"])
         self.assertTrue(o["tools"])
+
+
+class TestAnnouncement(unittest.TestCase):
+    """The counter-sample to the stalls: turns that DID go on to a tool call,
+    cut after their text — positions the sidecar did not pick."""
+
+    def test_returns_the_text_before_the_first_call(self):
+        m = {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "Read it."},
+            {"type": "text", "text": "Jetzt lesen:\n\n"},
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {}},
+            {"type": "text", "text": "after the call"}]}
+        self.assertEqual(CS.announcement(conv(USER, m), 1),
+                         ("Read it.", "Jetzt lesen:\n\n"))
+
+    def test_a_turn_without_a_call_is_refused(self):
+        with self.assertRaises(SystemExit):
+            CS.announcement(conv(USER, STALL), 1)
+
+    def test_a_call_with_no_text_before_it_is_refused(self):
+        m = {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}
+        with self.assertRaises(SystemExit):
+            CS.announcement(conv(USER, m), 1)
+
+
+NUDGE = {"role": "user", "content": "du stehst schon wieder"}
+ASK = {"role": "assistant", "content": [
+    {"type": "text", "text": "Soll ich committen?"}]}
+
+
+class TestStripStalls(unittest.TestCase):
+    """Upstream #89 asked for the five stalls replayed with every EARLIER stall
+    episode removed: does the history of stalls drive the next one?"""
+
+    def test_an_earlier_stall_and_its_nudge_go(self):
+        ms, n = CS.strip_stalls([USER, STALL, NUDGE, CALL, USER])
+        self.assertEqual(ms, [USER, CALL, USER])
+        self.assertEqual(n, 1)
+
+    def test_a_genuine_end_stays(self):
+        # a question to the user is a finished turn, not a stall
+        ms, n = CS.strip_stalls([USER, ASK, USER])
+        self.assertEqual(ms, [USER, ASK, USER])
+        self.assertEqual(n, 0)
+
+    def test_a_turn_that_called_a_tool_stays_even_after_a_colon(self):
+        ms, n = CS.strip_stalls([USER, CALL, USER])
+        self.assertEqual((ms, n), ([USER, CALL, USER], 0))
+
+    def test_a_stall_not_followed_by_a_user_turn_is_refused(self):
+        # nothing seen like it; removing half an episode would leave two
+        # assistant turns in a row — the other trigger of #89
+        with self.assertRaises(SystemExit):
+            CS.strip_stalls([USER, STALL, CALL])
+
+    def test_the_replayed_request_holds_no_earlier_stall(self):
+        o = CS.openai_body(conv(USER, STALL, NUDGE, CALL, USER, STALL), 5,
+                           strip=True)
+        texts = json.dumps(o["messages"], ensure_ascii=False)
+        self.assertNotIn("Jetzt die Änderungen:", texts)
+        self.assertNotIn("du stehst schon wieder", texts)
+
+    def test_the_variant_has_its_own_cache_file(self):
+        # the original renders in ~/.cache/colonstop are the 23.09. bytes
+        self.assertEqual(CS.cache_name("p", 23, False), "p-23.txt")
+        self.assertEqual(CS.cache_name("p", 23, True), "p-23-nostalls.txt")
 
 
 class TestRenderKeepsTheBytes(unittest.TestCase):

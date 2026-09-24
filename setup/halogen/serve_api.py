@@ -14,12 +14,13 @@
 # change to this one file — the shape of defect this repository keeps
 # finding, and the reason setup/patches/ exists for llama.cpp.
 #
-# WHAT IS CHANGED — four changes in five places against the base above.
+# WHAT IS CHANGED — five changes in seven places against the base above.
 # Changes 1-3 are the vendored end-token fix this file has carried since
 # 0.6.x; change 4 is repository policy, added 14.09.2026 and NOT an upstream
-# behaviour. (The 0.8.1 header said "four hunks" and the diff showed five
-# code hunks plus the header; the count is stated both ways here so the next
-# reader does not have to re-derive it.)
+# behaviour; change 5 (24.09.2026) is a prompt-cache placement this repo
+# measured and upstream does not have yet. (The 0.8.1 header said "four
+# hunks" and the diff showed five code hunks plus the header; the count is
+# stated both ways here so the next reader does not have to re-derive it.)
 #
 #   1. get_eos_ids()  The model has TWO end tokens, <|im_end|> (248046) and
 #      <|endoftext|> (248044), and the base registers only tok.eos_token_id
@@ -39,6 +40,12 @@
 #      carries `HALOGEN_FIT_TO_ROOM=1` as an Environment= line (so the knob
 #      survives a rebuild and a switch-model to the 27B) — and the shared
 #      template and the bench side servers deliberately do not.
+#   5. breakpoint_cut() and its use at the end of render_prompt(): a client's
+#      cache_control mark INSIDE the last user message takes the third
+#      snapshot place (SNAP3). Claude Code's auto-mode classifier re-read its
+#      whole growing transcript on every call without it (46/46 calls,
+#      24.09.2026). Retire when upstream places a snapshot there itself —
+#      fixed-step checkpoints (public issue #31) would cover most of it.
 #
 # RE-CUT 21.09.2026, 0.8.1 -> 0.12.3 (base file 4180 -> 4827 lines). Every
 # retirement condition was checked against the 0.12.3 FILE, not the changelog:
@@ -276,6 +283,49 @@ def vis_resolve_token(tok):
                   f"tokenizer; a message that mentions it will be refused "
                   f"by the engine (issue #39)", flush=True)
     return IMAGE_TOKEN_ID
+
+
+def breakpoint_cut(msgs, text):
+    """-> the char offset in `text` of the client's last cache breakpoint
+    INSIDE the last user message, or None. (Vendored change 5, this repo.)
+
+    A client that marks a content part with `cache_control` says "the prefix
+    up to here comes back". Claude Code's auto-mode classifier marks the end
+    of a transcript that only ever grows, followed by an instruction that
+    changes every call — and none of the three snapshot places lies at that
+    mark, so every call re-read the whole transcript (24.09.2026: 46 of 46).
+
+    Only a mark FOLLOWED by more text counts: a mark at the very end is the
+    history place already, and the third place's default (the start of the
+    last user message) must stay for the harnesses it was built for. Only
+    text parts, and only where the render carries the message verbatim — a
+    cut the rendered text does not prove would be a place somewhere else.
+    """
+    if not msgs or not isinstance(msgs[-1], dict) or msgs[-1].get("role") != "user":
+        return None
+    parts = msgs[-1].get("content")
+    if not isinstance(parts, list):
+        return None
+    texts, last = [], -1
+    for i, p in enumerate(parts):
+        if not isinstance(p, dict) or p.get("type") != "text":
+            return None
+        texts.append(p.get("text") or "")
+        if p.get("cache_control"):
+            last = i
+    if last < 0:
+        return None
+    marked, full = "".join(texts[:last + 1]), "".join(texts)
+    if len(marked) >= len(full):
+        return None
+    opener = "<|im_start|>user\n"
+    start = text.rfind(opener)
+    if start < 0:
+        return None
+    start += len(opener)
+    if text[start:start + len(full)] != full:
+        return None
+    return start + len(marked)
 
 
 def textify_pad_mentions(ids, snap=0, snap2=0, n_images=0):
@@ -4724,6 +4774,14 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 snap3 = boundary_at(cut)
             if snap3 and (snap3 <= snap2 or (snap and snap3 >= snap)):
                 snap3 = 0
+        # Vendored change 5: the client's own breakpoint, when it lies INSIDE
+        # the last user message, takes the third place (see breakpoint_cut).
+        # Same strictness as above: a token boundary, between the other two.
+        if SNAP3_ON and not continue_final:
+            at = breakpoint_cut(msgs, text)
+            k = boundary_at(at) if at else 0
+            if k and k > snap2 and (not snap or k < snap):
+                snap3 = k
         return ids, snap, snap2, seg, snap3
 
     def modes_status():

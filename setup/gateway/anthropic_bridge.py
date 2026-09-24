@@ -111,6 +111,7 @@ def anthropic_to_openai_request(body: dict, target_model: Optional[str] = None) 
 
         # Content is a list of blocks
         text_parts = []
+        text_marks = []
         tool_calls = []
         tool_results = []
         image_parts = []
@@ -121,6 +122,7 @@ def anthropic_to_openai_request(body: dict, target_model: Optional[str] = None) 
             b_type = b.get("type")
             if b_type == "text":
                 text_parts.append(b.get("text", ""))
+                text_marks.append(b.get("cache_control"))
             elif b_type == "image":
                 src = b.get("source") or {}
                 if src.get("type") == "base64" and src.get("data"):
@@ -172,9 +174,17 @@ def anthropic_to_openai_request(body: dict, target_model: Optional[str] = None) 
             # Any accompanying user text or images
             if image_parts or text_parts:
                 u_content: List[Dict[str, Any]] = []
-                for t in text_parts:
+                # cache_control rides along on its part: the Halogen front end
+                # places a snapshot at a mark inside the last user message
+                # (serve_api change 5). Its message model is list[dict], so
+                # the extra key passes; whether other OpenAI servers accept
+                # it is not checked — this bridge serves the container only.
+                for t, mark in zip(text_parts, text_marks):
                     if t:
-                        u_content.append({"type": "text", "text": t})
+                        part = {"type": "text", "text": t}
+                        if mark:
+                            part["cache_control"] = mark
+                        u_content.append(part)
                 u_content.extend(image_parts)
 
                 if len(u_content) == 1 and u_content[0]["type"] == "text":

@@ -808,9 +808,9 @@ class TestTheSwitchKeepsItsGuards(unittest.TestCase):
 class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
     """setup/halogen/serve_api.py is mounted OVER the file in the image.
 
-    FOUR changes in five places — both EOS ids, per-request stop strings as
-    EOS ids, the app.state bindings these tests use, and the fit-to-room gate
-    — shipped as a 260 KB whole-file copy. Bump the image and the old copy
+    FIVE changes in seven places — both EOS ids, per-request stop strings as
+    EOS ids, the app.state bindings these tests use, the fit-to-room gate,
+    and the client's cache breakpoint as the third snapshot place — shipped as a 260 KB whole-file copy. Bump the image and the old copy
     silently reverts every upstream change in that file while `podman ps`
     reports the new tag — the exact shape of a defect this repo keeps
     finding. So the file has to say which image it was cut from, and
@@ -855,7 +855,7 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
             "retirement condition; if it is not, delete it")
 
     def test_the_four_changes_are_actually_in_the_file(self):
-        """The header CLAIMS four changes; this asserts they are there.
+        """The header CLAIMS five changes; this asserts they are there.
 
         Written 21.09.2026 because the prose count drifted three times
         (header, README, this class's docstring) while nothing checked the
@@ -873,7 +873,10 @@ class TestTheVendoredServerDeclaresWhatItPatches(unittest.TestCase):
                 ("app.state.serve", "change 3: the test bindings"),
                 ("FIT_TO_ROOM", "change 4: the fit-to-room gate"),
                 ("fit-to-room clamped max_tokens",
-                 "change 4: the clamp's own stderr line")):
+                 "change 4: the clamp's own stderr line"),
+                ("def breakpoint_cut", "change 5: the client's breakpoint"),
+                ("at = breakpoint_cut(msgs, text)",
+                 "change 5: its use for the third place")):
             self.assertIn(marker, src,
                           "%s is missing from the vendored copy" % what)
 
@@ -1319,6 +1322,86 @@ class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Exception) as cm:
             await self._generate_maxtok(950, 100)          # room = 50 < floor 1024
         self.assertIn("below the floor", str(cm.exception))
+
+
+# ------------------------------------------- the client's cache breakpoint ---
+class TestTheClientsBreakpointBecomesTheThirdPlace(unittest.TestCase):
+    """Change 5: a cache_control breakpoint INSIDE the last user message moves
+    the third snapshot place (SNAP3) onto it.
+
+    Claude Code's auto-mode classifier sends [system][CLAUDE.md][transcript +
+    instruction]. The transcript only grows at its end and the last 418 chars
+    (the instruction) change every call; Claude Code marks the end of the
+    transcript with cache_control. None of the three places lay there, so all
+    46 classifier calls of 24.09.2026 resumed at the end of the CLAUDE.md
+    message (27,840 / 30,528 tokens) and re-read the whole transcript — 2.4k
+    growing to 23k tokens a call. Rendered and tokenized offline with the
+    image's own tokenizer: a place at the breakpoint was a usable prefix of
+    the next call 26 of 26 times, leaving 76-4,900 tokens to read.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_serve_api()
+
+    def cut(self, msgs, text):
+        return self.mod.breakpoint_cut(msgs, text)
+
+    def render(self, parts):
+        body = "".join(p["text"] for p in parts)
+        return "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\n" + body + \
+               "<|im_end|>\n<|im_start|>assistant\n"
+
+    def test_a_breakpoint_before_trailing_text_is_the_cut(self):
+        parts = [{"type": "text", "text": "<t>\n"},
+                 {"type": "text", "text": "a\n", "cache_control": {"type": "ephemeral"}},
+                 {"type": "text", "text": "</t>\nJudge it."}]
+        text = self.render(parts)
+        at = self.cut([{"role": "system", "content": "S"},
+                       {"role": "user", "content": parts}], text)
+        self.assertEqual(text[:at].rsplit("\n", 2)[-2], "a")
+        self.assertTrue(text[at:].startswith("</t>"))
+
+    def test_the_last_of_several_breakpoints_wins(self):
+        parts = [{"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}},
+                 {"type": "text", "text": "y", "cache_control": {"type": "ephemeral"}},
+                 {"type": "text", "text": "z"}]
+        text = self.render(parts)
+        at = self.cut([{"role": "user", "content": parts}], text)
+        self.assertEqual(text[at:at + 1], "z")
+
+    def test_a_breakpoint_at_the_end_changes_nothing(self):
+        """A main session marks its LAST block: the history place already
+        covers that, and the default third place (start of the last user
+        message, for a harness that replaces it) must stay."""
+        parts = [{"type": "text", "text": "q"},
+                 {"type": "text", "text": "r", "cache_control": {"type": "ephemeral"}}]
+        self.assertIsNone(self.cut([{"role": "user", "content": parts}], self.render(parts)))
+
+    def test_no_breakpoint_changes_nothing(self):
+        parts = [{"type": "text", "text": "q"}, {"type": "text", "text": "r"}]
+        self.assertIsNone(self.cut([{"role": "user", "content": parts}], self.render(parts)))
+        self.assertIsNone(self.cut([{"role": "user", "content": "plain"}], self.render(
+            [{"type": "text", "text": "plain"}])))
+
+    def test_a_render_that_does_not_carry_the_text_verbatim_is_refused(self):
+        """The cut is only trusted where the rendered text PROVES it: a
+        template that rewrites content would put the place somewhere else."""
+        parts = [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                 {"type": "text", "text": "b"}]
+        self.assertIsNone(self.cut([{"role": "user", "content": parts}],
+                                   self.render([{"type": "text", "text": "A b"}])))
+
+    def test_only_when_the_last_message_is_the_users(self):
+        parts = [{"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+                 {"type": "text", "text": "b"}]
+        self.assertIsNone(self.cut([{"role": "user", "content": parts},
+                                    {"role": "assistant", "content": "c"}], self.render(parts)))
+
+    def test_render_prompt_uses_it_for_the_third_place(self):
+        src = (REPO / "setup" / "halogen" / "serve_api.py").read_text(encoding="utf-8")
+        body = src[src.index("    def render_prompt("):src.index("    def modes_status(")]
+        self.assertIn("breakpoint_cut(msgs, text)", body)
 
 
 if __name__ == "__main__":

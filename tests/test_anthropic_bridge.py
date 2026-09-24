@@ -32,6 +32,25 @@ class TestRequestTranslation(unittest.TestCase):
         self.assertEqual(oai["messages"][0], {"role": "system", "content": "You are a helpful assistant."})
         self.assertEqual(oai["messages"][1], {"role": "user", "content": "Hello!"})
 
+    def test_a_cache_breakpoint_survives_on_its_text_part(self):
+        """The front end places a snapshot at the client's breakpoint
+        (serve_api change 5) — it can only if the mark reaches it. Claude
+        Code's classifier marks the end of its transcript this way."""
+        eph = {"type": "ephemeral"}
+        req = {"messages": [{"role": "user", "content": [
+            {"type": "text", "text": "<transcript>\n"},
+            {"type": "text", "text": "entry\n", "cache_control": eph},
+            {"type": "text", "text": "</transcript>\nJudge it."}]}]}
+        parts = AB.anthropic_to_openai_request(req)["messages"][0]["content"]
+        self.assertEqual([p.get("cache_control") for p in parts], [None, eph, None])
+        self.assertEqual("".join(p["text"] for p in parts),
+                         "<transcript>\nentry\n</transcript>\nJudge it.")
+
+    def test_a_single_marked_part_still_becomes_a_string(self):
+        req = {"messages": [{"role": "user", "content": [
+            {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]}]}
+        self.assertEqual(AB.anthropic_to_openai_request(req)["messages"][0]["content"], "hi")
+
     def test_system_as_blocks(self):
         req = {
             "system": [
@@ -549,6 +568,16 @@ class TestGatewayAnthropicBridgeIntegration(unittest.IsolatedAsyncioTestCase):
                                "messages": [{"role": "user", "content": "x"}]})
         self.assertIn("</block>", up["stop"])
         self.assertIn("<|im_end|>", up["stop"], "the container's own end tokens went")
+
+    async def test_a_cache_breakpoint_reaches_the_container(self):
+        eph = {"type": "ephemeral"}
+        up = await self._post({"model": "m", "max_tokens": 64, "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "<t>\n"},
+                {"type": "text", "text": "a\n", "cache_control": eph},
+                {"type": "text", "text": "</t>\nJudge."}]}]})
+        parts = up["messages"][-1]["content"]
+        self.assertEqual([p.get("cache_control") for p in parts], [None, eph, None])
 
     async def test_tool_calling_streaming_translation(self):
         self.upstream_stream_chunks = [

@@ -84,9 +84,13 @@ home named below.
   `docs/FLASHNEXT-PLAN.md` and the German sources are gitignored and stay so. Scan every new artifact
   (reports, copied server logs) for identifying values before committing —
   paths fold to `@HOME@`.
-- **Upstream posts are written by the human.** llama.cpp's CONTRIBUTING
-  forbids AI-written issues/PRs/comments; measurements, tables and
-  reproducers may be handed over, prose may not.
+- **Upstream posts: the rule depends on the project.** llama.cpp's
+  CONTRIBUTING forbids AI-written issues/PRs/comments — there the human
+  writes; measurements, tables and reproducers may be handed over, prose
+  may not. Halogen's maintainer welcomes agent posts (#105, 24.09.2026):
+  there the agent drafts, the operator reads and approves each post, and
+  only then is it posted, headed "AI generated, human reviewed." Nothing
+  is posted without that approval, in either project.
 - **A guard's refusal must not be piped away.** build-llama.sh's MAX_REPLAY
   and the memory guard say no through stderr and a non-zero exit; a
   background `cmd 2>&1 | tail` reports tail's 0 and the refusal reads as

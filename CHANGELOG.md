@@ -22,6 +22,43 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
+## 0.7.0 — branch `night-2026-09-24`, not yet merged
+
+*Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code
+`2.1.267` / `2.1.281`. Nothing here is live until the branch is merged and the
+units restarted — the operator's step.*
+
+### Added
+
+*   **The prompt cache on disk can be switched on.** Upstream's
+    `HALOGEN_CACHE_DIR` names a directory inside the container, and
+    `halogenexec` forwarded an allowlist that did not carry it, so setting it
+    did nothing. It now mounts the host path at `/cache`. Measured 24.09.2026
+    on this machine: three deep conversations (186k / 176k / 74k tokens)
+    overbooking the 524288-position pool, a follow-up turn **175 s -> 2.3 s**
+    (p50), and after a server restart the first turn of the 186k one **188 s ->
+    2.7 s**. Not measured: the write rate near a full pool.
+
+*   **Claude Code's auto-mode classifier resumes from its own cache mark.** Its
+    requests end in a transcript that only grows and an instruction that
+    changes every call; Halogen snapshotted neither there, so every call
+    re-read the transcript. The vendored front end now places its third
+    snapshot at a `cache_control` mark inside the last user message, and the
+    bridge keeps the mark. Measured 24.09.2026, 24 recorded calls replayed:
+    prefill p50 **13.5 s -> 2.2 s**, a call **32.5 s -> 18.6 s**, verdicts
+    unchanged. The rest is reasoning, which the gateway's mode switches on;
+    turning it off was measured and rejected (18 of 48 benign calls came back
+    unusable or blocked).
+
+### Fixed
+
+*   **Client stop sequences reach the container again.** On the Anthropic path
+    the gateway replaced them with its own end tokens; the classifier's
+    `</block>` never arrived. Measured safe with reasoning on: 48 calls, no
+    reasoning cut.
+
+---
+
 ## 0.6.1 — 2026-09-24
 
 *Halogen Flash Server `0.13.8`, checkpoint `qwen38-flash-next-w4b` served WITH

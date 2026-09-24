@@ -72,3 +72,30 @@ DISK`); `/tmp` is tmpfs here and would be refused.
 - Disk wear: not measured. A new 190k conversation writes ~5.5 GB once, a
   follow-up turn only its new rows; `HALOGEN_CACHE_DISK_GIB` (default 64)
   bounds the directory, least recently used first.
+
+## Second run, same evening: the operator's shape, and the normal path's cost
+
+`real/`, 19:24-20:16, same side-server setup, fresh directory for B.
+
+**Side turns + live fillers** (the 22.09. shape: one 40k session with side
+requests forking at message 2, beside two live 200k conversations): identical
+with and without the directory — main turns 0 of 7 lost their history, side
+turns 3 of 6, 27,635 + 35,908 tokens recomputed in both. The side losses are
+not evictions the disk tier could catch: they missed on disk too (4 disk
+misses in B).
+
+**Decode of a long answer**, ABAB (memory, disk, memory, disk; turns 2-4,
+tokens per second of wall time, sessionload --long-answer, max_tokens 1200):
+
+| | 193k | 2k |
+|---|---|---|
+| A memory | 31.7 / 30.9 / 32.0 | 33.2 / 32.4 / 33.2 |
+| B disk | 31.8 / 31.1 / 31.5 | 33.1 / 32.3 / 32.8 |
+| A2 memory | 31.3 / 31.0 / 31.5 | 33.2 / 32.4 / 33.1 |
+| B2 disk | **26.7** / 31.3 / 32.1 | 32.6 / 32.6 / 34.5 |
+
+No cost on the normal path, with one exception, n=1 and not explained: in B2
+the first turn after the conversation was RESTORED from disk (turn 1: 33 s
+instead of 180-218 s cold, across a restart) ran 16 % slower; the two turns
+after it did not. A write behind that restore is the obvious suspect, not a
+shown cause.

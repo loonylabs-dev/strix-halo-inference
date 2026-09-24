@@ -921,6 +921,15 @@ exist in the base file.
   262k; `HALOGEN_CACHE_DISK_GIB` bounds it (default 64). **Needs a filesystem
   that accepts direct I/O — a tmpfs or overlay is refused**, so not `/tmp` on
   this machine (see the global `env-machine.md`: it is tmpfs here).
+  **It also catches evictions in a running server**, not only restarts:
+  measured 24.09.2026 on 0.13.8, three deep conversations overbooking the pool,
+  a follow-up turn fell from p50 175 s to 2.3 s, and after a restart the first
+  turn of a 186k conversation took 2.7 s instead of 188 s
+  (`bench/reports/2026-09-24_halogen-disk-cache/`). To switch it on, set a
+  HOST path in `~/.config/llm-stack.env` — `HALOGEN_CACHE_DIR=/mnt/…/halogen-cache`;
+  `halogenexec` mounts it at `/cache` and passes that to the container (before
+  24.09. its allowlist dropped the variable silently) — and restart the unit.
+  btrfs on NVMe accepts it here.
 * **Long-context decode and prefill** (0.12.0): the sparse-attention indexer's
   block select was the whole decode slope. Byte-identical output. At the 262,144
   window this stack serves, upstream reports serial decode 30.0 → 35.2 tok/s and

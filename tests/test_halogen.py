@@ -154,6 +154,38 @@ class TestTheQualitySidecarIsServed(unittest.TestCase):
                       "the container")
 
 
+# ------------------------------------------------------- prompt cache on disk ---
+class TestTheDiskCacheReachesTheContainer(unittest.TestCase):
+    """HALOGEN_CACHE_DIR (upstream 0.10.0) names a directory INSIDE the
+    container, and halogenexec's allowlist drops every variable it does not
+    name — so setting it in llm-stack.env did nothing at all, silently. The
+    host directory has to be mounted and the container told where it went.
+    Measured need 24.09.2026: a main session evicted while its subagents ran
+    came back cold, 53,199 tokens, 51.7 s of prefill.
+    """
+
+    def text(self):
+        return (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
+
+    def test_the_host_directory_is_mounted_and_named_inside(self):
+        t = self.text()
+        self.assertRegex(t, r'-v "\$CACHE_DIR_WANT:/cache', "no mount of the cache dir")
+        self.assertIn("HALOGEN_CACHE_DIR=/cache", t,
+                      "the container is not told where the mount is")
+
+    def test_its_bounds_are_forwarded(self):
+        m = re.search(r"^for var in (.*?); do$", self.text(), re.M | re.S)
+        names = m.group(1).replace("\\\n", " ").split()
+        for v in ("HALOGEN_CACHE_DISK_GIB", "HALOGEN_CACHE_PRUNE_OLD"):
+            self.assertIn(v, names, "%s would not reach the container" % v)
+
+    def test_it_is_opt_in(self):
+        t = self.text()
+        i = t.index('-v "$CACHE_DIR_WANT:/cache')
+        guard = t.rfind('if [ -n "$CACHE_DIR_WANT" ]', 0, i)
+        self.assertGreater(guard, 0, "the mount is not behind an opt-in")
+
+
 def _continues(text, line):
     """A continuation line of a backslash-wrapped directive."""
     lines = text.splitlines()

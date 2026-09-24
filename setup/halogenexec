@@ -138,12 +138,24 @@ for var in HALOGEN_TEMPERATURE HALOGEN_TOP_P HALOGEN_TOP_K HALOGEN_MIN_P \
            HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES \
            HALOGEN_CACHE_BRANCHES HALOGEN_EOS_GUARD \
            HALOGEN_FIT_TO_ROOM HALOGEN_FIT_TO_ROOM_FLOOR \
-           HALOGEN_CK_OVERLAY; do
+           HALOGEN_CK_OVERLAY HALOGEN_CACHE_DISK_GIB HALOGEN_CACHE_PRUNE_OLD; do
   val="${!var:-$(local_var "$var" 2>/dev/null || true)}"
   if [ -n "$val" ]; then
     EXTRA_ENV+=(-e "$var=$val")
   fi
 done
+
+# Prompt cache on disk (upstream 0.10.0). HALOGEN_CACHE_DIR is a HOST path
+# here; the container sees it as /cache. Unset, nothing is mounted and the
+# cache stays in memory only. The engine refuses a filesystem without direct
+# I/O (tmpfs, overlay) with a log line and carries on in memory — so /tmp is
+# the wrong place on a machine where it is tmpfs.
+CACHE_DIR_WANT="${HALOGEN_CACHE_DIR:-$(local_var HALOGEN_CACHE_DIR 2>/dev/null || true)}"
+if [ -n "$CACHE_DIR_WANT" ]; then
+  mkdir -p "$CACHE_DIR_WANT"
+  EXTRA_MOUNTS+=(-v "$CACHE_DIR_WANT:/cache:rw")
+  EXTRA_ENV+=(-e HALOGEN_CACHE_DIR=/cache)
+fi
 
 if [ "$FLAVOR" = "qwen38" ]; then
   SLOTS_WANT="${HALOGEN_KV_SLOTS:-$(local_var HALOGEN_KV_SLOTS)}"

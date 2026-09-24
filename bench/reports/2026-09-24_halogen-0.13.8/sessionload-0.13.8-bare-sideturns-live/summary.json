@@ -1,0 +1,54 @@
+{
+  "n": 8,
+  "errors": 0,
+  "main_turns": {
+    "n": 7,
+    "lost_history": 0,
+    "recomputed_tokens_sum": 28733,
+    "wall_s_sum": 63.3,
+    "wall_s_p50": 5.415,
+    "wall_s_max": 29.143
+  },
+  "side_turns": {
+    "n": 6,
+    "lost_history": 3,
+    "recomputed_tokens_sum": 41954,
+    "wall_s_sum": 49.4,
+    "wall_s_p50": 7.3505,
+    "wall_s_max": 13.664
+  },
+  "wall_s": {
+    "p50": 5.4399999999999995,
+    "max": 36.527,
+    "min": 5.21
+  },
+  "turn1_wall_s": [
+    36.527
+  ],
+  "decode_tps": {
+    "n": 1,
+    "min": 46.56,
+    "p50": 46.56,
+    "max": 46.56
+  },
+  "completion_tokens": [
+    2,
+    2,
+    3,
+    4,
+    4,
+    12,
+    52,
+    1101
+  ],
+  "later_turns_wall_s": {
+    "n": 7,
+    "p50": 5.415,
+    "p90": 29.143,
+    "max": 29.143
+  },
+  "prompt_tokens": {
+    "min": 38752,
+    "max": 67439
+  }
+}

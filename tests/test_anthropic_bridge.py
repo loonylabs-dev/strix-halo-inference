@@ -528,6 +528,28 @@ class TestGatewayAnthropicBridgeIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"stop_reason": "end_turn"', body)
         self.assertIn("event: message_stop\n", body)
 
+    async def _post(self, ant_req):
+        async with self.session.post(
+            f"{self.gw_url}/v1/messages",
+            headers={"x-api-key": "test-key", "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json=ant_req) as resp:
+            self.assertEqual(resp.status, 200)
+            await resp.read()
+        return self.received_upstream_requests[-1]["body"]
+
+    async def test_the_clients_stop_sequences_reach_the_container(self):
+        """The bridge maps stop_sequences to `stop`, and the gateway then
+        OVERWROTE that with its own end tokens: Claude Code's auto-mode
+        classifier asks for `</block>` and the server never heard of it
+        (every classifier answer of 24.09.2026 ended in `</block>` text the
+        client had asked to be cut)."""
+        up = await self._post({"model": "m", "max_tokens": 64,
+                               "stop_sequences": ["</block>"],
+                               "messages": [{"role": "user", "content": "x"}]})
+        self.assertIn("</block>", up["stop"])
+        self.assertIn("<|im_end|>", up["stop"], "the container's own end tokens went")
+
     async def test_tool_calling_streaming_translation(self):
         self.upstream_stream_chunks = [
             {

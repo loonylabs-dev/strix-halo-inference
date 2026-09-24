@@ -2646,7 +2646,12 @@ async def handler(req):
             if "max_thinking_tokens" in p:
                 oai_p["max_thinking_tokens"] = p["max_thinking_tokens"]
             if "stop" in p:
-                oai_p["stop"] = p["stop"]
+                # MERGED, not assigned: the bridge already put the client's
+                # stop_sequences into oai_p["stop"], and assigning the
+                # container's end tokens over them dropped every one —
+                # `</block>` for Claude Code's classifier (24.09.2026).
+                oai_p["stop"] = list(dict.fromkeys(
+                    list(oai_p.get("stop") or []) + list(p["stop"])))
             out_p = json.dumps(oai_p).encode("utf-8")
             translate_stream = AB.StreamTranslator(model_name=SERVED or "halogen") if streaming else None
             return await forward(req, body, out_p, early, answered, sniff,

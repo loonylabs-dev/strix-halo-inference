@@ -839,9 +839,9 @@ in 346 tokens. The trace records `stop_reason` and `max_tokens` so that a long
 request can be read: `tool_calls`/`stop` is a model that finished, `length` is
 a cap that cut it off.
 
-The EFFORT MAP itself is unchanged by the 0.12.3 upgrade — byte-identical
-between 0.8.1 and 0.12.3, checked 22.09.2026, so the behaviour described above
-still holds. What DID change is that a second bound now sits under the
+The EFFORT MAP itself is unchanged by the 0.12.3 and 0.13.8 upgrades —
+byte-identical between 0.8.1 and 0.12.3 (checked 22.09.2026) and between 0.12.3
+and 0.13.8 (checked 24.09.2026), so the behaviour described above still holds. What DID change is that a second bound now sits under the
 budget: 0.11.0's answer room keeps `max(1024, 15% of max_tokens)` for the
 answer and cuts the think budget to what is left, so this repo's
 `HALOGEN_MAX_THINKING_TOKENS=26000` is the effective cap only above a
@@ -941,6 +941,48 @@ exist in the base file.
   REFUSED. The weights repo's own `tokenizer/` passes — worth knowing because
   this stack mounts that directory and a refusal to start would otherwise read
   as a broken upgrade.
+
+### What arrived between 0.12.3 and 0.13.8
+
+Re-cut onto `0.13.8` on 24.09.2026 (a three-way merge of the 0.13.4 cut; the
+change set against the base is identical line for line). Unlike the section
+above, the first two points were **measured here**
+(`bench/reports/2026-09-24_halogen-0.13.8/`):
+
+* **Cache placement under side turns** (0.13.3–0.13.5, upstream #94/#97): in
+  the side-turn load where 0.13.4 lost 3 of 7 main-turn histories, 0.13.8 lost
+  0 of 7 against 0.12.3's 1 of 7, in 947 s against 1412 s (n=1, both bare).
+* **The history renders byte-identically** to 0.12.3 for this client's
+  sessions (16 of 16 replayed). 0.13.6 merges consecutive assistant messages
+  into one turn (upstream #89's split-history trigger); the Anthropic bridge
+  never sends those, so nothing changes here.
+* **Still missing upstream, and not new: the two-sided pack** (#97). When a
+  conversation's KV region cannot grow and nothing can be moved, the server
+  shortens that turn's `max_tokens` rather than forgetting a neighbour
+  (`kv pool: … the turn runs in the N positions it has left`, and
+  `max_tokens clamped A -> B` on the request line). This has existed since
+  0.11.5; 0.12.3 does it too. The floor, per upstream's 0.11.5 changelog, is the
+  answer room — `max(1024, 15%)` of `max_tokens`, twice that when the request
+  thinks — so a Claude Code turn (32000, thinking) is never cut below ~9,600;
+  below the floor a region is forgotten instead. No knob for the floor exists
+  in the front-end. In the 91.6 %-full side-turn load, 12000-token turns were
+  cut to ~3,000 on both releases.
+* **The end-of-turn guard** (0.13.4, #84): an `<|im_end|>` inside the think
+  block or an open tool call is kept as text instead of ending the reply with
+  nothing. `HALOGEN_EOS_GUARD=0` restores 0.13.3; halogenexec forwards it.
+* **Tool arguments** (0.13.7): a whole number for a `"number"` parameter stays
+  a whole number; `nan`/`inf` no longer produce invalid JSON.
+* **Logprobs at temperature 0 and `top_logprobs`** on the first generated token
+  (0.13.8), for classifiers. Unused here.
+
+**The quality sidecar is served again** since 24.09.2026, after one day bare.
+Agent turns that end on their own announcement ("Jetzt X:" then
+`<|im_end|>`, `setup/defects.json` `halogen-sidecar-ends-agent-turns`) happen
+with the sidecar AND bare, at different positions — roughly 6 % vs 10 % of deep
+announcements, an estimate. The file itself was replaced the same day: the copy
+on disk predated 0.6.0 (draft head at 4 bits); the current one bought +0.6 %
+decode at 193k and +1.8 % at 2k (`bench/reports/2026-09-24_halogen-sidecar-head/`).
+An install whose container log says "predates 0.6.0" has the old file.
 
 ### Why the window stays at 262,144
 

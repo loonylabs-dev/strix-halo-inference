@@ -25,8 +25,8 @@ their dates are not the days the work was done; the dates in the text are.
 ## 0.6.1 — 2026-09-24
 
 *Halogen Flash Server `0.13.8`, checkpoint `qwen38-flash-next-w4b` served WITH
-its quality sidecar again (the pre-0.6.0 file on disk); client Claude Code
-`2.1.267`.*
+its quality sidecar again — the current file (2.40 GiB, 8-bit draft head)
+since 24.09. 12:40; client Claude Code `2.1.267`.*
 
 ### Changed
 
@@ -54,6 +54,14 @@ its quality sidecar again (the pre-0.6.0 file on disk); client Claude Code
     reliability and cost upstream's ~3.8 % perplexity on prose. The stall
     itself remains, at a few percent per announcement, on both.
     `bench/reports/2026-09-24_halogen-0.13.8/`, upstream #89.
+
+*   **The sidecar on disk was the pre-0.6.0 file**, so the draft head ran at
+    4 bits (the container said "predates 0.6.0"). Replaced by the current
+    file from the weights repo, sha256-checked. Measured ABBA, greedy prose,
+    thinking off: **+0.6 % decode at 193k, +1.8 % at 2k** — real, and well
+    under upstream's ~4 %; answers unchanged. Sampling at temperature 1.0,
+    Claude Code's regime, not measured.
+    `bench/reports/2026-09-24_halogen-sidecar-head/`.
 
 ### Added
 

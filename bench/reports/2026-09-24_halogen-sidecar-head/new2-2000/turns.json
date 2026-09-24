@@ -1,0 +1,46 @@
+[
+  {
+    "session": 0,
+    "turn": 0,
+    "wall_s": 29.811,
+    "prompt_tokens": 1998,
+    "completion_tokens": 941,
+    "finish_reason": "stop",
+    "prompt_ms": 3275.4,
+    "predicted_ms": 26527.1,
+    "cached_tokens": null
+  },
+  {
+    "session": 0,
+    "turn": 1,
+    "wall_s": 31.977,
+    "prompt_tokens": 2986,
+    "completion_tokens": 1066,
+    "finish_reason": "stop",
+    "prompt_ms": 2185.1,
+    "predicted_ms": 29774.9,
+    "cached_tokens": 1998
+  },
+  {
+    "session": 0,
+    "turn": 2,
+    "wall_s": 31.099,
+    "prompt_tokens": 4096,
+    "completion_tokens": 1011,
+    "finish_reason": "stop",
+    "prompt_ms": 2367.5,
+    "predicted_ms": 28711.5,
+    "cached_tokens": 2986
+  },
+  {
+    "session": 0,
+    "turn": 3,
+    "wall_s": 31.797,
+    "prompt_tokens": 5151,
+    "completion_tokens": 1057,
+    "finish_reason": "stop",
+    "prompt_ms": 2312.5,
+    "predicted_ms": 29461.3,
+    "cached_tokens": 4096
+  }
+]

@@ -566,8 +566,7 @@ class TestGatewayAnthropicBridgeIntegration(unittest.IsolatedAsyncioTestCase):
         up = await self._post({"model": "m", "max_tokens": 64,
                                "stop_sequences": ["</block>"],
                                "messages": [{"role": "user", "content": "x"}]})
-        self.assertIn("</block>", up["stop"])
-        self.assertIn("<|im_end|>", up["stop"], "the container's own end tokens went")
+        self.assertEqual(up["stop"], ["</block>"])
 
     async def test_a_cache_breakpoint_reaches_the_container(self):
         eph = {"type": "ephemeral"}

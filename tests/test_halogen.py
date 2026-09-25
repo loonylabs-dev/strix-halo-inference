@@ -405,19 +405,23 @@ class TestWhatTheGatewayInjectsForAContainerBackend(unittest.TestCase):
                          "messages": [], "stream_options": {"include_usage": False}})
         self.assertEqual(p["stream_options"], {"include_usage": False})
 
-    def test_the_two_end_tokens_are_added_as_stop_strings(self):
-        """Belt and braces with serve_api.py's own EOS registration: the
-        patched server turns client stop STRINGS into token ids, so these two
-        arrive as EOS ids even if the mount is ever lost. Qwen-specific, and
-        that is why they are keyed on the served model rather than sent to
-        every OpenAI backend."""
+    def test_the_end_tokens_are_not_added_as_stop_strings(self):
+        """They were, as belt and braces with serve_api.py's own EOS
+        registration — and as STRINGS they undid Halogen 0.13.4's end-of-turn
+        guard (upstream #84): the guard keeps an in-think `<|im_end|>` as
+        literal text, Halogen's text matcher then found that text and ended
+        the turn with no content. bench/reports/2026-09-25_stop-strings/:
+        5/5 empty turns with them, 0/5 without. The ids stay registered by
+        serve_api.py's get_eos_ids, so nothing is lost at the token level."""
         p = self.inject({"model": "halogen-qwen3.8-flash-next", "messages": []})
-        self.assertEqual(p["stop"], ["<|im_end|>", "<|endoftext|>"])
+        self.assertNotIn("stop", p)
 
     def test_a_clients_own_stop_list_is_kept(self):
         p = self.inject({"model": "halogen-qwen3.8-flash-next", "messages": [],
                          "stop": "###"})
-        self.assertEqual(p["stop"][0], "###")
+        # Passed on as sent: a bare string is valid OpenAI, and the gateway
+        # no longer builds a list of its own to append to.
+        self.assertEqual(p["stop"], "###")
 
     def test_nothing_is_injected_for_a_llama_backend(self):
         GW.BACKEND_FLAVOR = "anthropic"
@@ -434,16 +438,18 @@ class TestTheInjectionExistsOnce(unittest.TestCase):
     exists twice loses a clause in one of them — that is what happened to
     switch-model.sh's store block, and it is why this one is a function."""
 
-    def test_the_stop_tokens_are_written_down_once(self):
+    def test_the_end_tokens_are_not_spelled_out_as_stops_again(self):
+        """The list is gone on purpose (see the test above); bringing it back
+        by habit would re-open the empty turns of 25.09.2026."""
         src = (REPO / "setup" / "gateway" / "gateway.py").read_text(
             encoding="utf-8")
         self.assertEqual(
-            src.count('"<|im_end|>", "<|endoftext|>"'), 1,
-            "the Qwen end tokens are spelled out more than once")
+            src.count('"<|im_end|>", "<|endoftext|>"'), 0,
+            "the Qwen end tokens are back as gateway stop strings")
 
     def test_both_arms_go_through_it(self):
         """With modes and without: the second arm is what an unknown served
-        model falls into, and it must still get the stop tokens."""
+        model falls into, and it must still get the same extras."""
         flavor = GW.BACKEND_FLAVOR
         GW.BACKEND_FLAVOR = "openai"
         self.addCleanup(lambda: setattr(GW, "BACKEND_FLAVOR", flavor))
@@ -453,7 +459,7 @@ class TestTheInjectionExistsOnce(unittest.TestCase):
                 with mock.patch.object(GW, "log", lambda *a: None):
                     p, _ = GW.inject_model_kwargs(
                         p, served="halogen-qwen3.8-flash-next", modes=modes)
-                self.assertEqual(p["stop"], ["<|im_end|>", "<|endoftext|>"])
+                self.assertNotIn("stop", p)
                 self.assertIs(p["enable_thinking"], False)
                 self.assertEqual(p["stream_options"], {"include_usage": True})
 

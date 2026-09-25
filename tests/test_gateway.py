@@ -228,17 +228,15 @@ class TestMaxTokensClamp(unittest.TestCase):
         self.assertEqual(GW.prompt_chars({"prompt": "xyz"}), 3)
         self.assertEqual(GW.prompt_chars({}), 0)
 
-    def test_the_stop_tokens_still_arrive(self):
-        """container_extras has one other job, and the clamp must not cost it."""
+    def test_the_clamp_leaves_a_clients_stop_list_alone(self):
+        """container_extras adds no stop strings of its own any more (the
+        end tokens undid Halogen's #84 guard, 25.09.2026); the clamp must
+        neither drop nor extend what the client sent."""
         self.arm()
-        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP})
-        # Positive control: an empty CONTAINER_STOPS would make the loop below
-        # assert nothing at all, which is what tests/test_vacuity.py exists to
-        # catch — and did catch, on the first version of this test.
-        self.assertEqual(len(GW.CONTAINER_STOPS), 2)
+        p = GW.container_extras({"max_tokens": 32000, "messages": self.DEEP,
+                                 "stop": ["</block>"]})
         self.assertEqual(p["max_tokens"], 8000)
-        for tok in GW.CONTAINER_STOPS:
-            self.assertIn(tok, p["stop"])
+        self.assertEqual(p["stop"], ["</block>"])
 
 
 class TestCacheLossNote(unittest.TestCase):

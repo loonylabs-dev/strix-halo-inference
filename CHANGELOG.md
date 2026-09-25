@@ -22,6 +22,31 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
+## 0.7.1 — 2026-09-25
+
+*Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code
+`2.1.281`.*
+
+### Fixed
+
+*   **The gateway no longer sends Qwen's end tokens as stop strings.** It
+    added `<|im_end|>` and `<|endoftext|>` to every request, and as STRINGS
+    they undid Halogen's end-of-turn guard (0.13.4, upstream #84): the guard
+    keeps an `<|im_end|>` the model writes while thinking as text, and the
+    stop matcher then ended the turn on that text — no answer, no tool call.
+    Measured 25.09.2026 straight against Halogen, a prompt that makes the
+    model write the token while reasoning: **5/5 empty turns with the stop
+    strings, 0/5 without** (the guard kept the token 11-22 times a turn).
+    n=5 per arm, one prompt family. In real traffic it was rare — 1 of 1053
+    streamed turns 22.-25.09. — and Claude Code recovered on its own at a
+    cost of ~3.5 min. The ids stay registered as end tokens by the stack's
+    `serve_api.py`, so nothing is lost at the token level.
+*   **Non-streamed answers longer than 8 KB keep their token figures in the
+    trace.** The gateway reads its accounting from the first and last 8 KB
+    of an answer; a non-streamed answer is one JSON object, so past that size
+    neither end parsed and the trace row carried only its duration. 2 of 170
+    non-streamed requests 22.-25.09. (long auto-mode classifier answers).
+
 ## 0.7.0 — 2026-09-24
 
 *Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code

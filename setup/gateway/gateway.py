@@ -1744,16 +1744,22 @@ def resolve_slug(model, served, modes):
     return wanted, hit
 
 
-# Qwen3.8's two end tokens, and the usage block the trace needs. ONE copy:
-# these eight lines stood in both arms of inject_model_kwargs, and a guard
-# that exists twice loses a clause in one of them.
+# The usage block the trace needs, and the reservation clamp. ONE copy:
+# these lines stood in both arms of inject_model_kwargs, and a guard that
+# exists twice loses a clause in one of them.
 #
-# The stop STRINGS are belt and braces with setup/halogen/serve_api.py, which
-# registers both ids itself and additionally turns a request's stop strings
-# into EOS ids — so they arrive as real stop tokens even if that mount is
-# ever lost. Keyed on the served model rather than on "any OpenAI backend":
-# they are this model's tokens, not a general truth.
-CONTAINER_STOPS = ("<|im_end|>", "<|endoftext|>")
+# NO STOP STRINGS OF THE GATEWAY'S OWN. Until 25.09.2026 this added Qwen's two
+# end tokens, `<|im_end|>` and `<|endoftext|>`, as stop strings — belt and
+# braces with setup/halogen/serve_api.py, whose get_eos_ids registers both ids
+# itself. As STRINGS they undid Halogen 0.13.4's end-of-turn guard (upstream
+# #84): the guard keeps an `<|im_end|>` written inside the think block as
+# literal text, and Halogen's stop matcher, which reads reasoning and answer
+# alike, found that text and ended the turn — finish "stop", no content, no
+# tool call. Measured: 5/5 empty turns with them, 0/5 without, the guard
+# keeping the token 11-22 times a turn (bench/reports/2026-09-25_stop-strings/).
+# A real agent turn lost 3.5 min that way at 09:16:37 that day. The ids stay
+# EOS ids through serve_api.py, so an end token outside the think block still
+# ends the reply; a client's own stop list is passed on untouched.
 
 # CLAMP_DEEP_PROMPT_CHARS / CLAMP_MAX_TOKENS — a clamp that only fires where it
 # can do any good. Both 0 = off, which is the default and stays it.
@@ -1829,12 +1835,6 @@ def container_extras(p):
         # Without it the upstream emits no usage at all and every token
         # column in the trace stays empty.
         p.setdefault("stream_options", {"include_usage": True})
-    given = p.get("stop")
-    stops = [given] if isinstance(given, str) else list(given or [])
-    for tok in CONTAINER_STOPS:
-        if tok not in stops:
-            stops.append(tok)
-    p["stop"] = stops
     # The reservation clamp. Three conditions, all required:
     #   - both settings are on (either at 0 disables the pair),
     #   - the PROMPT is at or over the threshold — a shallow request keeps its

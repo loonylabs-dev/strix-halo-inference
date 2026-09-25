@@ -1,0 +1,15 @@
+[1/10] gateway-stops  stop       content=0 reasoning_end_token=False zeroed=True took=6.64s
+[2/10] no-stops       stop       content=211 reasoning_end_token=True zeroed=False took=30.74s
+[3/10] no-stops       stop       content=0 reasoning_end_token=True zeroed=False took=20.41s
+[4/10] gateway-stops  stop       content=0 reasoning_end_token=False zeroed=True took=3.73s
+[5/10] gateway-stops  stop       content=0 reasoning_end_token=False zeroed=True took=4.67s
+[6/10] no-stops       stop       content=0 reasoning_end_token=True zeroed=False took=28.83s
+[7/10] no-stops       stop       content=157 reasoning_end_token=True zeroed=False took=26.64s
+[8/10] gateway-stops  stop       content=0 reasoning_end_token=False zeroed=True took=4.0s
+[9/10] gateway-stops  stop       content=0 reasoning_end_token=False zeroed=True took=3.46s
+[10/10] no-stops       stop       content=0 reasoning_end_token=True zeroed=False took=27.89s
+
+arm             runs  empty+zeroed  end-token-in-reasoning  errors
+gateway-stops      5             5                       0       0
+no-stops           5             0                       5       0
+EXIT=0

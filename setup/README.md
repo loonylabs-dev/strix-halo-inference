@@ -712,6 +712,31 @@ for `llama-server`, and this has none; `models.sh` knows the names, maps them to
 their own units, and everything else — the store, the preflight, the one-backend
 check — runs the same code for both.
 
+### No route out
+
+The engine is a closed binary (`LicenseRef-Peonist-EULA`), and every prompt
+passes through it. Whether it sends anything anywhere is therefore not asked
+of it: `halogenexec` puts the container on the podman network
+`halogen-isolated`, created `--internal` (no default route), and publishes the
+API on `127.0.0.1` only — the same binding every llama profile uses, so the
+LAN reaches the model through the gateway and nowhere else. Until 25.09.2026
+it ran `--net=host`; CHANGELOG 0.7.1 has what that exposed and how the
+isolation was verified on the running container.
+
+To check it again, from inside the running container (any address will do;
+"Network is unreachable" is the answer that counts, a timeout is not):
+
+    podman exec -i halogen python3 -c 'import socket; socket.create_connection(("1.1.1.1", 443), 3)'
+
+and from outside, `setup/smoketest.sh`, section 4.
+
+Two consequences. The image's own download path (`HALOGEN_DOWNLOAD`) cannot
+work from inside — fetch with `setup/scripts/fetch-halogen.sh` on the host,
+which is the only way this stack ever used. And a network named
+`halogen-isolated` that was created without `--internal` stops the start
+rather than being used; `podman network rm halogen-isolated` and the next
+start recreates it.
+
 ### Multimodal Vision Tower & Memory Tuning
 
 Halogen supports multimodal input through an optional vision projector/encoder:

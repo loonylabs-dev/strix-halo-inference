@@ -55,7 +55,10 @@ this silicon:
   from 2k to 193k of context. Its prompt cache lives in RAM **and on NVMe**:
   a deep conversation that was evicted, or survived a restart, resumes in
   2-3 s instead of ~3 minutes
-  ([report](bench/reports/2026-09-24_halogen-disk-cache/README.md)).
+  ([report](bench/reports/2026-09-24_halogen-disk-cache/README.md)). Its
+  engine is closed source, so the container runs with **no route out** and
+  its port on loopback only
+  ([why and how it was tested](setup/README.md#no-route-out)).
 * **llama.cpp** ([`setup/scripts/build-llama.sh`](setup/scripts/build-llama.sh)):
   Upstream master plus a small curated set of hardware patches
   ([`setup/patches/`](setup/patches/README.md)) for the broad GGUF model

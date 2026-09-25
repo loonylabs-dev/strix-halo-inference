@@ -55,6 +55,26 @@ HOST_PORT="${HALOGEN_HOST_PORT:-8080}"
 CONTAINER_PORT=8731
 IMAGE="$(halogen_image "$FLAVOR")"
 
+# No route out. The engine is a closed binary (LicenseRef-Peonist-EULA) and
+# every prompt passes through it, so whether it sends anything is not asked of
+# it: an --internal network has no default route, and the API is published on
+# loopback only — where every llama profile binds, behind the gateway's token.
+# Replaced --net=host on 25.09.2026; measurement and reasons in
+# tests/test_halogen.py, TestTheContainerCannotReachOut. Nothing the start
+# needs is lost: the entrypoint downloads only when HALOGEN_DOWNLOAD is set,
+# which the allowlist below never forwards, into /models, which is mounted ro.
+NET=halogen-isolated
+if podman network exists "$NET"; then
+  if [ "$(podman network inspect "$NET" --format '{{.Internal}}')" != "true" ]; then
+    echo "halogenexec: podman network $NET exists but is not --internal." >&2
+    echo "  It would give the container a route out. Remove it and restart:" >&2
+    echo "    podman network rm $NET" >&2
+    exit 1
+  fi
+else
+  podman network create --internal "$NET" >/dev/null
+fi
+
 # The sha256 of /halogen/tools/serve_api.py in the image the vendored copy
 # was cut from. Written in its header too; compared by tests/test_halogen.py
 # so they cannot drift apart.
@@ -171,7 +191,8 @@ if [ "$FLAVOR" = "qwen38" ]; then
     --device /dev/dri \
     --security-opt label=disable \
     -v "$MODELS_DIR":/models:ro \
-    --net=host \
+    --network "$NET" \
+    -p "127.0.0.1:$HOST_PORT:$HOST_PORT" \
     -e HALOGEN_API_PORT="$HOST_PORT" \
     -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
     -e HALOGEN_SLOT_CTX="$SLOT_CTX" \
@@ -189,7 +210,8 @@ exec podman run --rm \
   --security-opt label=disable \
   -v "$MODELS_DIR":/models:ro \
   "${EXTRA_MOUNTS[@]}" \
-  --net=host \
+  --network "$NET" \
+  -p "127.0.0.1:$HOST_PORT:$HOST_PORT" \
   -e HALOGEN_API_PORT="$HOST_PORT" \
   -e HALOGEN_KV_SLOTS="$SLOTS_WANT" \
   -e HALOGEN_KV_POOL_POSITIONS="$POOL_WANT" \

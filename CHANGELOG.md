@@ -25,9 +25,30 @@ their dates are not the days the work was done; the dates in the text are.
 ## 0.7.1 — 2026-09-25
 
 *Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code
-`2.1.281`.*
+`2.1.281`; podman `5.8.4` (netavark, pasta).*
 
 ### Fixed
+
+*   **The Halogen container has no route out, and its port is no longer on
+    the LAN.** It ran `--net=host`: the engine — a closed binary under a
+    proprietary EULA, which sees every prompt and so every file a coding
+    client sends — had the host's full network access, and the API listened
+    on `0.0.0.0:8080`, which Fedora Workstation's default firewall zone lets
+    in (1025-65535). Measured 25.09.2026: `/health` answered HTTP 200 on the
+    host's LAN address, past the gateway's token and priority, where every
+    llama profile binds `127.0.0.1` and `setup/smoketest.sh` expects exactly
+    that. Now the container joins an `--internal` podman network (no default
+    route) and the port is published on `127.0.0.1` only. Verified the same
+    day on the production container after its restart: from inside, an
+    IPv4 and an IPv6 address on the internet, a public hostname (DNS) and
+    the host's own LAN address all "network unreachable", the routing table
+    holding only the internal subnet; from outside, `127.0.0.1:8080`
+    answering and the LAN address refused; `setup/smoketest.sh` all green
+    through the gateway's local, LAN and tunnel zones. Nothing the start
+    needs is lost — the image's entrypoint downloads only when
+    `HALOGEN_DOWNLOAD` is set, which `halogenexec` does not forward, and
+    `/models` is mounted read-only.
+    A network of the same name without `--internal` stops the start.
 
 *   **The gateway no longer sends Qwen's end tokens as stop strings.** It
     added `<|im_end|>` and `<|endoftext|>` to every request, and as STRINGS

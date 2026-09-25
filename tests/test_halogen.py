@@ -935,7 +935,7 @@ class TestTheMountCheckActuallyRefuses(unittest.TestCase):
 
     import os as _os
 
-    def run_with_stub(self, cp_writes, create_rc=0):
+    def run_with_stub(self, cp_writes, create_rc=0, internal="true"):
         import os
         import stat
         import subprocess
@@ -957,8 +957,9 @@ class TestTheMountCheckActuallyRefuses(unittest.TestCase):
                      '  cp)     printf %%s %r > "$3"; exit 0 ;;\n'
                      '  rm)     exit 0 ;;\n'
                      '  run)    echo "STARTED" ; exit 0 ;;\n'
+                     '  network) [ "$2" = inspect ] && echo %s; exit 0 ;;\n'
                      '  *)      exit 0 ;;\n'
-                     "esac\n" % (create_rc, cp_writes))
+                     "esac\n" % (create_rc, cp_writes, internal))
         os.chmod(podman, os.stat(podman).st_mode | stat.S_IEXEC)
         env = dict(os.environ)
         env["PATH"] = stub + os.pathsep + env["PATH"]
@@ -984,6 +985,15 @@ class TestTheMountCheckActuallyRefuses(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertNotIn("STARTED", r.stdout)
         self.assertIn("could not read", r.stderr)
+
+    def test_a_network_without_internal_stops_the_start(self):
+        """Same-named, created without --internal: the container would get a
+        route out while the unit reads as isolated. TestTheContainerCannot
+        ReachOut has why the route matters."""
+        r = self.run_with_stub("irrelevant", internal="false")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertNotIn("STARTED", r.stdout)
+        self.assertIn("is not --internal", r.stderr)
 
 
 class TestTheDefectIsFiled(unittest.TestCase):
@@ -1408,6 +1418,86 @@ class TestTheClientsBreakpointBecomesTheThirdPlace(unittest.TestCase):
         src = (REPO / "setup" / "halogen" / "serve_api.py").read_text(encoding="utf-8")
         body = src[src.index("    def render_prompt("):src.index("    def modes_status(")]
         self.assertIn("breakpoint_cut(msgs, text)", body)
+
+
+# ------------------------------------------------------------------ egress ---
+class TestTheContainerCannotReachOut(unittest.TestCase):
+    """Halogen's engine is a closed binary under a proprietary EULA
+    (`org.opencontainers.image.licenses: LicenseRef-Peonist-EULA`), and every
+    prompt — Claude Code sends file contents — passes through it. Whether it
+    sends anything anywhere cannot be read from its source, so it is not
+    asked: the container gets no route out.
+
+    Until 25.09.2026 it ran `--net=host`: full network access, and the API
+    port on 0.0.0.0, which the FedoraWorkstation firewall zone lets in from
+    the LAN (1025-65535 open by default) — past the gateway's token and
+    priority, where every llama profile binds 127.0.0.1. An `--internal`
+    podman network has no default route; measured the same day with a
+    throwaway container on this host: 1.1.1.1, IPv6, ghcr.io (DNS) and the
+    host's own LAN address all unreachable, 127.0.0.1:<port> answering 200,
+    the LAN address not.
+
+    Read from the source, not from a stub run: the stub cannot reach
+    `podman run` on the passing path (TestTheMountCheckActuallyRefuses says
+    why), and a second `podman run` added later is exactly what this has to
+    catch.
+    """
+
+    def src(self):
+        return (REPO / "setup" / "halogenexec").read_text(encoding="utf-8")
+
+    def run_commands(self):
+        """Every `podman run` with its continuation lines joined."""
+        lines, cmds, cur = self.src().splitlines(), [], None
+        for line in lines:
+            if cur is None and re.search(r"\bpodman run\b", line) \
+                    and not line.lstrip().startswith(("#", "echo")):
+                cur = ""
+            if cur is not None:
+                cur += " " + line.rstrip().rstrip("\\")
+                if not line.rstrip().endswith("\\"):
+                    cmds.append(cur)
+                    cur = None
+        return cmds
+
+    def commands(self):
+        """The positive control, asserted in each test that loops (see
+        tests/test_vacuity.py): one run per flavor, or the loops prove less."""
+        cmds = self.run_commands()
+        self.assertGreaterEqual(len(cmds), 2, "the parser found fewer "
+                                "`podman run` commands than flavors")
+        return cmds
+
+    def test_no_run_uses_the_host_network(self):
+        cmds = self.commands()
+        self.assertTrue(cmds)
+        for cmd in cmds:
+            self.assertNotRegex(cmd, r"--net(work)?[= ]+host",
+                                "a Halogen container on the host network "
+                                "can reach anything the host can")
+
+    def test_every_run_joins_the_internal_network(self):
+        src = self.src()
+        m = re.search(r'podman network create --internal "\$(\w+)"', src)
+        self.assertIsNotNone(m, "halogenexec no longer creates an --internal "
+                                "network")
+        var = m.group(1)
+        cmds = self.commands()
+        self.assertTrue(cmds)
+        for cmd in cmds:
+            self.assertIn('--network "$%s"' % var, cmd)
+
+    def test_an_existing_network_is_checked_for_internal(self):
+        """`podman network exists` alone would accept a same-named network
+        someone created without --internal — isolation by name only."""
+        self.assertRegex(self.src(),
+                         r"podman network inspect[^\n]*\.Internal")
+
+    def test_the_port_is_published_on_loopback_only(self):
+        cmds = self.commands()
+        self.assertTrue(cmds)
+        for cmd in cmds:
+            self.assertRegex(cmd, r'-p "?127\.0\.0\.1:\$HOST_PORT:\$HOST_PORT"?')
 
 
 if __name__ == "__main__":

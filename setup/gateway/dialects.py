@@ -30,6 +30,7 @@ Design rules for anything added here:
 import collections
 import hashlib
 import json
+import re
 
 ANTHROPIC = "anthropic"
 OPENAI = "openai"
@@ -410,6 +411,40 @@ def reuse_from_object(obj):
     return None
 
 
+_ACCOUNTING_KEY = re.compile(r'"(usage|timings)"\s*:\s*\{')
+_FINISH_REASON = re.compile(r'"finish_reason"\s*:\s*"(\w+)"')
+
+
+def _accounting_from_fragments(text):
+    """The accounting blocks of a body that no longer parses as a whole, as
+    one synthetic object, or None.
+
+    A non-streamed answer is ONE JSON object on one line; the gateway keeps
+    only its first and last SNIFF_BYTES, so past that size neither end parses
+    and every *_from_text below answered None — the trace row of 25.09.2026
+    09:36:18 held its duration and nothing else. `usage` and `timings` are
+    small and come last, so the tail still holds them whole: each is decoded
+    from its own opening brace, which only succeeds on a complete block.
+
+    A quoted `"usage": {` inside the model's text cannot match: within a JSON
+    string its quotes are escaped, so the pattern's bare `":` never occurs
+    there. The LAST occurrence wins, which is the top-level one.
+    """
+    obj = {}
+    dec = json.JSONDecoder()
+    for m in _ACCOUNTING_KEY.finditer(text):
+        try:
+            val, _ = dec.raw_decode(text, m.end() - 1)
+        except ValueError:
+            continue
+        if isinstance(val, dict):
+            obj[m.group(1)] = val
+    reasons = _FINISH_REASON.findall(text)
+    if reasons:
+        obj["choices"] = [{"finish_reason": reasons[-1]}]
+    return obj or None
+
+
 def _stop_reason_from_object(obj):
     if not isinstance(obj, dict):
         return None
@@ -459,7 +494,7 @@ def stop_reason_from_text(text):
         try:
             best = _stop_reason_from_object(json.loads(text))
         except Exception:
-            pass
+            best = _stop_reason_from_object(_accounting_from_fragments(text))
     return best
 
 
@@ -517,7 +552,7 @@ def reuse_from_text(text):
         try:
             best = reuse_from_object(json.loads(text))
         except Exception:
-            best = None
+            best = reuse_from_object(_accounting_from_fragments(text))
     return best
 
 
@@ -575,7 +610,7 @@ def output_from_text(text):
         try:
             best = output_from_object(json.loads(text))
         except Exception:
-            best = None
+            best = output_from_object(_accounting_from_fragments(text))
     return best
 
 
@@ -690,6 +725,17 @@ def rates_from_text(text):
     """
     if not text:
         return None
+    ok = lambda v: isinstance(v, (int, float)) and v > 0
+
+    def pair(t):
+        if not isinstance(t, dict):
+            return None
+        r, w = t.get("prompt_per_second"), t.get("predicted_per_second")
+        if ok(r) or ok(w):
+            return (round(r, 1) if ok(r) else None,
+                    round(w, 1) if ok(w) else None)
+        return None
+
     best = None
     for chunk in text.split("\n"):
         line = chunk.strip()
@@ -698,16 +744,13 @@ def rates_from_text(text):
         if not line.startswith("{"):
             continue
         try:
-            t = json.loads(line).get("timings")
+            got = pair(json.loads(line).get("timings"))
         except Exception:
             continue
-        if not isinstance(t, dict):
-            continue
-        r, w = t.get("prompt_per_second"), t.get("predicted_per_second")
-        ok = lambda v: isinstance(v, (int, float)) and v > 0
-        if ok(r) or ok(w):
-            best = (round(r, 1) if ok(r) else None,
-                    round(w, 1) if ok(w) else None)
+        if got:
+            best = got
+    if best is None:
+        best = pair((_accounting_from_fragments(text) or {}).get("timings"))
     return best
 
 

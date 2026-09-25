@@ -1805,6 +1805,44 @@ class TestWarmIsAMeasurement(unittest.TestCase):
             ' "prompt_tokens_details": {"cached_tokens": 90}}}')
         self.assertEqual(got, (90, 10))
 
+    def _cut_like_the_gateway(self, raw):
+        """What the accounting is handed for a non-streamed answer: the
+        first and the last SNIFF_BYTES, joined by a newline (gateway.py, the
+        translate arm and the passthrough arm cut alike)."""
+        head, tail = raw[:GW.SNIFF_BYTES], raw[-GW.SNIFF_BYTES:]
+        return (head + b"\n" + tail).decode("utf-8", "ignore")
+
+    def _halogen_body(self, reasoning_chars):
+        # Key order as Halogen 0.13.8 writes it, seen in the trace of
+        # 25.09.2026 09:36:18: choices first, usage and timings last. The
+        # reasoning carries a decoy — the model quoting an accounting block —
+        # which must stay text, not be read as the server's figures.
+        decoy = '"usage": {"prompt_tokens": 1, "completion_tokens": 1} '
+        return json.dumps({
+            "id": "chatcmpl-x", "object": "chat.completion",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": "This should be allowed.",
+                "reasoning_content": decoy + "x" * reasoning_chars}}],
+            "usage": {"prompt_tokens": 42890, "completion_tokens": 2724,
+                      "prompt_tokens_details": {"cached_tokens": 42752}},
+            "timings": {"prompt_n": 138, "cache_n": 42752,
+                        "predicted_n": 2724, "prompt_per_second": 77.515,
+                        "predicted_per_second": 38.633}}).encode()
+
+    def test_a_non_streamed_answer_longer_than_the_sniff_keeps_its_figures(self):
+        """25.09.2026 09:36:18: a classifier answer of 2724 tokens, one JSON
+        object on one line and longer than SNIFF_BYTES, so neither end of the
+        cut parsed and the trace row held nothing but its duration — while
+        Halogen's own log said 42890 prompt, 99.7 % cached, 38.6 t/s. Short
+        answers kept working, which is why nothing flagged it."""
+        for n in (1000, GW.SNIFF_BYTES, 2 * GW.SNIFF_BYTES, 50000):
+            with self.subTest(reasoning_chars=n):
+                text = self._cut_like_the_gateway(self._halogen_body(n))
+                self.assertEqual(DIA.reuse_from_text(text), (42752, 138))
+                self.assertEqual(DIA.output_from_text(text), 2724)
+                self.assertEqual(DIA.stop_reason_from_text(text), "stop")
+                self.assertEqual(DIA.rates_from_text(text), (77.5, 38.6))
+
     def test_rubbish_answers_none_instead_of_raising(self):
         """It is fed the two ends of a proxied stream, so half events and
         truncated JSON are NORMAL input. A gateway that dies over its own

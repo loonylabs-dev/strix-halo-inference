@@ -3727,6 +3727,7 @@ async def watch_server():
         await asyncio.sleep(15)
         refresh_saved()
         try:
+            await learn_backend_if_unknown()
             timeout = ClientTimeout(total=10)
             slots = None
             async with ClientSession(timeout=timeout) as s_:
@@ -3791,6 +3792,24 @@ async def note_server_restart():
     MODES = load_profile_modes(SERVED)
     # The "matches no mode" notes were about the previous model's names.
     UNKNOWN_MODELS.clear()
+
+
+async def learn_backend_if_unknown():
+    """Ask again which model is served while the answer is still unknown.
+
+    main() asks once, at startup. A boot starts this unit and halogen.service
+    together, and on 26.09.2026 the gateway asked before the engine listened:
+    SERVED stayed None, so backend_is_openai_only() said no and every
+    /v1/messages went through untranslated — 404 for 2 h 27 min, until
+    setup/smoketest.sh caught it. Neither restart detector could repair it:
+    with the backend unknown watch_server polls /slots, Halogen answers 404,
+    and a 404 is neither "gone" nor "all slots empty".
+
+    Only while unknown: once a name is known, a change of model is the two
+    detectors' job, and this stays a no-op.
+    """
+    if not SERVED:
+        await note_server_restart()
 
 # The accounting above relies on "aiohttp cancels the handler as soon as the
 # connection is gone" — which stopped being the DEFAULT in aiohttp 3.9: it is

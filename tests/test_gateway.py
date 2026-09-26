@@ -979,6 +979,47 @@ class TestARestartChangesTheServedModel(GatewayOnTheWire):
         self.assertEqual(GW.UNKNOWN_MODELS, set())
 
 
+class TestAGatewayStartedBeforeItsBackendLearnsIt(GatewayOnTheWire):
+    """26.09.2026: the gateway and halogen.service were started together; the
+    gateway asked /v1/models before the engine listened, got nothing, and
+    never asked again. watch_server polls /slots while the backend is
+    unknown — Halogen answers that 404, which is neither "gone" nor "all
+    slots empty", so no refresh ever ran. For 2 h 27 min every /v1/messages
+    was passed through untranslated and came back 404; setup/smoketest.sh
+    found it. A boot starts both units together, so this was a race on every
+    boot, not a one-off.
+    """
+    TUNNEL = False
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.saved = {k: getattr(GW, k) for k in
+                      ("SERVED", "MODES", "BACKEND_FLAVOR", "UNKNOWN_MODELS")}
+        GW.SERVED, GW.MODES, GW.BACKEND_FLAVOR = None, {}, "auto"
+        GW.UNKNOWN_MODELS = set()
+        self.addCleanup(lambda: [setattr(GW, k, v) for k, v in self.saved.items()])
+
+    async def test_an_unknown_backend_is_asked_again(self):
+        self.llama_json["/v1/models"] = {"data": [{"id": "halogen-qwen3.8-flash-next"}]}
+        await GW.learn_backend_if_unknown()
+        self.assertEqual(GW.SERVED, "halogen-qwen3.8-flash-next")
+        self.assertTrue(GW.backend_is_openai_only(),
+                        "the Anthropic translation must switch on with the name")
+
+    async def test_a_known_backend_is_left_to_the_restart_detectors(self):
+        """Once known, a change of model is watch_server's two detectors' job;
+        asking /v1/models every 15 s on top would be a second, unowned path."""
+        GW.SERVED = "qwen38"
+        self.llama_json["/v1/models"] = {"data": [{"id": "gemma26"}]}
+        await GW.learn_backend_if_unknown()
+        self.assertEqual(GW.SERVED, "qwen38")
+
+    def test_the_watch_loop_asks_on_every_tick(self):
+        src = (common.REPO / "setup" / "gateway" / "gateway.py").read_text(encoding="utf-8")
+        body = src[src.index("async def watch_server("):src.index("async def note_server_restart(")]
+        self.assertIn("await learn_backend_if_unknown()", body)
+
+
 class TestAnUnmatchedNameIsSaidOnce(GatewayOnTheWire):
     """The old code was wrong loudly; the new code is right quietly.
 

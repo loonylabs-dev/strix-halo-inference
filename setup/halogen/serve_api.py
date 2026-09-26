@@ -2,10 +2,10 @@
 # ===========================================================================
 # VENDORED AND PATCHED — this is NOT this repository's code.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.13.8
-#             image digest sha256:6e626c979d536ab1edb07898e278be6686afd353758ea268817457f801d687dd
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.14.0
+#             image digest sha256:ec7ec0c6f955f48329bb444efa97286dc8216e9ab1b130bc40d7d8c3babdf6b2
 #   base file /halogen/tools/serve_api.py
-#   BASE_SHA256 = 97019cc97cdad6f21f0abe795527de740422f94b81324ffee27f237dd1dcc572
+#   BASE_SHA256 = 529c5d146ed3aa54537ad46993993bd0c56006562828632ae51621ff3ac453a4
 #
 # setup/halogenexec mounts this file OVER the one in the image and verifies
 # BASE_SHA256 against the image's own copy before it does. That check is the
@@ -103,6 +103,35 @@
 #   * the HALOGEN_* names read under /halogen/tools are the same 43 in both
 #     images, so halogenexec's allowlist needs no addition.
 #
+# RE-CUT 26.09.2026, 0.13.8 -> 0.14.0 (base file 5343 -> 5558 lines), again a
+# three-way merge. ONE conflict, at the generate() call: 0.14.0 rebuilt the
+# stop-string path for public issue #106 (a stop hit now sets ctl["stop"],
+# the engine cancels and finishes from its own D line, so timings and
+# cached_tokens are real). Resolved by taking upstream's block whole and
+# handing generate() req_eos instead of eos_ids — change 2 as before. After
+# that the change set against the new base is the same lines as the 0.13.8
+# cut's against its base (sorted diff lines compared, no difference).
+# Checked against the 0.14.0 FILE:
+#   * changes 1-2: still needed. `eos_ids` is built in the same form,
+#     <|endoftext|> does not occur in the base. How change 2 meets #106: a
+#     stop string that is ONE token never reaches upstream's text matcher,
+#     the engine ends on it as on an end token and reports from its own D
+#     line anyway; a multi-token one (`</block>`) takes upstream's new path.
+#     That reading is from the code; stopstring_ab and the #106 check measure
+#     it.
+#   * change 3: still needed. `app.state` does not occur in the base.
+#   * change 4: still needed. `room <= 0` / `want > room` unchanged.
+#   * change 5: still needed. The SNAP3 placement in render_prompt() is the
+#     same block as 0.13.8's, and `cache_control` does not occur in the base.
+#   * HALOGEN_* names under /halogen/tools: the same 43. BUT the tools
+#     directory was never the whole answer: the engine binary
+#     /usr/local/bin/flash_serve reads its own names, and 0.14.0 adds four
+#     there (HALOGEN_MTP_DEPTH, HALOGEN_NGRAM_TABLE, HALOGEN_HT_MOE_GEMM,
+#     HALOGEN_HT_MOE_WPE). The earlier "no new name" checks looked at tools/
+#     only, so they said nothing about the binary. halogenexec now passes
+#     HALOGEN_MTP_DEPTH; the other three are undocumented and stay at the
+#     image's defaults.
+#
 # RETIREMENT: changes 1-3 go when an image ships them — check the upstream
 # changelog AND the base file on every bump. Change 4 goes only if upstream
 # ships an equivalent context-window clamp; until then it stays even on an
@@ -128,9 +157,11 @@ Run (box, in the container — tools/run-serve.sh wraps both processes):
 """
 
 import argparse
+import array
 import asyncio
 import base64
 import binascii
+import collections
 import io
 import math
 import itertools
@@ -557,6 +588,9 @@ PROBE_ATTEMPTS = 3
 
 FIRST_TOKEN_S = 1800.0   # waits out PREFILL; a cold 262K prompt is ~19 min
 NEXT_TOKEN_S = 300.0     # between tokens a round is sub-second; minutes = wedge
+# The request line names the closest earlier request (RecentPrefixes) only
+# when this many prompt tokens were prefilled: a warm follow-up needs no note.
+PREFIX_NOTE_MIN = 1024
 ABORT_DRAIN_S = 10.0     # resync is an optimization; reconnecting is correct
 
 # PUBLIC ISSUE #25: HOW LONG AN IDLE POOLED CONNECTION LIVES.
@@ -1308,6 +1342,9 @@ class Engine:
         if len(parts) >= 24:            # 0.13.4 (#84): end-of-turn tokens the
             d["kept_think"] = int(parts[22])    # guard kept as text inside the
             d["kept_call"] = int(parts[23])     # think block / an open tool call
+        if len(parts) >= 26:            # public issue #107: the rows the disk
+            d["disk_rows"] = int(parts[24])     # tier restored for this request
+            d["disk_ms"] = float(parts[25])     # and the restore's wall time
         return d
 
     def _note_pool(self, d):
@@ -1317,27 +1354,49 @@ class Engine:
             self.pool_used = int(d["pool_used"])
             self.pool_positions = int(d["pool_positions"])
 
-    async def _gen_batched(self, req, line):
+    async def _gen_batched(self, req, line, ctl=None):
         """One of many concurrent generations over the shared socket.
 
         The socket is read ONLY by _demux(); this coroutine waits on its own
         queue. The two timeout budgets are unchanged and still apply per
         request, because a wedge is still a wedge -- what changed is that it
         now takes down ONE request instead of the server.
+
+        `ctl["stop"]` (public issue #106): the caller ended the reply itself (a
+        stop string). The generator cancels its own request and keeps reading
+        to the D line, dropping the tokens made after the stop, so the D line's
+        figures (prefill, cached tokens, rounds) reach the caller. Bounded by
+        ABORT_DRAIN_S; past it the generator ends without a D line and the
+        caller reports what it knows.
         """
         q = asyncio.Queue()
         self.streams[req] = q
         finished = False
+        cancel_at = None
         try:
             async with self.wlock:
                 self.w.write(line.encode())
                 await self.w.drain()
             first = True
             while True:
+                if ctl is not None and ctl.get("stop") and cancel_at is None:
+                    cancel_at = time.monotonic() + ABORT_DRAIN_S
+                    try:
+                        async with self.wlock:
+                            self.w.write(f"X {req}\n".encode())
+                            await self.w.drain()
+                    except Exception:
+                        return
+                timeout = FIRST_TOKEN_S if first else NEXT_TOKEN_S
+                if cancel_at is not None:
+                    timeout = cancel_at - time.monotonic()
+                    if timeout <= 0:
+                        return
                 try:
-                    parts = await asyncio.wait_for(
-                        q.get(), timeout=FIRST_TOKEN_S if first else NEXT_TOKEN_S)
+                    parts = await asyncio.wait_for(q.get(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    if cancel_at is not None:
+                        return
                     # Do NOT drop the shared socket: other requests are riding
                     # it. Fail this one. That is the whole point of batching --
                     # one bad request stops being everyone's problem.
@@ -1346,12 +1405,18 @@ class Engine:
                              % (FIRST_TOKEN_S if first else NEXT_TOKEN_S,
                                 " while prefilling" if first else " mid-decode"))
                 if parts is None:
+                    if cancel_at is not None:
+                        return
                     raise HTTPException(502, "engine closed the connection")
                 if parts[0] == "T":
                     first = False
+                    if cancel_at is not None:
+                        continue
                     yield (int(parts[2]), None, t_line_logprob(parts))
                 elif parts[0] == "D":
                     if parts[2] == "error":
+                        if cancel_at is not None:
+                            return
                         raise HTTPException(400, engine_refusal(parts))
                     finished = True
                     d = self._done_dict(parts)
@@ -1360,7 +1425,7 @@ class Engine:
                     return
         finally:
             self.streams.pop(req, None)
-            if not finished:
+            if not finished and cancel_at is None:
                 # THE GENERATOR KNOWS ITS OWN REQ, which is why cancellation
                 # lives here rather than in Engine.abort(): with N concurrent
                 # requests a single self.active cannot say which one went
@@ -1380,8 +1445,12 @@ class Engine:
     async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                        penalty="", snap=0, snap2=0, images=None, schema=None,
                        after=None, escape=(), think=None, seg=None,
-                       snap3=0, guard=None):   # noqa: E301
+                       snap3=0, guard=None, ctl=None):   # noqa: E301
         """Yields (token_id, None, logprob) per token, then (None, done_dict, None).
+
+        `ctl` is _gen_batched's (public issue #106): setting `ctl["stop"]`
+        between two items cancels the request and drains it to its D line,
+        which is still yielded; the tokens after the stop are not.
 
         `drafter` is the trailing wire field (0 serial / 1 MTP); None omits
         it and lets the engine apply its own default.
@@ -1466,7 +1535,7 @@ class Engine:
                    if seg and self.info.get("composable") else "")
                 + "\n")
         if self.n_slots > 1:
-            async for item in self._gen_batched(req, line):
+            async for item in self._gen_batched(req, line, ctl):
                 yield item
             return
         self.w.write(line.encode())
@@ -1486,12 +1555,31 @@ class Engine:
         # A single timeout cannot serve both: sized for prefill it never fires
         # on a hang, sized for decode it kills every long prompt.
         first = True
+        cancel_at = None
         while True:
+            if ctl is not None and ctl.get("stop") and cancel_at is None:
+                # public issue #106: see _gen_batched
+                cancel_at = time.monotonic() + ABORT_DRAIN_S
+                try:
+                    self.w.write(f"X {req}\n".encode())
+                    await self.w.drain()
+                except Exception:
+                    await self.close()
+                    return
+            timeout = FIRST_TOKEN_S if first else NEXT_TOKEN_S
+            if cancel_at is not None:
+                # abort()'s bound: past it, drop the connection (the next
+                # request reconnects clean) and end without a D line
+                timeout = cancel_at - time.monotonic()
+                if timeout <= 0:
+                    await self.close()
+                    return
             try:
-                raw = await asyncio.wait_for(
-                    self.r.readline(),
-                    timeout=FIRST_TOKEN_S if first else NEXT_TOKEN_S)
+                raw = await asyncio.wait_for(self.r.readline(), timeout=timeout)
             except asyncio.TimeoutError:
+                if cancel_at is not None:
+                    await self.close()
+                    return
                 # Drop the socket: the stream's position is now unknown, and
                 # a half-read stream desynchronizes the NEXT request.
                 await self.close()
@@ -1502,6 +1590,8 @@ class Engine:
                             " while prefilling" if first else " mid-decode"))
             if not raw:
                 self.active = None
+                if cancel_at is not None:
+                    return
                 raise HTTPException(502, "engine closed the connection")
             parts = raw.decode().split()
             if not parts:
@@ -1517,9 +1607,13 @@ class Engine:
                 # version. Public issue #100: t_line_logprob also reads a
                 # TOPLP request's list, on the first token.
                 first = False
+                if cancel_at is not None:
+                    continue
                 yield (int(parts[2]), None, t_line_logprob(parts))
             elif parts[0] == "D" and int(parts[1]) == req:
                 self.active = None
+                if parts[2] == "error" and cancel_at is not None:
+                    return
                 if parts[2] == "error":
                     raise HTTPException(400, engine_refusal(parts))
                 d = self._done_dict(parts)
@@ -2898,6 +2992,55 @@ class ThinkSplit:
                 self.full[i + len(self.MARK):].lstrip("\n"))
 
 
+def common_prefix_len(a, b):
+    """The length of the common prefix of two int arrays. Slice equality is
+    a C-level compare, so a binary search over it costs O(n) C work."""
+    n = min(len(a), len(b))
+    if a[:n] == b[:n]:
+        return n
+    lo, hi = 0, n            # a[:lo] == b[:lo]; a[:hi] != b[:hi]
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if a[lo:mid] == b[lo:mid]:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+class RecentPrefixes:
+    """WHY A REQUEST MISSED THE CACHE, in the log line a reporter pastes.
+
+    The request line says `prompt N (M cached)` and nothing about why M is
+    small, and the prompt cache was the largest class of public reports:
+    each took rounds to tell a client that rewrote its history (a timestamp
+    in the system prompt, reasoning dropped from an earlier turn, a
+    compaction) from a server that no longer held the conversation. This
+    keeps the token sequences of the last few requests (prompt plus reply,
+    what the engine held after each) and finds, for a new prompt, the
+    earlier request it shares the longest prefix with, and where the two
+    part. It infers nothing: the line states the shared length and whether
+    the earlier request's prompt, its reply, or neither differs from there."""
+
+    def __init__(self, keep=16):
+        self.items = collections.deque(maxlen=keep)
+
+    def best(self, ids):
+        """-> (shared, seconds ago, its prompt length, its length) or None."""
+        a = array.array("i", ids)
+        best, now = None, time.monotonic()
+        for t, plen, seq in self.items:
+            n = common_prefix_len(a, seq)
+            if best is None or n > best[0]:
+                best = (n, now - t, plen, len(seq))
+        return best
+
+    def add(self, ids, out):
+        seq = array.array("i", ids)
+        seq.extend(out)
+        self.items.append((time.monotonic(), len(ids), seq))
+
+
 def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
               template=None):
     engine.tokenizer = tok   # 0.8.0: the VOCAB line is built from it
@@ -3223,6 +3366,8 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 -1 if TOOL_CALL_ID is None else TOOL_CALL_ID,
                 -1 if TOOL_CALL_END_ID is None else TOOL_CALL_END_ID)
 
+    recent = RecentPrefixes()
+
     async def run(ids, max_tokens, stops, drafter=None, sample=None,
                   penalty="", snap=0, snap2=0, images=None, schema=None,
                   after=None, escape=(), think=None, seg=None, snap3=0,
@@ -3344,17 +3489,60 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 yield tid, d, lp, False
 
         _t_last = time.perf_counter()
+        # PUBLIC ISSUE #106: A STOP STRING ENDS THE REPLY HERE, NOT IN THE
+        # ENGINE, and the finish used to be a record made up on the spot with
+        # prefill_ms and decode_ms 0 and no cached tokens, so a client logging
+        # cache hits read every stop-string request as a cold one, and the
+        # request line and /metrics never saw it. Now the hit sets
+        # ctl["stop"]: the engine generator cancels its request and drains it
+        # to its own D line, the tokens after the stop are dropped, and that
+        # D line finishes the request with the reason and token count the
+        # client was given.
+        # the closest earlier request (RecentPrefixes): not for a request
+        # with images (its ids do not identify its pixels) nor with the
+        # prompt cache off (nothing was meant to be reused)
+        pmatch = (recent.best(ids) if not images
+                  and engine.info.get("cache_mode", 1) != 0 else None)
+        ctl = {"stop": False}
+        stop_n = None
+        sent = 0   # with stop strings: the characters of `text` yielded
         req_eos = get_eos_ids(stops)
         stream = engine.generate(ids, max_tokens, req_eos, drafter, sample,
                                  penalty, snap=snap, snap2=snap2,
                                  images=images, schema=schema, after=after,
                                  escape=escape, think=think, seg=seg,
-                                 snap3=snap3, guard=guard)
+                                 snap3=snap3, guard=guard, ctl=ctl)
         async for tid, d, lp, kept in (held(stream) if guard else plain(stream)):
+            if stop_n is not None and d is None:
+                continue
             if lp is not None:
                 lps.append((tid, lp))
             if d is not None:
+                if stop_n is not None:
+                    # the engine counted the tokens it made before the
+                    # cancel landed; the reply is the first stop_n, and its
+                    # decode time is theirs pro rata
+                    n_eng = int(d.get("n_gen", 0))
+                    if n_eng > stop_n > 0:
+                        d["decode_ms"] = d["decode_ms"] * stop_n / n_eng
+                    d["n_gen"] = stop_n
+                    d["reason"] = "stop"
                 done = d
+                prefix_s = ""
+                if d.get("reason") != "error":
+                    if pmatch is not None:
+                        shared, age, plen, slen = pmatch
+                        d["prefix_n"] = shared
+                        # only where a reporter asks "why no hit": a prefill
+                        # of at least PREFIX_NOTE_MIN tokens
+                        if int(d.get("n_prompt", 0)) - int(d.get("n_cached", 0)) \
+                                >= PREFIX_NOTE_MIN:
+                            where = ("all of it" if shared >= slen else
+                                     "then its prompt differs" if shared < plen else
+                                     "then its reply differs")
+                            prefix_s = (f" | closest earlier: {shared} tokens shared "
+                                        f"with a request {age:.0f}s ago, {where}")
+                    recent.add(ids, out)
                 if think_src and d.get("think_forced"):
                     d["think_closed_by"] = think_src
                 if d.get("reason") != "error":
@@ -3456,6 +3644,11 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 kt, kc = d.get("kept_think", 0), d.get("kept_call", 0)
                 think_s += ((f" | end of turn kept as text: {kt} in the think "
                              f"block, {kc} in a tool call") if kt or kc else "")
+                # public issue #107: a disk-tier restore, beside the cached
+                # count it produced
+                if d.get("disk_rows"):
+                    think_s += (f" | disk: restored {d['disk_rows']} rows in "
+                                f"{d.get('disk_ms', 0.0):.0f} ms")
                 print(f"serve_api: {name} {d['n_gen']} tok in {dt:.2f}s = "
                       f"{rate} | {spec}"
                       f"prompt {pn}{cached_s}"
@@ -3483,7 +3676,7 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                       # single-stream figure.
                       + (f" | {shared} tok with the head off" if shared
                          else "")
-                      + pld + pool_s + clamp_s + think_s,
+                      + pld + pool_s + clamp_s + think_s + prefix_s,
                       flush=True)
                 break
             # time spent WAITING on the engine == everything since we last
@@ -3568,17 +3761,40 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 win, hit = "", None
             if hit:
                 cut = len(text) - len(win) + win.index(hit)
-                tail = delta[:max(0, cut - (len(text) - len(delta)))]
+                tail = text[min(sent, cut):cut]
                 if tail:
                     yield tail, None
-                await engine.abort()   # drains through D — never bare cancel
-                yield None, think_end({"reason": "stop", "n_gen": len(out),
-                                       "n_prompt": len(ids), "prefill_ms": 0.0,
-                                       "decode_ms": 0.0, "logprobs": lps})
-                return
+                stop_n = len(out)
+                ctl["stop"] = True
+                continue
+            if stops:
+                # PUBLIC ISSUE #106, found by its test: a stop string of
+                # several tokens reached the client in pieces. `</block>` is
+                # `</`, `block`, `>`; the first two went out as they arrived,
+                # and when `>` completed the match only the current delta was
+                # cut, so the reply ended in `</block`. Hold back the longest
+                # tail of the text that is the start of a stop string, until
+                # the next token decides (llama.cpp's server does the same).
+                hold = 0
+                for t in stops:
+                    for k in range(min(len(t) - 1, len(text)), hold, -1):
+                        if text.endswith(t[:k]):
+                            hold = k
+                            break
+                end = len(text) - hold
+                delta = text[sent:end] if end > sent else ""
+                sent = max(sent, end)
             if delta:
                 _t_last = time.perf_counter()
             yield delta, None
+        if stops and stop_n is None and sent < len(text):
+            # the reply ended without a stop string: what was held back is
+            # the reply's own text
+            yield text[sent:], None
+        if done is None and stop_n is not None:
+            # the D line did not come within the drain bound: what is known
+            done = {"reason": "stop", "n_gen": stop_n, "n_prompt": len(ids),
+                    "prefill_ms": 0.0, "decode_ms": 0.0}
         if done is not None:
             done["logprobs"] = lps
         yield None, think_end(done or {"reason": "length", "n_gen": len(out),
@@ -3675,6 +3891,18 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
              "predicted_per_second": round(gn / (dms / 1000.0), 3) if dms > 0 else 0.0}
         if "n_cached" in d:
             t["cache_n"] = cached
+        if "disk_rows" in d:
+            # public issue #107: what the disk tier did for THIS request (a
+            # llama-server slot restore reports n_restored and restore_ms):
+            # the rows it restored and the restore's wall time, 0 and 0 when
+            # the prefix was in memory or nothing was restored. cache_n
+            # counts the resumed prefix either way.
+            t["disk_restore_n"] = int(d["disk_rows"])
+            t["disk_restore_ms"] = round(float(d["disk_ms"]), 3)
+        if "prefix_n" in d:
+            # the tokens this prompt shares with the closest earlier request
+            # this server served (RecentPrefixes); cache_n of them was reused
+            t["prefix_n"] = int(d["prefix_n"])
         if int(d.get("room_from", -1)) >= 0:
             # 0.11.5 (issue #74): this turn ran in the room its region had
             # left (the region could not grow); max_tokens was clamped from
@@ -3835,6 +4063,18 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
         c_started = False
         rd_started = False
         rd_pending = ""
+        # PUBLIC ISSUE #104: A CHAT STREAM OPENS WITH A ROLE-ONLY CHUNK.
+        #
+        # `delta.role` is optional in OpenAI's schema, and this stream never
+        # sent one. LangChain's OpenAI client (LibreChat's) takes each chunk's
+        # role from `delta.role`, falling back only to a role an EARLIER chunk
+        # carried, so with none every chunk became a generic message chunk:
+        # the text survived and the tool calls were dropped, with no error.
+        # OpenAI, vLLM and llama.cpp all open with this chunk. It goes out
+        # right before the first frame of any kind except an error, so a
+        # request that fails before its first token streams exactly what it
+        # did before (the error, then [DONE]).
+        role_due = chat
         # an earlier change step 9: front-end CPU per token, excluding the await.
         # PROCESS-WIDE and never reset: 8 concurrent requests share this
         # module-level dict, so a per-request reset would have each stream
@@ -3849,6 +4089,10 @@ def build_app(tok, engine, ctx, max_cap=4096, queue_timeout=600,
                 yield f"data: {json.dumps({'error': error_body(d)})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
+            if role_due:
+                role_due = False
+                yield (f"data: {json.dumps(frame({'delta': {'role': 'assistant', 'content': ''}}))}"
+                       f"\n\n")
             if d is not None:
                 fin = {"stop": "stop", "cancel": "stop",
                        "length": "length"}.get(d["reason"], "stop")

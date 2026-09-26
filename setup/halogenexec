@@ -87,7 +87,7 @@ fi
 # that file (public issue #60, what older opencode builds send), and the
 # stale copy would have reverted it. One vendored file is one retirement
 # condition to check per bump; this is the other one retired.
-BASE_SHA256="97019cc97cdad6f21f0abe795527de740422f94b81324ffee27f237dd1dcc572"
+BASE_SHA256="529c5d146ed3aa54537ad46993993bd0c56006562828632ae51621ff3ac453a4"
 
 EXTRA_MOUNTS=()
 PATCHED="$REPO/setup/halogen/serve_api.py"
@@ -152,8 +152,13 @@ EXTRA_ENV=()
 # An allowlist: a variable not named here never reaches the container, however
 # it is set. HALOGEN_CACHE_BRANCHES (0.13.3) and HALOGEN_EOS_GUARD (0.13.4) were
 # added with the 0.13.4 bump, 22.09.2026; unset they take upstream's defaults
-# (2, and on). 0.13.5-0.13.8 read no new name (24.09.2026).
+# (2, and on). 0.13.5-0.13.8 read no new name under /halogen/tools
+# (24.09.2026) — the engine binary was not looked at then. 0.14.0 (26.09.2026,
+# checked in BOTH places) adds four names to /usr/local/bin/flash_serve; only
+# HALOGEN_MTP_DEPTH is documented (draft tokens per round, default 2) and is
+# let through, unset it keeps upstream's default.
 for var in HALOGEN_TEMPERATURE HALOGEN_TOP_P HALOGEN_TOP_K HALOGEN_MIN_P \
+           HALOGEN_MTP_DEPTH \
            HALOGEN_MAX_THINKING_TOKENS HALOGEN_MAX_TOKENS_DEFAULT \
            HALOGEN_MAX_TOKENS_CAP HALOGEN_REASONING_EFFORT HALOGEN_CACHE_ENTRIES \
            HALOGEN_CACHE_BRANCHES HALOGEN_EOS_GUARD \

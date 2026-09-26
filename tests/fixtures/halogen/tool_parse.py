@@ -2,8 +2,8 @@
 # ===========================================================================
 # TEST FIXTURE — an UNMODIFIED copy, and it is NEVER MOUNTED.
 #
-#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.13.8
-#             image digest sha256:6e626c979d536ab1edb07898e278be6686afd353758ea268817457f801d687dd
+#   cut from  ghcr.io/peonist-ai/halogen-flash-server:0.14.0
+#             image digest sha256:ec7ec0c6f955f48329bb444efa97286dc8216e9ab1b130bc40d7d8c3babdf6b2
 #   base file /halogen/tools/tool_parse.py
 #   BASE_SHA256 = c08e7cbeec7b4f354c4c779cc1b67dbe23f51189fe83f7a06250628064947938
 #

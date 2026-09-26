@@ -50,9 +50,13 @@ this silicon:
 
 * **Halogen Flash Server** ([`setup/halogen/`](setup/halogen/)): A rootless
   container backend running Qwen 3.8 Flash-Next with MTP speculative decoding
-  — production here for daily agent work. Measured 24.09.2026 on 0.13.8: a
-  cold 186k-token prompt in 192 s (~970 tok/s), a long answer at 31-34 tok/s
-  from 2k to 193k of context. Its prompt cache lives in RAM **and on NVMe**:
+  — production here for daily agent work, 0.14.0 since 26.09.2026. Measured
+  24.09.2026 on 0.13.8: a cold 186k-token prompt in 192 s (~970 tok/s), a long
+  answer at 31-34 tok/s from 2k to 193k of context; 0.14.0's new draft head
+  took a long answer from 35.4-35.9 to 39.0-40.3 tok/s at 2k-32k, measured
+  against 0.13.8 in the same sitting
+  ([report](bench/reports/2026-09-26_halogen-0.14.0/README.md)). Its prompt
+  cache lives in RAM **and on NVMe**:
   a deep conversation that was evicted, or survived a restart, resumes in
   2-3 s instead of ~3 minutes
   ([report](bench/reports/2026-09-24_halogen-disk-cache/README.md)). Its

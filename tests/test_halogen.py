@@ -1204,7 +1204,7 @@ class TestThinkingBudgetWireProtocol(unittest.IsolatedAsyncioTestCase):
             # guard's clause (#84), 22.09.2026.
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None, penalty="",
                                 snap=0, snap2=0, images=None, schema=None, after=None, escape=(), think=None,
-                                seg=None, snap3=0, guard=None):
+                                seg=None, snap3=0, guard=None, ctl=None):
                 captured_think.append(think)
                 captured_eos.append(list(eos))
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
@@ -1333,7 +1333,7 @@ class TestFitToRoom(unittest.IsolatedAsyncioTestCase):
             async def generate(self, ids, max_tokens, eos, drafter=None, sample=None,
                                penalty="", snap=0, snap2=0, images=None, schema=None,
                                after=None, escape=(), think=None, seg=None, snap3=0,
-                               guard=None):
+                               guard=None, ctl=None):
                 seen.append(max_tokens)
                 yield None, {"reason": "stop", "n_gen": 0, "n_prompt": len(ids),
                              "decode_ms": 1.0, "prefill_ms": 1.0}, None

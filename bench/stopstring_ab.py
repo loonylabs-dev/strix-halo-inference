@@ -128,14 +128,33 @@ def main():
                   + (f" ERROR {row['error']}" if "error" in row else ""),
                   flush=True)
 
-    print("\narm             runs  empty+zeroed  end-token-in-reasoning  errors")
+    s = summarize(rows)
+    print("\narm             runs  empty  of-them-zeroed  end-token-in-reasoning  errors")
+    for arm in ARMS:
+        a_ = s[arm]
+        print(f"{arm:15s} {a_['runs']:4d}  {a_['empty']:5d}  {a_['zeroed']:14d}  "
+              f"{a_['kept']:22d}  {a_['errors']:6d}")
+
+
+def summarize(rows):
+    """Per arm: runs, EMPTY turns (no content, no tool call), how many of
+    those carried zeroed timings, reasonings that kept the end token, errors.
+
+    Empty and zeroed are counted apart. Up to Halogen 0.13.8 a stop-string
+    finish zeroed the timings (#106) and this summary required both; 0.14.0
+    reports the real figures, and on 26.09.2026 the combined column read 0
+    while 6 of 6 stop-string turns were empty. The zeroed count stays as a
+    column because it says which release produced the rows."""
+    out = {}
     for arm in ARMS:
         rs = [r for r in rows if r["arm"] == arm]
         ok = [r for r in rs if "error" not in r]
-        empty = sum(1 for r in ok if r["content_chars"] == 0
-                    and not r["tool_calls"] and r["timings_zeroed"])
-        kept = sum(1 for r in ok if r["reasoning_has_end_token"])
-        print(f"{arm:15s} {len(rs):4d}  {empty:12d}  {kept:22d}  {len(rs) - len(ok):6d}")
+        empty = [r for r in ok if r["content_chars"] == 0 and not r["tool_calls"]]
+        out[arm] = {"runs": len(rs), "errors": len(rs) - len(ok),
+                    "empty": len(empty),
+                    "zeroed": sum(1 for r in empty if r["timings_zeroed"]),
+                    "kept": sum(1 for r in ok if r["reasoning_has_end_token"])}
+    return out
 
 
 if __name__ == "__main__":

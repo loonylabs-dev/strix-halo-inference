@@ -508,6 +508,19 @@ profile copy.
   OpenAI-format body POSTed to /v1/messages loses its tools silently — 2,309
   of 8,251 tokens rendered, and nothing errors (31.08.2026). Match body
   dialect and endpoint before comparing anything downstream of them.
+- **A side server must not share production's disk cache — assert the
+  mount, do not trust the flag.** systemd lets `EnvironmentFile=` override
+  `-E`, so a side unit given the local env file AND `-E HALOGEN_CACHE_DIR=…`
+  ran on production's cache directory (26.09.2026): arms that would have
+  restored each other's records, and bench writes into a cache at its
+  budget. `halogenexec` reads the env file itself for every variable left
+  unset, so a side unit needs none; check `podman inspect`'s `/cache` source
+  before the first request, as the 26.09. runner does.
+- **A fix upstream can blind a detector here.** `stopstring_ab` recognised a
+  failed turn by 0.13.8's zeroed timings; 0.14.0 fixed those (#106) and the
+  summary read 0 of 6 where 6 of 6 turns were empty. After a bump, re-read
+  the raw rows of any check whose verdict rests on the old release's
+  symptom, not only its summary line.
 
 ## One edit to the records, on 27.08.2026, written down here
 

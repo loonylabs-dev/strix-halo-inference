@@ -870,9 +870,10 @@ in 346 tokens. The trace records `stop_reason` and `max_tokens` so that a long
 request can be read: `tool_calls`/`stop` is a model that finished, `length` is
 a cap that cut it off.
 
-The EFFORT MAP itself is unchanged by the 0.12.3 and 0.13.8 upgrades —
-byte-identical between 0.8.1 and 0.12.3 (checked 22.09.2026) and between 0.12.3
-and 0.13.8 (checked 24.09.2026), so the behaviour described above still holds. What DID change is that a second bound now sits under the
+The EFFORT MAP itself is unchanged by the 0.12.3, 0.13.8 and 0.14.0 upgrades —
+byte-identical between 0.8.1 and 0.12.3 (checked 22.09.2026), between 0.12.3
+and 0.13.8 (checked 24.09.2026) and between 0.13.8 and 0.14.0 (checked
+26.09.2026), so the behaviour described above still holds. What DID change is that a second bound now sits under the
 budget: 0.11.0's answer room keeps `max(1024, 15% of max_tokens)` for the
 answer and cuts the think budget to what is left, so this repo's
 `HALOGEN_MAX_THINKING_TOKENS=26000` is the effective cap only above a
@@ -981,6 +982,33 @@ exist in the base file.
   REFUSED. The weights repo's own `tokenizer/` passes — worth knowing because
   this stack mounts that directory and a refusal to start would otherwise read
   as a broken upgrade.
+
+### What arrived between 0.13.8 and 0.14.0
+
+Re-cut onto `0.14.0` on 26.09.2026, a three-way merge with ONE conflict: the
+`generate()` call, where upstream rebuilt the stop-string path (#106). The
+header of `setup/halogen/serve_api.py` says how it was resolved and re-checks
+all five changes against the new file. Measured here
+(`bench/reports/2026-09-26_halogen-0.14.0/`):
+
+* **The draft head drafts two tokens ahead** (`HALOGEN_MTP_DEPTH`, default 2):
+  long answers 35.4-35.9 → 39.0-40.3 tok/s, committed tokens a round 1.52 →
+  ~1.9. Depth 3 was no faster on this traffic; the variable is let through
+  `halogenexec` and left unset.
+* **A stop string's request reports its real timings** (#106), and a
+  multi-token stop string no longer leaves `</block` at the end of the text.
+* **`timings.disk_restore_n` / `disk_restore_ms`** per request (#107).
+* **The engine binary reads HALOGEN_* names of its own.** Checking
+  `/halogen/tools` is not enough on a bump: 0.14.0 added four names to
+  `/usr/local/bin/flash_serve` and none to the tools. Grep both.
+* **The disk tier keys on the build AND the configuration** — leaving
+  `HALOGEN_MTP_DEPTH` unset and setting it to its default 2 are two keys. With
+  `HALOGEN_CACHE_PRUNE_OLD=1` a bump, or any such change, starts with an empty
+  cache and deletes the other key's records at start (198.94 GiB on 26.09.).
+* **Not taken: 0.14.0's own pool fit.** With the vision tower on a 128 GB
+  host it would start the pool at 262,144 positions; `halogenexec` passes
+  `HALOGEN_KV_POOL_POSITIONS` from the local env (524288 here), so that fit
+  never applies. Whether to follow it is an open decision, not a default.
 
 ### What arrived between 0.12.3 and 0.13.8
 

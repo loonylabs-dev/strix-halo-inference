@@ -22,6 +22,71 @@ their dates are not the days the work was done; the dates in the text are.
 
 ---
 
+## 0.7.2 — 2026-09-26
+
+*Halogen Flash Server `0.14.0` (was `0.13.8`) with its quality sidecar,
+`HALOGEN_MTP_DEPTH` unset (upstream's default, 2); client Claude Code
+`2.1.281`; podman `5.8.4`.*
+
+### Changed
+
+*   **Halogen 0.14.0 in production: its new draft head decodes ~10-12 %
+    faster here.** Measured 26.09.2026 against 0.13.8, five side arms in the
+    order 0.13.8 / depth 2 / depth 3 / depth 2 / 0.13.8, production's
+    configuration, each with an empty cache directory: long prose answers
+    35.4-35.9 → **39.0-40.3 tok/s** (server timings, turns at 2k and 32k
+    tokens of context), the auto-mode classifier replay's wall time 507-509 s
+    → 453-470 s with the same verdicts (n=24). Upstream reports +15-18 % on
+    its reference machine; that the difference is this machine's ~70 W
+    sustained GPU power against a desktop's is a guess, not measured. Depth
+    3 decoded no faster than 0.13.8 on prose and no faster than depth 2 on
+    the classifier, so `HALOGEN_MTP_DEPTH` is let through `halogenexec` but
+    not set. `bench/reports/2026-09-26_halogen-0.14.0/`.
+*   **The prompt cache on disk starts empty once.** The disk tier keys its
+    records on the build and the configuration, and with
+    `HALOGEN_CACHE_PRUNE_OLD=1` the first 0.14.0 start removes the 0.13.8
+    records; every session prefills cold one time. Setting
+    `HALOGEN_MTP_DEPTH=2` explicitly is a different key from leaving it unset,
+    though 2 is the default.
+
+### Fixed
+
+*   **A gateway started before Halogen answers learns its backend later.**
+    It asked which model is served once, at startup; started beside
+    halogen.service — which is what a boot does — it could ask before the
+    engine listened, and then passed every `/v1/messages` through
+    untranslated: HTTP 404 for Claude Code until the gateway was restarted.
+    Seen 26.09.2026 for 2 h 27 min (no real request fell into it;
+    `setup/smoketest.sh` found it). The watch loop now asks again while the
+    answer is unknown.
+*   **A request a stop string ends reports its real prefill and cache hit**
+    (upstream #106, filed from here). The auto-mode classifier's `</block>`
+    requests read as cold with zero timings on 0.13.8 (23/23 per arm) and
+    carry their figures on 0.14.0 (0/23 missing; e.g. 51,328 of 53,483 tokens
+    cached). The `</block` fragment 0.13.8 left at the end of every answer is
+    gone as well.
+*   **`setup/lib/models.sh serving-unit` names the unit that actually owns the
+    Halogen container.** Two unit files start it (`halogen.service`, enabled
+    for boot, and `halogen-qwen38flash.service`, which `switch-model.sh`
+    starts), and the verb mapped the image to the second whatever ran — on
+    26.09.2026 it named an inactive unit while production ran under the
+    first, so a benchmark runner would have "stopped" nothing and started a
+    second engine beside the first. It now reads conmon's cgroup.
+*   **`bench/stopstring_ab.py` counts an empty turn as empty whatever its
+    timings say.** It required zeroed timings, 0.13.8's signature, and so
+    read 0 of 6 on 0.14.0 where 6 of 6 end-token stop-string turns were
+    empty. The gateway change of 0.7.1 (no end-token stop strings) stays.
+
+### Added
+
+*   **Per-request disk restore figures** from Halogen (upstream #107, filed
+    from here): `timings.disk_restore_n` / `disk_restore_ms`. Measured
+    26.09.2026: after a restart a 28,316-token prompt came back with 28,288
+    tokens from disk in 213.5 ms (711.5 ms prefill in all) against 28.7 s cold;
+    a RAM hit reports 0.
+
+---
+
 ## 0.7.1 — 2026-09-25
 
 *Halogen Flash Server `0.13.8` with its quality sidecar; client Claude Code

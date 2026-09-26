@@ -685,6 +685,33 @@ class TestServingIsReadOffTheProcess(unittest.TestCase):
                 self.assertTrue(unit.endswith(".service"), unit)
                 self.assertNotEqual(unit, "llama-user@halogen.service")
 
+    def test_the_unit_is_the_one_that_owns_the_container(self):
+        """Two unit files start the same container: halogen.service (enabled,
+        what a boot starts) and halogen-qwen38flash.service (what
+        switch-model.sh starts). `serving-unit` mapped the image to the
+        second whatever was running, so on 26.09.2026, with production up
+        under halogen.service, it named an INACTIVE unit — a runner would
+        have stopped nothing and then started a second engine beside the
+        first. The answer has to be the unit the container runs in.
+
+        Checked through a different path than the one under test: conmon's
+        cgroup, read here in Python. Skipped where no container runs."""
+        r = subprocess.run(["podman", "inspect", "halogen", "--format",
+                            "{{.State.ConmonPid}}"],
+                           capture_output=True, text=True)
+        pid = r.stdout.strip() if r.returncode == 0 else ""
+        if not pid or pid == "0":
+            self.skipTest("no halogen container runs on this machine now")
+        try:
+            with open("/proc/%s/cgroup" % pid, encoding="utf-8") as f:
+                owner = f.read().strip().rsplit("/", 1)[-1]
+        except OSError as e:
+            self.skipTest("conmon %s gone while reading: %s" % (pid, e))
+        r = subprocess.run(["bash", str(REPO / "setup" / "lib" / "models.sh"),
+                            "serving-unit"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [owner])
+
 
 class TestTheHealthCheckLooksAtTheRealStore(unittest.TestCase):
     """setup/check.sh reports on the prefix store, and it was reading the same

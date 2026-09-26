@@ -256,10 +256,32 @@ model_probe() {
 # produces a unit name nothing can start, and the caller's own dead man's
 # switch then arms the wrong one. bench/suites/speed-ab.py held that string
 # and it fired on 04.09.2026.
+#
+# For the container the unit is READ, not mapped: two unit files start the
+# same container (halogen.service, enabled, which a boot starts; and
+# halogen-qwen38flash.service, which switch-model.sh starts), and mapping the
+# image to the second named an INACTIVE unit on 26.09.2026 while production
+# ran under the first. conmon lives in the cgroup of the unit that started
+# the container, and that cgroup's last component is the unit's name. No
+# answer from it means no answer here — callers refuse rather than guess.
+halogen_container_unit() {
+  local pid cg
+  pid="$(podman inspect halogen --format '{{.State.ConmonPid}}' 2>/dev/null)" || return 0
+  case "$pid" in ''|0) return 0 ;; esac
+  cg="$(cat "/proc/$pid/cgroup" 2>/dev/null)" || return 0
+  cg="${cg##*/}"
+  case "$cg" in *.service) printf '%s\n' "$cg" ;; esac
+  return 0
+}
+
 models_serving_unit() {
   local m
   while IFS= read -r m; do
-    [ -n "$m" ] && model_unit "$m"
+    case "$m" in
+      '')       ;;
+      halogen*) halogen_container_unit ;;
+      *)        model_unit "$m" ;;
+    esac
   done < <(models_serving)
   return 0
 }
